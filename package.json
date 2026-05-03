@@ -1,0 +1,15 @@
+{
+  "name": "pm-weather-bot-root",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm run --parallel dev",
+    "dev:backend": "pnpm --filter backend dev",
+    "dev:frontend": "pnpm --filter frontend dev",
+    "serve": "pnpm --filter backend serve",
+    "build": "pnpm run --recursive build",
+    "install:all": "pnpm install"
+  },
+  "devDependencies": {
+    "pnpm": "^10.0.0"
+  }
+}

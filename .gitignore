@@ -1,0 +1,14 @@
+node_modules
+dist
+.env
+.DS_Store
+*.zip
+pnpm-lock.yaml
+node_modules/
+info/
+backend/node_modules/
+frontend/node_modules
+.pnpm-store/
+backend/.env
+frontend/.env
+.env
