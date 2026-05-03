@@ -46,8 +46,8 @@ If the bot cannot derive keys automatically due to Cloudflare (403 error), provi
 If you encounter an error like `ERROR: load metadata for docker.io/library/node:22-slim` during build on Mac:
 
 1. Open `~/.docker/config.json`.
-2. Change `"credsStore": "desktop"` to `"credsStore": "osxkeychain"`.
-3. Restart Docker Desktop.
+2. **Delete** the line containing `"credsStore": "desktop"`.
+3. Save the file and **Restart Docker Desktop**.
 
 ## Cloudflare / 403 Forbidden
 
