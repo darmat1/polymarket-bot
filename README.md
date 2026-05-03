@@ -36,13 +36,6 @@ If the bot cannot derive keys automatically due to Cloudflare (403 error), provi
 - `POLYMARKET_API_SECRET`
 - `POLYMARKET_API_PASSPHRASE`
 
-### Trading Strategy
-
-- `BOT_MAX_SPREAD_BPS`: Maximum allowed spread in basis points (e.g., 300 = 3%).
-- `BOT_MAX_ORDER_USDC`: Maximum size of a single order in USDC.
-- `BOT_MIN_EDGE_BPS`: Minimum edge required to place an order.
-- `BOT_DRY_RUN`: Set to `true` to simulate trades without spending real USDC.
-
 ### Advanced
 
 - `POLYMARKET_FUNDER_ADDRESS`: Address of the funder wallet (if different from signer).
