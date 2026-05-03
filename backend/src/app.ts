@@ -253,9 +253,12 @@ Return ONLY a JSON object with the following schema, and no other text or format
   "res_source": "<resolution source url if available>",
   "city": "<city name if applicable>",
   "t": "<temperature value if applicable>",
-  "t_sys": "<'C' or 'F' if applicable>",
+  "t_sys": "<'C' or 'F' — detect from description: if it mentions 'Fahrenheit' or 'degrees F', use 'F'; otherwise use 'C'>",
   "day": "<date string if applicable>",
-  "station_code": "<site code if res_source is weather.gov and has ?site= parameter, e.g., 'UUWW', otherwise null>"
+  "station_code": "<weather station code extracted by the following rules, in priority order:
+    1. If res_source contains 'weather.gov' and has a '?site=' query parameter, use that value (e.g. '?site=UUWW' → 'UUWW').
+    2. If res_source is a wunderground.com URL like 'https://www.wunderground.com/history/daily/us/ca/los-angeles/KLAX', use the LAST path segment (e.g. 'KLAX').
+    3. Otherwise null.>"
 }
 
 Market Question: ${rawMarket.question}

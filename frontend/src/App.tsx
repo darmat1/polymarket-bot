@@ -323,6 +323,7 @@ export function App() {
             stationCode: details.extractedData.station_code,
             targetTemp: details.extractedData.t,
             targetDate: details.extractedData.day,
+            tempUnit: details.extractedData.t_sys ?? "C",
             outcome: pos.outcome,
             tokenId: pos.asset,
           }),
@@ -813,6 +814,35 @@ export function App() {
                       style={{ marginTop: "20px" }}
                     >
                       <span>AI Extracted Data (Groq)</span>
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: "15px",
+                          marginBottom: "12px",
+                          marginTop: "8px",
+                        }}
+                      >
+                        {marketDetails.extractedData.url && (
+                          <a
+                            href={marketDetails.extractedData.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-link"
+                          >
+                            Polymarket Event ↗
+                          </a>
+                        )}
+                        {marketDetails.extractedData.res_source && (
+                          <a
+                            href={marketDetails.extractedData.res_source}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-link"
+                          >
+                            Weather Source ↗
+                          </a>
+                        )}
+                      </div>
                       <pre className="result-json">
                         {JSON.stringify(marketDetails.extractedData, null, 2)}
                       </pre>

@@ -505,6 +505,19 @@ button.button-clear {
   box-shadow: 0 0 8px currentColor;
 }
 
+.text-link {
+  color: var(--mint);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
+
+.text-link:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+
 @media (max-width: 1024px) {
   .hero,
   .layout {

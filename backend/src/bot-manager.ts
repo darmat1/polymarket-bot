@@ -6,6 +6,7 @@ export interface BotTask {
   stationCode: string;
   targetTemp: number;
   targetDate: string; // e.g. "May 3, 2026"
+  tempUnit: "C" | "F";  // temperature unit the market uses
   outcome: string;    // "Yes" or "No"
   tokenId: string;
   active: boolean;
@@ -111,7 +112,13 @@ async function pollSingleTask(marketSlug: string) {
 
     if (isRecent) {
       const latest = latestObs;
-      addBotLog(marketSlug, `Temp check: ${latest.temp}°C`, "info");
+
+      const tempC: number = typeof latest.temp === "number" ? latest.temp : parseFloat(latest.temp);
+      const tempF = (tempC * 9 / 5) + 32;
+      const tempInMarketUnit = task.tempUnit === "F" ? tempF : tempC;
+      const unitSymbol = task.tempUnit === "F" ? "°F" : "°C";
+
+      addBotLog(marketSlug, `Temp check: ${tempC.toFixed(1)}°C / ${tempF.toFixed(1)}°F`, "info");
       
       // Update cache
       const currentCache = weatherCache.get(task.stationCode) || [];
@@ -129,8 +136,8 @@ async function pollSingleTask(marketSlug: string) {
         observation: latest
       });
 
-      // Check exit condition
-      await checkExitCondition(task, latest.temp);
+      // Check exit condition using converted temperature
+      await checkExitCondition(task, tempInMarketUnit);
     }
   } catch (error) {
     console.error(`Error polling task for ${marketSlug}:`, error);
@@ -138,12 +145,14 @@ async function pollSingleTask(marketSlug: string) {
 }
 
 async function checkExitCondition(task: BotTask, currentTemp: number) {
+  // currentTemp is already in the market's unit (C or F)
   // Logic: if Outcome is "No", we bet it WON'T reach targetTemp.
   // If currentTemp >= targetTemp, we must SELL.
   const isEmergency = task.outcome === "No" && currentTemp >= task.targetTemp;
-  
+  const unitSymbol = task.tempUnit === "F" ? "°F" : "°C";
+
   if (isEmergency) {
-    console.warn(`EMERGENCY EXIT for ${task.marketSlug}: Temp ${currentTemp} reached target ${task.targetTemp}`);
+    console.warn(`EMERGENCY EXIT for ${task.marketSlug}: Temp ${currentTemp}${unitSymbol} reached target ${task.targetTemp}${unitSymbol}`);
     
     try {
       // 1. Get current position size
@@ -154,7 +163,7 @@ async function checkExitCondition(task: BotTask, currentTemp: number) {
         const sizeToSell = pos.size;
         console.log(`Selling ${sizeToSell} shares of ${task.marketSlug} (${task.outcome})`);
         
-        addBotLog(task.marketSlug, `EMERGENCY! Temp ${currentTemp}°C >= Target ${task.targetTemp}°C. Selling position...`, "warn");
+        addBotLog(task.marketSlug, `EMERGENCY! Temp ${currentTemp.toFixed(1)}${unitSymbol} >= Target ${task.targetTemp}${unitSymbol}. Selling position...`, "warn");
         
         // 2. Place sell order at a low price (e.g. 0.01) to exit immediately
         const sellResult: any = await placeLimitOrder({
