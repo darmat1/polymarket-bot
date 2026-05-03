@@ -3,7 +3,6 @@ dist
 .env
 .DS_Store
 *.zip
-pnpm-lock.yaml
 node_modules/
 info/
 backend/node_modules/
