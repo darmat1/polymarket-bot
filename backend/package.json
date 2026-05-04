@@ -12,10 +12,11 @@
     "wallet:setup": "tsx scripts/setup-wallet.ts"
   },
   "dependencies": {
-    "@polymarket/clob-client-v2": "^1.0.0",
+    "@polymarket/clob-client": "5.8.1",
     "axios": "^1.16.0",
     "commander": "^14.0.0",
     "dotenv": "^17.2.3",
+    "ethers": "5.7.2",
     "viem": "^2.38.5",
     "ws": "^8.20.0"
   },

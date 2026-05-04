@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 
 type OutcomeToken = {
   label: string;
@@ -89,6 +89,22 @@ type OpenPositionsPayload = {
 
 type AppTab = "weather" | "crypto" | "positions";
 
+type EventLogEntry = {
+  id: number;
+  timestamp: number;
+  marketSlug: string;
+  type: "info" | "success" | "warn" | "error";
+  trigger: "auto" | "manual";
+  message: string;
+};
+
+type Toast = {
+  id: number;
+  type: "info" | "success" | "warn" | "error";
+  title: string;
+  message: string;
+};
+
 export function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("positions");
   const [search, setSearch] = useState("");
@@ -110,6 +126,19 @@ export function App() {
   const [loadingPositions, setLoadingPositions] = useState(false);
   const [positionsError, setPositionsError] = useState<string | null>(null);
   const [activeBotSlugs, setActiveBotSlugs] = useState<string[]>([]);
+  const [rederiving, setRederiving] = useState(false);
+  const [rederiveStatus, setRederiveStatus] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [eventLog, setEventLog] = useState<EventLogEntry[]>([]);
+  const [eventLogLoading, setEventLogLoading] = useState(false);
+  const toastIdRef = useRef(0);
+  const [sellingTokenId, setSellingTokenId] = useState<string | null>(null);
+  const [sellConfirmation, setSellConfirmation] = useState<{
+    marketSlug: string;
+    tokenId: string;
+    outcome: string;
+    size: number;
+  } | null>(null);
 
   const [viewingMarketSlug, setViewingMarketSlug] = useState<string | null>(
     null,
@@ -175,9 +204,41 @@ export function App() {
           : `${events.length} ${tabTitle.toLowerCase()} event(s) visible`;
   const emptyStateText = getEmptyStateText(trimmedSearch, activeTab);
 
+  const addToast = useCallback(
+    (type: Toast["type"], title: string, message: string) => {
+      const id = ++toastIdRef.current;
+      setToasts((prev) => [...prev, { id, type, title, message }]);
+      const ttl = type === "error" ? 10000 : 6000;
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+      }, ttl);
+    },
+    [],
+  );
+
+  const loadEventLog = useCallback(async () => {
+    try {
+      setEventLogLoading(true);
+      const res = await fetch("/api/event-log?limit=50");
+      const data = await res.json();
+      setEventLog(data.entries ?? []);
+    } catch {
+      // silent
+    } finally {
+      setEventLogLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadAccountSummary();
+    void loadEventLog();
   }, []);
+
+  // Poll event log every 15 s
+  useEffect(() => {
+    const id = setInterval(() => void loadEventLog(), 15_000);
+    return () => clearInterval(id);
+  }, [loadEventLog]);
 
   useEffect(() => {
     const isDev =
@@ -223,10 +284,20 @@ export function App() {
               prev.filter((s) => s !== msg.marketSlug),
             );
             if (msg.marketSlug === currentSlug) {
-              alert(`Bot Emergency Exit: ${msg.reason}`);
               setBotActive(false);
             }
+            addToast("warn", "Bot Emergency Exit", msg.reason ?? msg.marketSlug);
             void loadPositions();
+            void loadEventLog();
+          }
+          if (msg.type === "bot_error") {
+            // Sell failed — bot still active, shown in Event Log
+            addToast(
+              "error",
+              "Sell Failed",
+              `${msg.reason} — Bot stays active, will retry in ~5 min.`,
+            );
+            void loadEventLog();
           }
         } catch (err) {
           console.error("WS message error", err);
@@ -308,7 +379,7 @@ export function App() {
           (p) => p.slug === slug,
         );
         if (activePositions.length === 0) {
-          alert("No open positions for this market. Buy some shares first.");
+          addToast("warn", "No positions", "No open positions for this market. Buy some shares first.");
           setBotLoading(false);
           return;
         }
@@ -332,7 +403,7 @@ export function App() {
         setActiveBotSlugs((prev) => [...prev, slug]);
       }
     } catch (err) {
-      alert("Failed to toggle bot");
+      addToast("error", "Bot toggle failed", err instanceof Error ? err.message : "Unknown error");
       console.error(err);
     } finally {
       setBotLoading(false);
@@ -342,6 +413,39 @@ export function App() {
   async function toggleBot() {
     if (!viewingMarketSlug) return;
     await toggleBotForSlug(viewingMarketSlug, botActive);
+  }
+
+  function confirmManualSell(marketSlug: string, tokenId: string, outcome: string, size: number) {
+    setSellConfirmation({ marketSlug, tokenId, outcome, size });
+  }
+
+  async function handleManualSell() {
+    if (!sellConfirmation) return;
+    const { marketSlug, tokenId, outcome } = sellConfirmation;
+    setSellingTokenId(tokenId);
+    setSellConfirmation(null);
+    try {
+      const res = await fetch("/api/bot/manual-sell", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ marketSlug, tokenId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error ?? "Sell failed");
+      }
+      addToast(
+        "success",
+        "Sell submitted",
+        `${outcome} — ${data.message ?? `${data.sizeToSell} shares @ 0.01`}`,
+      );
+      void loadPositions();
+      void loadEventLog();
+    } catch (err) {
+      addToast("error", "Sell failed", err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setSellingTokenId(null);
+    }
   }
 
   useEffect(() => {
@@ -575,8 +679,46 @@ export function App() {
     setMarketDetails(null);
   }
 
+  async function handleRederiveCreds() {
+    setRederiving(true);
+    setRederiveStatus(null);
+    try {
+      const res = await fetch("/api/rederive-creds", { method: "POST" });
+      const data = await res.json();
+      if (data.ok && data.derived) {
+        setRederiveStatus(`✓ ${data.credsSource} — ${data.keyPreview}`);
+      } else {
+        setRederiveStatus(`✗ ${data.lastError ?? data.error ?? "Failed"}`);
+      }
+    } catch (err) {
+      setRederiveStatus("✗ Network error");
+    } finally {
+      setRederiving(false);
+    }
+  }
+
   return (
     <div className="shell">
+      {/* ── Toast stack ── */}
+      <div className="toast-stack">
+        {toasts.map((t) => (
+          <div key={t.id} className={`toast toast-${t.type}`}>
+            <span className="toast-icon">
+              {t.type === "error" ? "✖" : t.type === "warn" ? "⚠" : t.type === "success" ? "✔" : "ℹ"}
+            </span>
+            <div className="toast-body">
+              <strong>{t.title}</strong>
+              <span>{t.message}</span>
+            </div>
+            <button
+              className="toast-close"
+              onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
       <header className="topbar">
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
           <span className="topbar-label">Balance</span>
@@ -607,6 +749,28 @@ export function App() {
           >
             {accountSummary?.dry_run ? "dry-run" : "live"}
           </span>
+          <button
+            type="button"
+            className="button button-secondary"
+            style={{ fontSize: "0.72rem", padding: "4px 10px", opacity: rederiving ? 0.6 : 1 }}
+            onClick={() => void handleRederiveCreds()}
+            disabled={rederiving}
+            title="Re-derive Polymarket L2 API credentials from private key"
+          >
+            {rederiving ? "Re-deriving..." : "Re-derive Keys"}
+          </button>
+          {rederiveStatus && (
+            <span style={{
+              fontSize: "0.72rem",
+              color: rederiveStatus.startsWith("✓") ? "var(--mint)" : "var(--rose)",
+              maxWidth: "200px",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}>
+              {rederiveStatus}
+            </span>
+          )}
         </div>
       </header>
 
@@ -756,10 +920,13 @@ export function App() {
                                 <th>Value</th>
                                 <th>PnL</th>
                                 <th>Ends</th>
+                                <th style={{ width: "80px" }}>Action</th>
                               </tr>
                             </thead>
                             <tbody>
-                              {activePositions.map((row, index) => (
+                              {activePositions.map((row, index) => {
+                                const isSelling = sellingTokenId === row.asset;
+                                return (
                                 <tr key={index}>
                                   <td>{row.outcome ?? "—"}</td>
                                   <td>{formatPosNum(row.size)}</td>
@@ -790,8 +957,29 @@ export function App() {
                                       ? formatPosDate(row.endDate)
                                       : "—"}
                                   </td>
+                                  <td>
+                                    {row.asset ? (
+                                      <button
+                                        type="button"
+                                        className="button button-small sell-btn"
+                                        disabled={isSelling || sellingTokenId !== null}
+                                        onClick={() =>
+                                          confirmManualSell(
+                                            viewingMarketSlug!,
+                                            row.asset!,
+                                            row.outcome ?? "?",
+                                            row.size ?? 0
+                                          )
+                                        }
+                                        title={`Manually sell ${row.size ?? ""} ${row.outcome ?? ""} shares at market price`}
+                                      >
+                                        {isSelling ? "…" : "Sell"}
+                                      </button>
+                                    ) : "—"}
+                                  </td>
                                 </tr>
-                              ))}
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -980,7 +1168,7 @@ export function App() {
                         <th>Value</th>
                         <th>PnL</th>
                         <th>Ends</th>
-                        <th style={{ width: "120px" }}>Action</th>
+                        <th style={{ width: "160px" }}>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1045,28 +1233,47 @@ export function App() {
                               {row.endDate ? formatPosDate(row.endDate) : "—"}
                             </td>
                             <td>
-                              {row.slug ? (
-                                <button
-                                  type="button"
-                                  className={`button button-small ${isBotActive ? "button-secondary" : "button-primary"}`}
-                                  style={{
-                                    padding: "4px 10px",
-                                    fontSize: "0.75rem",
-                                    minWidth: "60px",
-                                  }}
-                                  onClick={() =>
-                                    void toggleBotForSlug(
-                                      row.slug!,
-                                      isBotActive,
-                                    )
-                                  }
-                                  disabled={botLoading}
-                                >
-                                  {isBotActive ? "Stop" : "Start"}
-                                </button>
-                              ) : (
-                                "—"
-                              )}
+                              <div style={{ display: "flex", gap: "6px" }}>
+                                {row.slug ? (
+                                  <button
+                                    type="button"
+                                    className={`button button-small ${isBotActive ? "button-secondary" : "button-primary"}`}
+                                    style={{
+                                      padding: "4px 10px",
+                                      fontSize: "0.75rem",
+                                      minWidth: "60px",
+                                    }}
+                                    onClick={() =>
+                                      void toggleBotForSlug(
+                                        row.slug!,
+                                        isBotActive,
+                                      )
+                                    }
+                                    disabled={botLoading}
+                                  >
+                                    {isBotActive ? "Stop" : "Start"}
+                                  </button>
+                                ) : null}
+                                {row.asset ? (
+                                  <button
+                                    type="button"
+                                    className="button button-small sell-btn"
+                                    disabled={sellingTokenId === row.asset || sellingTokenId !== null}
+                                    onClick={() =>
+                                      confirmManualSell(
+                                        row.slug!,
+                                        row.asset!,
+                                        row.outcome ?? "?",
+                                        row.size ?? 0
+                                      )
+                                    }
+                                    title={`Manually sell ${row.size ?? ""} ${row.outcome ?? ""} shares at market price`}
+                                  >
+                                    {sellingTokenId === row.asset ? "…" : "Sell"}
+                                  </button>
+                                ) : null}
+                                {!row.slug && !row.asset && "—"}
+                              </div>
                             </td>
                           </tr>
                         );
@@ -1077,6 +1284,81 @@ export function App() {
               )}
             </section>
           )}
+
+          {/* ── Event Log ── */}
+          <section className="panel event-log-panel">
+            <div className="panel-head">
+              <div>
+                <p className="section-kicker">Trade History</p>
+                <h2>Event Log</h2>
+              </div>
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                {eventLogLoading && <span style={{ fontSize: "0.75rem", color: "var(--muted)" }}>Refreshing…</span>}
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={() => void loadEventLog()}
+                  style={{ fontSize: "0.75rem", padding: "4px 10px" }}
+                >
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  style={{ fontSize: "0.75rem", padding: "4px 10px", color: "var(--rose)" }}
+                  onClick={async () => {
+                    await fetch("/api/event-log", { method: "DELETE" });
+                    setEventLog([]);
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+            {eventLog.length === 0 ? (
+              <div className="empty-state" style={{ padding: "20px 0" }}>
+                <strong>No events yet</strong>
+                <p>Sell operations and bot actions will appear here.</p>
+              </div>
+            ) : (
+              <div className="positions-table-wrap">
+                <table className="positions-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: "56px" }}>Type</th>
+                      <th style={{ width: "90px" }}>Trigger</th>
+                      <th style={{ width: "140px" }}>Time</th>
+                      <th style={{ width: "180px" }}>Market</th>
+                      <th>Message</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {eventLog.map((entry) => (
+                      <tr key={entry.id}>
+                        <td>
+                          <span className={`event-badge event-badge-${entry.type}`}>
+                            {entry.type === "error" ? "✖ ERR" : entry.type === "warn" ? "⚠ WARN" : entry.type === "success" ? "✔ OK" : "ℹ INFO"}
+                          </span>
+                        </td>
+                        <td>
+                          <span className={`trigger-badge trigger-${entry.trigger ?? "auto"}`}>
+                            {entry.trigger === "manual" ? "👤 MANUAL" : "🤖 AUTO"}
+                          </span>
+                        </td>
+                        <td style={{ fontSize: "0.78rem", color: "var(--muted)", whiteSpace: "nowrap" }}>
+                          {new Date(entry.timestamp).toLocaleString()}
+                        </td>
+                        <td style={{ fontSize: "0.78rem", color: "var(--muted)", wordBreak: "break-all" }}>
+                          {entry.marketSlug}
+                        </td>
+                        <td style={{ fontSize: "0.82rem" }}>{entry.message}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
         </main>
       ) : (
         <main className="layout">
@@ -1373,6 +1655,36 @@ export function App() {
             )}
           </section>
         </main>
+      )}
+
+      {/* Confirmation Modal */}
+      {sellConfirmation && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <h3 className="modal-title">Are you sure?</h3>
+            <p className="modal-body">
+              You are about to sell <strong>{formatPosNum(sellConfirmation.size)}</strong> shares of{" "}
+              <strong>{sellConfirmation.outcome}</strong>.
+              <br /><br />
+              This order will be placed as a limit sell at 0.01, effectively selling at the{" "}
+              <strong>highest available price on the market</strong>.
+            </p>
+            <div className="modal-actions">
+              <button 
+                className="button button-secondary"
+                onClick={() => setSellConfirmation(null)}
+              >
+                Cancel
+              </button>
+              <button 
+                className="button button-primary sell-btn"
+                onClick={() => void handleManualSell()}
+              >
+                Confirm Sell
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

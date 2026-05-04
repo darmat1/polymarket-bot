@@ -1,8 +1,6 @@
-import { ClobClient } from "@polymarket/clob-client-v2";
+import { ClobClient } from "@polymarket/clob-client";
 import { config as loadDotenv } from "dotenv";
-import { createWalletClient, http } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
-import { polygon } from "viem/chains";
+import { ethers } from "ethers";
 
 loadDotenv();
 
@@ -18,21 +16,16 @@ async function main() {
   const signatureType = parseSignatureType(process.env.POLYMARKET_SIGNATURE_TYPE, funderAddress);
 
   const normalizedPrivateKey = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
-  const account = privateKeyToAccount(normalizedPrivateKey);
+  const signer = new ethers.Wallet(normalizedPrivateKey);
 
-  const signer = createWalletClient({
-    account,
-    chain: polygon,
-    transport: http(),
-  });
-
-  const client = new ClobClient({
+  const client = new ClobClient(
     host,
-    chain: chainId,
+    chainId,
     signer,
+    undefined,
     signatureType,
-    funderAddress,
-  });
+    funderAddress
+  );
 
   const creds = await client.createOrDeriveApiKey();
 

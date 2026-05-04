@@ -6,10 +6,8 @@ import {
   Side,
   type ApiKeyCreds,
   type TickSize,
-} from "@polymarket/clob-client-v2";
-import { createWalletClient, http } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
-import { polygon } from "viem/chains";
+} from "@polymarket/clob-client";
+import { ethers } from "ethers";
 import axios from "axios";
 
 import { hasL2Creds, type Settings } from "./config.js";
@@ -52,16 +50,49 @@ export class TradingClient {
   }): Promise<unknown> {
     const client = this.buildL2Client();
 
-    return client.createAndPostOrder(
+    const signer = buildSigner(this.settings);
+    const makerAddress = this.settings.funderAddress ?? signer.address;
+
+    console.log(
+      `[Trading] Placing limit order: ${params.side} ${params.size} at ${params.price} (Token: ${params.tokenId})`,
+    );
+
+    const signedOrder = await client.createOrder(
       {
         tokenID: params.tokenId,
         price: params.price,
         side: toSdkSide(params.side),
         size: params.size,
+        feeRateBps: 1000,
+        expiration: 0,
       },
-      { tickSize: params.tickSize ?? "0.01" },
-      OrderType.GTC,
+      { tickSize: (params.tickSize as any) ?? "0.01" },
     );
+
+    console.log(
+      "[Trading] Signed order payload:",
+      JSON.stringify(signedOrder, null, 2),
+    );
+
+    const result = await client.postOrder(signedOrder, OrderType.GTC);
+
+    console.log("[Trading] API response:", JSON.stringify(result, null, 2));
+
+    // ClobClient sometimes returns the error response instead of throwing
+    if (result && typeof result === "object" && "error" in result) {
+      console.error(
+        "[Trading] Order placement failed (error in result):",
+        result.error,
+      );
+      throw new Error((result as any).error);
+    }
+    // ClobClient might also return an error string
+    if (typeof result === "string" && result.toLowerCase().includes("error")) {
+      console.error("[Trading] Order placement failed (error string):", result);
+      throw new Error(result);
+    }
+
+    return result;
   }
 
   async getBalanceAllowance(): Promise<BalanceAllowanceResponse> {
@@ -81,33 +112,36 @@ export class TradingClient {
   }
 
   private buildL1Client(): ClobClient {
-    return new ClobClient({
-      host: this.settings.polymarketHost,
-      chain: this.settings.chainId,
-      signer: buildSigner(this.settings),
-      signatureType: this.settings.signatureType,
-      funderAddress: this.settings.funderAddress,
-    });
+    return new ClobClient(
+      this.settings.polymarketHost,
+      this.settings.chainId,
+      buildSigner(this.settings),
+      undefined,
+      this.settings.signatureType as any,
+      this.settings.funderAddress,
+    );
   }
 
   private buildL2Client(credsOverride?: ApiKeyCreds): ClobClient {
     const signer = buildSigner(this.settings);
-    const creds: ApiKeyCreds | undefined = credsOverride ?? (hasL2Creds(this.settings)
-      ? {
-          key: this.settings.apiKey!,
-          secret: this.settings.apiSecret!,
-          passphrase: this.settings.apiPassphrase!,
-        }
-      : undefined);
+    const creds: ApiKeyCreds | undefined =
+      credsOverride ??
+      (hasL2Creds(this.settings)
+        ? {
+            key: this.settings.apiKey!,
+            secret: this.settings.apiSecret!,
+            passphrase: this.settings.apiPassphrase!,
+          }
+        : undefined);
 
-    return new ClobClient({
-      host: this.settings.polymarketHost,
-      chain: this.settings.chainId,
+    return new ClobClient(
+      this.settings.polymarketHost,
+      this.settings.chainId,
       signer,
       creds,
-      signatureType: this.settings.signatureType,
-      funderAddress: this.settings.funderAddress,
-    });
+      this.settings.signatureType as any,
+      this.settings.funderAddress,
+    );
   }
 
   withApiCreds(creds: ApiKeyCreds): TradingClient {
@@ -129,13 +163,11 @@ function buildSigner(settings: Settings) {
   const normalized = settings.privateKey.startsWith("0x")
     ? settings.privateKey
     : `0x${settings.privateKey}`;
-  const account = privateKeyToAccount(normalized as `0x${string}`);
 
-  return createWalletClient({
-    account,
-    chain: polygon,
-    transport: http(),
-  });
+  // For clob-client 5.8.1, signer needs to be an ethers Wallet instance.
+  // Note: If you need to send transactions, you'd attach a provider.
+  // But for signing CLOB payloads, a Wallet without a provider is sufficient.
+  return new ethers.Wallet(normalized);
 }
 
 function toSdkSide(side: "buy" | "sell"): Side {

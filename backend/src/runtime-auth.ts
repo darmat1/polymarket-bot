@@ -1,5 +1,5 @@
-import { type ApiKeyCreds } from "@polymarket/clob-client-v2";
-import { privateKeyToAccount } from "viem/accounts";
+import { type ApiKeyCreds } from "@polymarket/clob-client";
+import { ethers } from "ethers";
 
 import { hasL2Creds, loadSettings } from "./config.js";
 import { TradingClient } from "./trading.js";
@@ -48,7 +48,7 @@ export function getRuntimeAuthState(): {
   lastError: string | null;
 } {
   const settings = loadSettings();
-  const signerAddress = settings.privateKey ? privateKeyToAccount(normalizePrivateKey(settings.privateKey)).address : null;
+  const signerAddress = settings.privateKey ? new ethers.Wallet(normalizePrivateKey(settings.privateKey)).address : null;
 
   return {
     signerAddress,
@@ -95,6 +95,20 @@ async function deriveRuntimeApiCreds(): Promise<ApiKeyCreds | null> {
     runtimeApiCredsSource = "unavailable";
     return null;
   }
+}
+
+/**
+ * Force clears cached L2 credentials and re-derives them from scratch.
+ * Use this when the current credentials are stale/invalid (401 errors).
+ */
+export async function forceRederiveApiCreds(): Promise<ApiKeyCreds | null> {
+  // Clear all cached state
+  runtimeApiCreds = null;
+  runtimeApiCredsPromise = null;
+  lastRuntimeApiCredsError = null;
+  runtimeApiCredsSource = "unavailable";
+  // Re-run derivation
+  return initializeRuntimeApiCreds();
 }
 
 function normalizePrivateKey(value: string): `0x${string}` {

@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { type TickSize } from "@polymarket/clob-client-v2";
+import { type TickSize } from "@polymarket/clob-client";
 
 import { deriveApiCreds, evaluateMarket, placeLimitOrder, scanMarkets } from "./app.js";
 

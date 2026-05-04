@@ -1,5 +1,6 @@
 import { WebSocket, WebSocketServer } from "ws";
 import { getOpenPositions, placeLimitOrder } from "./app.js";
+import { logEvent } from "./event-log.js";
 
 export interface BotTask {
   marketSlug: string;
@@ -140,7 +141,9 @@ async function pollSingleTask(marketSlug: string) {
       await checkExitCondition(task, tempInMarketUnit);
     }
   } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
     console.error(`Error polling task for ${marketSlug}:`, error);
+    addBotLog(marketSlug, `Polling error: ${msg}`, "error");
   }
 }
 
@@ -160,10 +163,12 @@ async function checkExitCondition(task: BotTask, currentTemp: number) {
       const pos = positions.positions.find(p => p.slug === task.marketSlug && p.outcome === task.outcome);
       
       if (pos && typeof pos.size === "number" && pos.size > 0) {
-        const sizeToSell = pos.size;
+        const sizeToSell = Number(pos.size.toFixed(2));
         console.log(`Selling ${sizeToSell} shares of ${task.marketSlug} (${task.outcome})`);
         
-        addBotLog(task.marketSlug, `EMERGENCY! Temp ${currentTemp.toFixed(1)}${unitSymbol} >= Target ${task.targetTemp}${unitSymbol}. Selling position...`, "warn");
+        const warnMsg = `EMERGENCY! Temp ${currentTemp.toFixed(1)}${unitSymbol} >= Target ${task.targetTemp}${unitSymbol}. Selling ${sizeToSell} shares...`;
+        addBotLog(task.marketSlug, warnMsg, "warn");
+        logEvent(task.marketSlug, warnMsg, "warn");
         
         // 2. Place sell order at a low price (e.g. 0.01) to exit immediately
         const sellResult: any = await placeLimitOrder({
@@ -175,12 +180,14 @@ async function checkExitCondition(task: BotTask, currentTemp: number) {
         });
         
         console.log("Sell result:", sellResult);
-        addBotLog(task.marketSlug, `Emergency exit successful. Order: ${sellResult?.orderId || 'submitted'}`, "success");
+        const successMsg = `Emergency exit executed. Order: ${sellResult?.orderId || 'submitted'} | Size: ${sizeToSell} | Price: 0.01`;
+        addBotLog(task.marketSlug, successMsg, "success");
+        logEvent(task.marketSlug, successMsg, "success");
         
         broadcast({
           type: "bot_exit",
           marketSlug: task.marketSlug,
-          reason: `Temp ${currentTemp} hit target ${task.targetTemp}. Emergency sell executed.`,
+          reason: `Temp ${currentTemp.toFixed(1)}${unitSymbol} hit target ${task.targetTemp}${unitSymbol}. Emergency sell executed.`,
           result: sellResult
         });
         
@@ -188,7 +195,20 @@ async function checkExitCondition(task: BotTask, currentTemp: number) {
         deactivateBot(task.marketSlug);
       }
     } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
       console.error(`Failed emergency sell for ${task.marketSlug}:`, error);
+      const errMsg = `SELL FAILED: ${msg}. Bot stays active — will retry next poll.`;
+      // Log to Activity Log — visible in the UI
+      addBotLog(task.marketSlug, errMsg, "error");
+      // Also persist to global event log
+      logEvent(task.marketSlug, errMsg, "error");
+      // Broadcast to frontend (no alert — shown in Event Log)
+      broadcast({
+        type: "bot_error",
+        marketSlug: task.marketSlug,
+        reason: `Emergency sell failed: ${msg}`,
+      });
+      // Do NOT deactivate — let the bot retry on the next poll cycle
     }
   }
 }

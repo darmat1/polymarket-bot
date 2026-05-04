@@ -9,6 +9,7 @@ import {
   getAccountSummary,
   getOpenPositions,
   getRuntimeAuthDebug,
+  placeLimitOrder,
   scanMarkets,
   searchEvents,
   updateRuntimeAllowance,
@@ -18,9 +19,11 @@ import {
 import {
   getRuntimeAuthState,
   initializeRuntimeApiCreds,
+  forceRederiveApiCreds,
 } from "./runtime-auth.js";
 import { WebSocketServer } from "ws";
 import { initBotManager, activateBot, deactivateBot, getBotStatus, getAllActiveBots, getCachedWeather, type BotTask } from "./bot-manager.js";
+import { getEventLog, clearEventLog, logEvent } from "./event-log.js";
 import { readFile } from "node:fs/promises";
 import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -146,6 +149,26 @@ const server = createServer(async (req, res) => {
       return json(res, 200, payload);
     }
 
+    if (
+      requestUrl.pathname === "/api/rederive-creds" &&
+      req.method === "POST"
+    ) {
+      try {
+        const creds = await forceRederiveApiCreds();
+        const state = getRuntimeAuthState();
+        return json(res, 200, {
+          ok: true,
+          credsSource: state.credsSource,
+          keyPreview: state.keyPreview,
+          lastError: state.lastError,
+          derived: creds !== null,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return json(res, 500, { ok: false, error: message });
+      }
+    }
+
     if (requestUrl.pathname === "/api/bot/status" && req.method === "GET") {
       const slug = requestUrl.searchParams.get("slug");
       if (!slug) return json(res, 400, { error: "Missing slug" });
@@ -167,6 +190,52 @@ const server = createServer(async (req, res) => {
 
     if (requestUrl.pathname === "/api/bot/active-slugs" && req.method === "GET") {
       return json(res, 200, { slugs: getAllActiveBots() });
+    }
+
+    if (requestUrl.pathname === "/api/event-log" && req.method === "GET") {
+      const limit = Number(requestUrl.searchParams.get("limit") ?? "100");
+      return json(res, 200, { entries: getEventLog(limit) });
+    }
+
+    if (requestUrl.pathname === "/api/event-log" && req.method === "DELETE") {
+      clearEventLog();
+      return json(res, 200, { ok: true });
+    }
+
+    if (requestUrl.pathname === "/api/bot/manual-sell" && req.method === "POST") {
+      const body = await readJsonBody(req) as any;
+      const { marketSlug, tokenId } = body;
+      if (!marketSlug || !tokenId) {
+        return json(res, 400, { error: "Missing marketSlug or tokenId" });
+      }
+      try {
+        // Get position size from Polymarket
+        const posPayload = await getOpenPositions();
+        const pos = posPayload.positions.find(
+          (p) => p.slug === marketSlug && p.asset === tokenId,
+        );
+        if (!pos || typeof pos.size !== "number" || pos.size <= 0) {
+          return json(res, 400, { error: "No open position found for this token" });
+        }
+        const sizeToSell = Number(pos.size.toFixed(2));
+
+        const result = await placeLimitOrder({
+          tokenId,
+          side: "sell",
+          price: 0.01,
+          size: sizeToSell,
+          tickSize: "0.01",
+        });
+
+        const msg = `Manual sell: ${sizeToSell.toFixed(2)} shares @ 0.01 | Order: ${(result as any)?.orderId ?? "submitted"}`;
+        logEvent(marketSlug, msg, "success", "manual");
+
+        return json(res, 200, { ok: true, result, sizeToSell, message: msg });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logEvent(marketSlug, `Manual sell FAILED: ${msg}`, "error", "manual");
+        return json(res, 500, { error: msg });
+      }
     }
 
     if (requestUrl.pathname === "/api/evaluate" && req.method === "POST") {

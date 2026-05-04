@@ -1,8 +1,6 @@
-import { AssetType, ClobClient } from "@polymarket/clob-client-v2";
+import { AssetType, ClobClient } from "@polymarket/clob-client";
 import { config as loadDotenv } from "dotenv";
-import { createWalletClient, http } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
-import { polygon } from "viem/chains";
+import { ethers } from "ethers";
 
 loadDotenv();
 
@@ -20,28 +18,22 @@ async function main() {
   }
 
   const normalizedPrivateKey = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
-  const account = privateKeyToAccount(normalizedPrivateKey);
+  const signer = new ethers.Wallet(normalizedPrivateKey);
   const signatureType = Number(process.env.POLYMARKET_SIGNATURE_TYPE ?? "0");
   const host = process.env.POLYMARKET_HOST ?? "https://clob.polymarket.com";
   const chainId = Number(process.env.POLYMARKET_CHAIN_ID ?? "137");
 
-  const signer = createWalletClient({
-    account,
-    chain: polygon,
-    transport: http(),
-  });
-
-  const client = new ClobClient({
+  const client = new ClobClient(
     host,
-    chain: chainId,
+    chainId,
     signer,
-    signatureType,
-    creds: {
+    {
       key: apiKey,
       secret: apiSecret,
       passphrase: apiPassphrase,
     },
-  });
+    signatureType
+  );
 
   console.log(
     JSON.stringify(
@@ -53,7 +45,7 @@ async function main() {
             asset_type: "COLLATERAL",
             signature_type: signatureType,
           },
-          signer_address: account.address,
+          signer_address: signer.address,
         },
       },
       null,

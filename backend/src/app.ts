@@ -15,8 +15,8 @@ import { fetchForecastPoints } from "./weather/forecasts.js";
 import { parseWeatherMarket } from "./weather/parser.js";
 import { estimateWeatherProbability } from "./weather/probability.js";
 import { createPublicClient, erc20Abi, formatUnits, http } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import { polygon } from "viem/chains";
+import { ethers } from "ethers";
 
 export interface ScanMarketsOptions {
   limit?: number;
@@ -318,7 +318,7 @@ export async function getAccountSummary(): Promise<AccountSummaryPayload> {
   const normalized = settings.privateKey.startsWith("0x")
     ? settings.privateKey
     : `0x${settings.privateKey}`;
-  const account = privateKeyToAccount(normalized as `0x${string}`);
+  const accountAddress = new ethers.Wallet(normalized).address;
   const client = createPublicClient({
     chain: polygon,
     transport: http(),
@@ -328,11 +328,11 @@ export async function getAccountSummary(): Promise<AccountSummaryPayload> {
     address: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
     abi: erc20Abi,
     functionName: "balanceOf",
-    args: [account.address],
+    args: [accountAddress as `0x${string}`],
   });
 
   return {
-    address: account.address,
+    address: accountAddress,
     usdc_balance: formatUnits(balance, 6),
     dry_run: settings.dryRun,
     source: "wallet-usdc",
@@ -352,7 +352,7 @@ export async function getOpenPositions(): Promise<OpenPositionsPayload> {
     const normalized = settings.privateKey.startsWith("0x")
       ? settings.privateKey
       : `0x${settings.privateKey}`;
-    user = privateKeyToAccount(normalized as `0x${string}`).address;
+    user = new ethers.Wallet(normalized).address;
     wallet_source = "eoa";
   } else {
     return { user: null, wallet_source: null, positions: [] };
