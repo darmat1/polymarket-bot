@@ -252,9 +252,10 @@ Return ONLY a JSON object with the following schema, and no other text or format
   "url": "<exact Event URL provided below>",
   "res_source": "<resolution source url if available>",
   "city": "<city name if applicable>",
-  "t": <numeric threshold temperature value, e.g. 23 for '23°C or higher' (return as number, not string)>,
-  "t_sys": "<'C' or 'F' — detect from description: if it mentions 'Fahrenheit' or 'degrees F', use 'F'; otherwise use 'C'>",
-  "day": "<date string if applicable>",
+  "timezone": "<IANA timezone string for the city, e.g. 'America/Los_Angeles' or 'Europe/London'>",
+  "t": <numeric threshold temperature value. If a range is provided like '68-69', always use the LOWER value (68). Return as number, not string.>,
+  "t_sys": "<'C' or 'F' — detect from Question or Description: if either mentions 'Fahrenheit', '°F', or 'degrees F', use 'F'; otherwise use 'C'>",
+  "day": "<target date in YYYY-MM-DD format>",
   "station_code": "<weather station code extracted by the following rules, in priority order:
     1. If res_source contains 'weather.gov' and has a '?site=' query parameter, use that value (e.g. '?site=UUWW' → 'UUWW').
     2. If res_source is a wunderground.com URL like 'https://www.wunderground.com/history/daily/us/ca/los-angeles/KLAX', use the LAST path segment (e.g. 'KLAX').
@@ -265,6 +266,7 @@ Market Question: ${rawMarket.question}
 Market Slug: ${rawMarket.slug}
 Event URL: https://polymarket.com/event/${Array.isArray(rawMarket.events) && rawMarket.events.length > 0 ? rawMarket.events[0].slug : rawMarket.slug}
 Market Description: ${rawMarket.description}
+Current Reference Time (UTC): ${new Date().toISOString()}
       `;
 
       const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {

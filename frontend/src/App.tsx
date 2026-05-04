@@ -1039,6 +1039,30 @@ export function App() {
                           </a>
                         )}
                       </div>
+                      {marketDetails.extractedData.timezone && (
+                        <div
+                          style={{
+                            padding: "10px",
+                            backgroundColor: "rgba(0,0,0,0.15)",
+                            borderRadius: "6px",
+                            display: "inline-block",
+                            border: "1px solid var(--border)",
+                            marginBottom: "12px",
+                          }}
+                        >
+                          <span style={{ color: "var(--muted)", marginRight: "8px" }}>
+                            Local Time ({marketDetails.extractedData.city}):
+                          </span>
+                          <span style={{ fontWeight: "600", color: "#66bb6a" }}>
+                            {new Date().toLocaleString("en-GB", {
+                              timeZone: marketDetails.extractedData.timezone,
+                              dateStyle: "medium",
+                              timeStyle: "short",
+                              hour12: false,
+                            })}
+                          </span>
+                        </div>
+                      )}
                       <pre className="result-json">
                         {JSON.stringify(marketDetails.extractedData, null, 2)}
                       </pre>
@@ -1074,7 +1098,7 @@ export function App() {
                           <thead>
                             <tr>
                               <th>Date / Time</th>
-                              <th>Temp (°C)</th>
+                              <th>Temp (°{marketDetails.extractedData.t_sys || "C"})</th>
                               <th>Wind</th>
                             </tr>
                           </thead>
@@ -1084,22 +1108,27 @@ export function App() {
                                 const targetDayStr =
                                   marketDetails.extractedData.day;
                                 if (!targetDayStr) return true;
-                                const targetDate = new Date(targetDayStr);
-                                if (isNaN(targetDate.getTime())) return true;
-                                const obsDate = new Date(obs.obsTime * 1000);
-                                return (
-                                  obsDate.getDate() === targetDate.getDate() &&
-                                  obsDate.getMonth() === targetDate.getMonth()
-                                );
+                                
+                                const tz = marketDetails.extractedData.timezone || "UTC";
+                                // Get YYYY-MM-DD in the station's timezone
+                                const obsDayStr = new Date(obs.obsTime * 1000).toLocaleDateString("en-CA", { timeZone: tz });
+                                
+                                // targetDayStr is already YYYY-MM-DD from AI
+                                return obsDayStr === targetDayStr;
                               })
                               .map((obs: any, index: number) => (
                                 <tr key={index}>
                                   <td>
-                                    {new Date(
-                                      obs.obsTime * 1000,
-                                    ).toLocaleString()}
+                                    {new Date(obs.obsTime * 1000).toLocaleString("en-GB", { 
+                                      timeZone: marketDetails.extractedData.timezone || "UTC",
+                                      hour12: false 
+                                    })}
                                   </td>
-                                  <td>{obs.temp}</td>
+                                  <td>
+                                    {marketDetails.extractedData.t_sys === "F"
+                                      ? ((obs.temp * 9) / 5 + 32).toFixed(1)
+                                      : obs.temp}
+                                  </td>
                                   <td>
                                     {obs.wdir}° / {obs.wspd} kts
                                   </td>
