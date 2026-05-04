@@ -176,7 +176,8 @@ async function checkExitCondition(task: BotTask, currentTemp: number) {
           side: "sell",
           price: 0.01, // Market-like exit
           size: sizeToSell,
-          tickSize: "0.01"
+          tickSize: "0.01",
+          negRisk: true,
         });
         
         console.log("Sell result:", sellResult);

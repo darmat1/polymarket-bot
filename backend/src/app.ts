@@ -430,6 +430,7 @@ export async function placeLimitOrder(params: {
   price: number;
   size: number;
   tickSize: "0.1" | "0.01" | "0.001" | "0.0001";
+  negRisk?: boolean;
 }): Promise<unknown> {
   const settings = loadSettings();
   const notional = params.price * params.size;
@@ -440,19 +441,28 @@ export async function placeLimitOrder(params: {
     );
   }
 
-  if (settings.dryRun) {
-    return {
-      dry_run: true,
-      token_id: params.tokenId,
-      side: params.side,
-      price: params.price,
-      size: params.size,
-      tick_size: params.tickSize,
-    };
-  }
+    const client = await getRuntimeTradingClient();
+    
+    // Auto-detect negRisk if not provided
+    const isNegRisk = params.negRisk !== undefined ? params.negRisk : await client.getNegRisk(params.tokenId);
+    console.log(`[Trading] Token ${params.tokenId} negRisk status: ${isNegRisk}`);
 
-  const client = await getRuntimeTradingClient();
-  return client.placeLimitOrder(params);
+    if (settings.dryRun) {
+      return {
+        dry_run: true,
+        token_id: params.tokenId,
+        side: params.side,
+        price: params.price,
+        size: params.size,
+        tick_size: params.tickSize,
+        negRisk: isNegRisk
+      };
+    }
+
+    return client.placeLimitOrder({
+      ...params,
+      negRisk: isNegRisk
+    });
 }
 
 export function pickOutcome(outcomes: OutcomeToken[], requestedLabel?: string): OutcomeToken {

@@ -6,168 +6,161 @@ import {
   Side,
   type ApiKeyCreds,
   type TickSize,
-} from "@polymarket/clob-client";
+  Chain,
+} from "@polymarket/clob-client-v2";
 import { ethers } from "ethers";
 import axios from "axios";
-
 import { hasL2Creds, type Settings } from "./config.js";
 
 // Global axios interceptor to bypass Cloudflare bot detection for clob-client
 axios.interceptors.request.use((config) => {
-  config.headers["User-Agent"] =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-  config.headers["Accept"] =
-    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7";
-  config.headers["Accept-Language"] = "en-US,en;q=0.9";
-  config.headers["Connection"] = "keep-alive";
+  if (config.url?.includes("polymarket.com")) {
+    config.headers["User-Agent"] =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+  }
   return config;
 });
 
-export class TradingClient {
-  constructor(private readonly settings: Settings) {}
+export interface PlaceOrderParams {
+  tokenId: string;
+  price: number;
+  size: number;
+  side: "buy" | "sell";
+  tickSize?: string;
+  negRisk?: boolean;
+}
 
-  async createOrDeriveApiCredsRaw(): Promise<ApiKeyCreds> {
-    const client = this.buildL1Client();
+export class TradingClient {
+  private settings: Settings;
+
+  constructor(settings: Settings) {
+    this.settings = settings;
+  }
+
+  async getBalance(tokenId: string): Promise<BalanceAllowanceResponse> {
+    const client = this.buildL2Client();
+    return client.getBalanceAllowance({
+      asset_type: AssetType.CONDITIONAL,
+      token_id: tokenId,
+    });
+  }
+
+  /**
+   * Helper to update settings with runtime credentials
+   */
+  withApiCreds(creds: ApiKeyCreds): TradingClient {
+    return new TradingClient({
+      ...this.settings,
+      apiKey: creds.key,
+      apiSecret: creds.secret,
+      apiPassphrase: creds.passphrase,
+    });
+  }
+
+  /**
+   * Used for runtime authentication derivation
+   */
+  async createOrDeriveApiCredsRaw(): Promise<unknown> {
+    const client = this.buildL2Client();
     return client.createOrDeriveApiKey();
   }
 
-  async createOrDeriveApiCreds(): Promise<Record<string, string>> {
-    const creds = await this.createOrDeriveApiCredsRaw();
-
-    return {
-      POLYMARKET_API_KEY: creds.key,
-      POLYMARKET_API_SECRET: creds.secret,
-      POLYMARKET_API_PASSPHRASE: creds.passphrase,
-    };
+  async getUsdcBalance(): Promise<BalanceAllowanceResponse> {
+    return this.getBalanceAllowance({
+      asset_type: AssetType.COLLATERAL,
+    });
   }
 
-  async placeLimitOrder(params: {
-    tokenId: string;
-    side: "buy" | "sell";
-    price: number;
-    size: number;
-    tickSize?: TickSize;
-  }): Promise<unknown> {
+  async getBalanceAllowance(params?: {
+    asset_type: AssetType;
+    token_id?: string;
+  }): Promise<BalanceAllowanceResponse> {
     const client = this.buildL2Client();
+    return client.getBalanceAllowance(
+      params ?? { asset_type: AssetType.COLLATERAL },
+    );
+  }
 
-    const signer = buildSigner(this.settings);
-    const makerAddress = this.settings.funderAddress ?? signer.address;
+  async updateBalanceAllowance(params?: {
+    asset_type: AssetType;
+    token_id?: string;
+  }): Promise<void> {
+    const client = this.buildL2Client();
+    return client.updateBalanceAllowance(
+      params ?? { asset_type: AssetType.COLLATERAL },
+    );
+  }
+
+  async updateTokenAllowance(): Promise<void> {
+    return this.updateBalanceAllowance({
+      asset_type: AssetType.CONDITIONAL,
+    });
+  }
+
+  async getNegRisk(tokenId: string): Promise<boolean> {
+    const client = this.buildL2Client();
+    try {
+      return await client.getNegRisk(tokenId);
+    } catch (e) {
+      console.error(`[Trading] Failed to get negRisk for ${tokenId}:`, e);
+      return false;
+    }
+  }
+
+  async placeLimitOrder(params: PlaceOrderParams): Promise<unknown> {
+    const client = this.buildL2Client();
 
     console.log(
       `[Trading] Placing limit order: ${params.side} ${params.size} at ${params.price} (Token: ${params.tokenId})`,
     );
+    console.log(`[Trading] Using signatureType: ${this.settings.signatureType}`);
 
-    const signedOrder = await client.createOrder(
+    // Create and post order in one go using the new v2 SDK
+    // It will automatically handle version selection (v1 or v2) based on the market
+    const result = await client.createAndPostOrder(
       {
         tokenID: params.tokenId,
         price: params.price,
         side: toSdkSide(params.side),
         size: params.size,
-        feeRateBps: 1000,
-        expiration: 0,
       },
-      { tickSize: (params.tickSize as any) ?? "0.01" },
+      {
+        tickSize: (params.tickSize as any) ?? "0.01",
+        negRisk: params.negRisk ?? false,
+      },
     );
 
-    console.log(
-      "[Trading] Signed order payload:",
-      JSON.stringify(signedOrder, null, 2),
-    );
-
-    const result = await client.postOrder(signedOrder, OrderType.GTC);
-
-    console.log("[Trading] API response:", JSON.stringify(result, null, 2));
-
-    // ClobClient sometimes returns the error response instead of throwing
-    if (result && typeof result === "object" && "error" in result) {
-      console.error(
-        "[Trading] Order placement failed (error in result):",
-        result.error,
-      );
-      throw new Error((result as any).error);
-    }
-    // ClobClient might also return an error string
-    if (typeof result === "string" && result.toLowerCase().includes("error")) {
-      console.error("[Trading] Order placement failed (error string):", result);
-      throw new Error(result);
-    }
-
+    console.log("[Trading] Order result:", JSON.stringify(result, null, 2));
     return result;
   }
 
-  async getBalanceAllowance(): Promise<BalanceAllowanceResponse> {
-    const client = this.buildL2Client();
-    return client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL });
-  }
+  private buildL2Client(): ClobClient {
+    if (!hasL2Creds(this.settings)) {
+      throw new Error("L2 credentials (API key/secret/passphrase) not found");
+    }
 
-  async updateBalanceAllowance(): Promise<void> {
-    const client = this.buildL2Client();
-    await client.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
-  }
-
-  async updateTokenAllowance(): Promise<void> {
-    const client = this.buildL2Client();
-    // For conditional tokens (ERC1155)
-    await client.updateBalanceAllowance({ asset_type: AssetType.CONDITIONAL });
-  }
-
-  private buildL1Client(): ClobClient {
-    return new ClobClient(
-      this.settings.polymarketHost,
-      this.settings.chainId,
-      buildSigner(this.settings),
-      undefined,
-      this.settings.signatureType as any,
-      this.settings.funderAddress,
-    );
-  }
-
-  private buildL2Client(credsOverride?: ApiKeyCreds): ClobClient {
     const signer = buildSigner(this.settings);
-    const creds: ApiKeyCreds | undefined =
-      credsOverride ??
-      (hasL2Creds(this.settings)
-        ? {
-            key: this.settings.apiKey!,
-            secret: this.settings.apiSecret!,
-            passphrase: this.settings.apiPassphrase!,
-          }
-        : undefined);
 
-    return new ClobClient(
-      this.settings.polymarketHost,
-      this.settings.chainId,
-      signer,
-      creds,
-      this.settings.signatureType as any,
-      this.settings.funderAddress,
-    );
-  }
-
-  withApiCreds(creds: ApiKeyCreds): TradingClient {
-    const settings: Settings = {
-      ...this.settings,
-      apiKey: creds.key,
-      apiSecret: creds.secret,
-      apiPassphrase: creds.passphrase,
-    };
-    return new TradingClient(settings);
+    return new ClobClient({
+      host: this.settings.polymarketHost,
+      chain: this.settings.chainId as Chain,
+      signer: signer as any,
+      creds: {
+        key: this.settings.apiKey!,
+        secret: this.settings.apiSecret!,
+        passphrase: this.settings.apiPassphrase!,
+      },
+      signatureType: this.settings.signatureType as any,
+      funderAddress: this.settings.funderAddress,
+    });
   }
 }
 
 function buildSigner(settings: Settings) {
   if (!settings.privateKey) {
-    throw new Error("POLYMARKET_PRIVATE_KEY is required");
+    throw new Error("Private key not found");
   }
-
-  const normalized = settings.privateKey.startsWith("0x")
-    ? settings.privateKey
-    : `0x${settings.privateKey}`;
-
-  // For clob-client 5.8.1, signer needs to be an ethers Wallet instance.
-  // Note: If you need to send transactions, you'd attach a provider.
-  // But for signing CLOB payloads, a Wallet without a provider is sufficient.
-  return new ethers.Wallet(normalized);
+  return new ethers.Wallet(settings.privateKey);
 }
 
 function toSdkSide(side: "buy" | "sell"): Side {

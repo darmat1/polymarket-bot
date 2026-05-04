@@ -1,4 +1,4 @@
-import { type ApiKeyCreds } from "@polymarket/clob-client";
+import { type ApiKeyCreds } from "@polymarket/clob-client-v2";
 import { ethers } from "ethers";
 
 import { hasL2Creds, loadSettings } from "./config.js";

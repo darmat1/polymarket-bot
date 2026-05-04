@@ -217,7 +217,7 @@ const server = createServer(async (req, res) => {
         if (!pos || typeof pos.size !== "number" || pos.size <= 0) {
           return json(res, 400, { error: "No open position found for this token" });
         }
-        const sizeToSell = Number(pos.size.toFixed(2));
+        const sizeToSell = Math.floor(pos.size * 100) / 100;
 
         const result = await placeLimitOrder({
           tokenId,
@@ -225,6 +225,7 @@ const server = createServer(async (req, res) => {
           price: 0.01,
           size: sizeToSell,
           tickSize: "0.01",
+          negRisk: true,
         });
 
         const msg = `Manual sell: ${sizeToSell.toFixed(2)} shares @ 0.01 | Order: ${(result as any)?.orderId ?? "submitted"}`;
