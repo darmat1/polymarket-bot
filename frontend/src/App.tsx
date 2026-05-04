@@ -805,7 +805,14 @@ export function App() {
                       marginBottom: "20px",
                     }}
                   >
-                    <h3 style={{ margin: 0 }}>Market Analytics</h3>
+                    <div>
+                      <h3 style={{ margin: 0 }}>Market Analytics</h3>
+                      {!botActive && (marketDetails?.extractedData?.t === null || marketDetails?.extractedData?.t === undefined) && (
+                        <p style={{ color: "var(--rose)", fontSize: "0.75rem", margin: "4px 0 0 0" }}>
+                          ⚠ Target temperature not found. AI extraction failed.
+                        </p>
+                      )}
+                    </div>
                     <div
                       style={{
                         display: "flex",
@@ -826,7 +833,8 @@ export function App() {
                         type="button"
                         className={`button ${botActive ? "button-secondary" : "button-primary"}`}
                         onClick={toggleBot}
-                        disabled={botLoading}
+                        disabled={botLoading || (!botActive && (marketDetails?.extractedData?.t === null || marketDetails?.extractedData?.t === undefined))}
+                        title={!botActive && (marketDetails?.extractedData?.t === null || marketDetails?.extractedData?.t === undefined) ? "Cannot activate: Target temperature not found in market details" : ""}
                       >
                         {botLoading
                           ? "..."

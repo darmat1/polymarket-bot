@@ -246,13 +246,13 @@ export async function getMarketDetails(slug: string) {
   if (settings.groqApiKey && rawMarket.description && rawMarket.question) {
     try {
       const prompt = `
-Extract structured information from the following market data.
+Extract structured information from the following market data. The "Market Question" is the primary source for the temperature threshold and target date.
 Return ONLY a JSON object with the following schema, and no other text or formatting.
 {
   "url": "<exact Event URL provided below>",
   "res_source": "<resolution source url if available>",
   "city": "<city name if applicable>",
-  "t": "<temperature value if applicable>",
+  "t": <numeric threshold temperature value, e.g. 23 for '23°C or higher' (return as number, not string)>,
   "t_sys": "<'C' or 'F' — detect from description: if it mentions 'Fahrenheit' or 'degrees F', use 'F'; otherwise use 'C'>",
   "day": "<date string if applicable>",
   "station_code": "<weather station code extracted by the following rules, in priority order:
@@ -286,6 +286,9 @@ Market Description: ${rawMarket.description}
         const content = result.choices[0]?.message?.content;
         if (content) {
           extractedData = JSON.parse(content);
+        }
+        if (extractedData && (extractedData.t === null || extractedData.t === undefined)) {
+          console.warn(`[AI] Failed to extract target temperature for market: ${slug}`);
         }
       } else {
         console.error("Groq API error", await response.text());
