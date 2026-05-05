@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 
 type OutcomeToken = {
   label: string;
@@ -79,6 +79,7 @@ type PolymarketPositionRow = {
   percentPnl?: number;
   endDate?: string;
   redeemable?: boolean;
+  icon?: string;
 };
 
 type OpenPositionsPayload = {
@@ -148,6 +149,70 @@ export function App() {
   const [marketDetailsError, setMarketDetailsError] = useState<string | null>(
     null,
   );
+  const [posSortField, setPosSortField] = useState<string>("value");
+  const [posSortDir, setPosSortDir] = useState<"asc" | "desc">("desc");
+
+  const sortedPositions = useMemo(() => {
+    if (!positionsPayload?.positions) return [];
+    const positions = [...positionsPayload.positions];
+    return positions.sort((a, b) => {
+      let valA: any = 0;
+      let valB: any = 0;
+
+      switch (posSortField) {
+        case "bot":
+          valA = activeBotSlugs.includes(a.slug ?? "");
+          valB = activeBotSlugs.includes(b.slug ?? "");
+          break;
+        case "market":
+          valA = (a.title ?? a.slug ?? "").toLowerCase();
+          valB = (b.title ?? b.slug ?? "").toLowerCase();
+          break;
+        case "avg":
+          valA = a.avgPrice ?? 0;
+          valB = b.avgPrice ?? 0;
+          break;
+        case "traded":
+          valA = (a.size ?? 0) * (a.avgPrice ?? 0);
+          valB = (b.size ?? 0) * (b.avgPrice ?? 0);
+          break;
+        case "toWin":
+          valA = a.size ?? 0;
+          valB = b.size ?? 0;
+          break;
+        case "value":
+          valA = a.currentValue ?? 0;
+          valB = b.currentValue ?? 0;
+          break;
+        case "ends":
+          valA = a.endDate ? new Date(a.endDate).getTime() : 0;
+          valB = b.endDate ? new Date(b.endDate).getTime() : 0;
+          break;
+      }
+
+      if (valA < valB) return posSortDir === "asc" ? -1 : 1;
+      if (valA > valB) return posSortDir === "asc" ? 1 : -1;
+      return 0;
+    });
+  }, [positionsPayload?.positions, activeBotSlugs, posSortField, posSortDir]);
+
+  const toggleSort = (field: string) => {
+    if (posSortField === field) {
+      setPosSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
+    } else {
+      setPosSortField(field);
+      setPosSortDir("desc");
+    }
+  };
+
+  const renderSortIcon = (field: string) => {
+    if (posSortField !== field) return null;
+    return (
+      <span style={{ marginLeft: "4px", fontSize: "0.6rem", opacity: 0.8 }}>
+        {posSortDir === "asc" ? "▲" : "▼"}
+      </span>
+    );
+  };
 
   const [stationHistory, setStationHistory] = useState<any[] | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -248,6 +313,8 @@ export function App() {
     const wsUrl = isDev
       ? `ws://${window.location.hostname}:3001`
       : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
+
+
 
     let ws: WebSocket | null = null;
     let reconnectTimeout: ReturnType<typeof setTimeout>;
@@ -1196,20 +1263,53 @@ export function App() {
                   <table className="positions-table">
                     <thead>
                       <tr>
-                        <th style={{ width: "100px" }}>Bot</th>
-                        <th>Market</th>
-                        <th>Outcome</th>
-                        <th>Size</th>
-                        <th>Avg</th>
-                        <th>Mark</th>
-                        <th>Value</th>
-                        <th>PnL</th>
-                        <th>Ends</th>
+                        <th 
+                          style={{ width: "80px", cursor: "pointer" }}
+                          onClick={() => toggleSort("bot")}
+                        >
+                          Bot {renderSortIcon("bot")}
+                        </th>
+                        <th 
+                          style={{ cursor: "pointer" }}
+                          onClick={() => toggleSort("market")}
+                        >
+                          Market {renderSortIcon("market")}
+                        </th>
+                        <th 
+                          style={{ cursor: "pointer" }}
+                          onClick={() => toggleSort("avg")}
+                        >
+                          Avg → Now {renderSortIcon("avg")}
+                        </th>
+                        <th 
+                          style={{ cursor: "pointer" }}
+                          onClick={() => toggleSort("traded")}
+                        >
+                          Traded {renderSortIcon("traded")}
+                        </th>
+                        <th 
+                          style={{ cursor: "pointer" }}
+                          onClick={() => toggleSort("toWin")}
+                        >
+                          To Win {renderSortIcon("toWin")}
+                        </th>
+                        <th 
+                          style={{ cursor: "pointer" }}
+                          onClick={() => toggleSort("value")}
+                        >
+                          Value {renderSortIcon("value")}
+                        </th>
+                        <th 
+                          style={{ cursor: "pointer" }}
+                          onClick={() => toggleSort("ends")}
+                        >
+                          Ends {renderSortIcon("ends")}
+                        </th>
                         <th style={{ width: "160px" }}>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {positionsPayload?.positions.map((row, index) => {
+                      {sortedPositions.map((row, index) => {
                         const key = `${row.conditionId ?? row.slug ?? "row"}-${row.outcome ?? ""}-${index}`;
                         const isBotActive = !!(
                           row.slug && activeBotSlugs.includes(row.slug)
@@ -1229,42 +1329,74 @@ export function App() {
                                 </span>
                               )}
                             </td>
-                            <td>
-                              {row.slug ? (
-                                <button
-                                  type="button"
-                                  className="positions-link button-clear"
-                                  onClick={() =>
-                                    void loadMarketDetails(row.slug!)
-                                  }
-                                >
-                                  {row.title ?? row.slug ?? "—"}
-                                </button>
-                              ) : (
-                                (row.title ?? row.slug ?? "—")
-                              )}
+                            <td style={{ minWidth: "220px" }}>
+                              <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                                {row.icon ? (
+                                  <img 
+                                    src={row.icon} 
+                                    alt="" 
+                                    style={{ width: "32px", height: "32px", borderRadius: "4px", marginTop: "2px" }} 
+                                  />
+                                ) : (
+                                  <div style={{ width: "32px", height: "32px", borderRadius: "4px", backgroundColor: "rgba(255,255,255,0.05)", marginTop: "2px" }} />
+                                )}
+                                <div>
+                                  {row.slug ? (
+                                    <button
+                                      type="button"
+                                      className="positions-link button-clear"
+                                      style={{ fontWeight: "600", fontSize: "0.85rem", marginBottom: "4px", display: "block" }}
+                                      onClick={() => void loadMarketDetails(row.slug!)}
+                                    >
+                                      {row.title ?? row.slug ?? "—"}
+                                    </button>
+                                  ) : (
+                                    <span style={{ fontWeight: "600", fontSize: "0.85rem", marginBottom: "4px", display: "block" }}>
+                                      {row.title ?? row.slug ?? "—"}
+                                    </span>
+                                  )}
+                                  <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.75rem" }}>
+                                    <span style={{ 
+                                      padding: "2px 6px", 
+                                      borderRadius: "3px", 
+                                      backgroundColor: row.outcome === "Yes" ? "rgba(114, 221, 188, 0.12)" : "rgba(255, 141, 141, 0.12)",
+                                      color: row.outcome === "Yes" ? "var(--mint)" : "var(--rose)",
+                                      fontWeight: "bold"
+                                    }}>
+                                      {row.outcome} {row.avgPrice ? (row.avgPrice * 100).toFixed(0) : ""}¢
+                                    </span>
+                                    <span style={{ color: "var(--muted)" }}>
+                                      {formatPosNum(row.size)} shares
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
                             </td>
-                            <td>{row.outcome ?? "—"}</td>
-                            <td>{formatPosNum(row.size)}</td>
-                            <td>{formatPosNum(row.avgPrice)}</td>
-                            <td>{formatPosNum(row.curPrice)}</td>
-                            <td>{formatPosNum(row.currentValue)}</td>
+                            <td style={{ whiteSpace: "nowrap" }}>
+                              <span style={{ color: "var(--muted)" }}>
+                                {((row.avgPrice ?? 0) * 100).toFixed(0)}¢
+                              </span>
+                              <span style={{ margin: "0 6px", color: "var(--line)" }}>→</span>
+                              <span style={{ fontWeight: "600" }}>
+                                {((row.curPrice ?? 0) * 100).toFixed(0)}¢
+                              </span>
+                            </td>
+                            <td>${formatPosNum((row.size ?? 0) * (row.avgPrice ?? 0))}</td>
+                            <td>${formatPosNum(row.size)}</td>
                             <td>
+                              <div style={{ fontWeight: "600" }}>${formatPosNum(row.currentValue)}</div>
                               {row.cashPnl != null ? (
-                                <span
-                                  className={
-                                    row.cashPnl >= 0 ? "pnl-pos" : "pnl-neg"
-                                  }
+                                <div
+                                  className={row.cashPnl >= 0 ? "pnl-pos" : "pnl-neg"}
+                                  style={{ fontSize: "0.75rem", marginTop: "2px" }}
                                 >
                                   {row.cashPnl >= 0 ? "+" : ""}
-                                  {row.cashPnl.toFixed(2)}
+                                  ${row.cashPnl.toFixed(2)}
                                   {row.percentPnl != null
                                     ? ` (${row.percentPnl >= 0 ? "+" : ""}${row.percentPnl.toFixed(1)}%)`
                                     : ""}
-                                </span>
-                              ) : (
-                                "—"
-                              )}
+                                </div>
+                              ) : null}
                             </td>
                             <td className="positions-date">
                               {row.endDate ? formatPosDate(row.endDate) : "—"}
