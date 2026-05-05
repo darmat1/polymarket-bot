@@ -23,14 +23,53 @@ let pollInterval: NodeJS.Timeout | null = null;
 const weatherCache = new Map<string, any[]>();
 const MAX_CACHE_SIZE = 100;
 
-export function getCachedWeather(stationCode: string) {
-  return weatherCache.get(stationCode) || [];
+const weatherLastFetched = new Map<string, number>();
+
+export async function getOrFetchStationHistory(stationCode: string): Promise<any[]> {
+  const now = Date.now();
+  const lastFetched = weatherLastFetched.get(stationCode) || 0;
+  let cached = weatherCache.get(stationCode) || [];
+
+  // If fetched in the last 120 seconds and we have data, use cache to prevent API spam
+  if (now - lastFetched < 120 * 1000 && cached.length > 0) {
+    return cached;
+  }
+
+  try {
+    const url = `https://aviationweather.gov/api/data/metar?ids=${stationCode}&format=json&hours=48`;
+    const res = await fetch(url);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.length > 0) {
+        weatherLastFetched.set(stationCode, now);
+        
+        // Merge and deduplicate
+        const merged = [...cached];
+        for (const obs of data) {
+          if (!merged.some(m => m.obsTime === obs.obsTime)) {
+            merged.push(obs);
+          }
+        }
+        // Sort descending
+        merged.sort((a, b) => b.obsTime - a.obsTime);
+        if (merged.length > MAX_CACHE_SIZE) {
+          merged.splice(MAX_CACHE_SIZE);
+        }
+        weatherCache.set(stationCode, merged);
+        return merged;
+      }
+    }
+  } catch (err) {
+    console.error(`Failed to fetch unified weather for ${stationCode}:`, err);
+  }
+  
+  return cached;
 }
 
 export function initBotManager(serverWss: WebSocketServer) {
   wss = serverWss;
   if (!pollInterval) {
-    pollInterval = setInterval(pollActiveTasks, 5 * 60 * 1000); // 5 minutes
+    pollInterval = setInterval(pollActiveTasks, 2 * 60 * 1000); // 2 minutes
   }
 }
 
@@ -94,11 +133,8 @@ async function pollSingleTask(marketSlug: string) {
   });
 
   try {
-    const url = `https://aviationweather.gov/api/data/metar?ids=${task.stationCode}&format=json&hours=6`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Weather API error: ${res.status}`);
+    const data = await getOrFetchStationHistory(task.stationCode);
     
-    const data = await res.json();
     if (!data || data.length === 0) {
       addBotLog(marketSlug, "Weather API returned no data", "warn");
       return;
@@ -121,15 +157,6 @@ async function pollSingleTask(marketSlug: string) {
       const unitSymbol = task.tempUnit === "F" ? "°F" : "°C";
 
       addBotLog(marketSlug, `Temp check: ${tempC.toFixed(1)}°C / ${tempF.toFixed(1)}°F`, "info");
-      
-      // Update cache
-      const currentCache = weatherCache.get(task.stationCode) || [];
-      const isNew = !currentCache.some(o => o.obsTime === latest.obsTime);
-      if (isNew) {
-        currentCache.unshift(latest);
-        if (currentCache.length > MAX_CACHE_SIZE) currentCache.pop();
-        weatherCache.set(task.stationCode, currentCache);
-      }
 
       // Broadcast to clients
       broadcast({

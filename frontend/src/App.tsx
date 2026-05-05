@@ -708,6 +708,23 @@ export function App() {
     setEvents([]);
   }
 
+  async function loadStationHistory(stationCode: string) {
+    setLoadingHistory(true);
+    try {
+      const res = await fetch(`/api/station-history?station=${stationCode}`);
+      const data = await res.json();
+      if (data.error) {
+        setHistoryError(data.error);
+      } else {
+        setStationHistory(data.history);
+      }
+    } catch (e: any) {
+      setHistoryError(e.message);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }
+
   async function loadMarketDetails(slug: string) {
     setViewingMarketSlug(slug);
     setLoadingMarketDetails(true);
@@ -728,18 +745,7 @@ export function App() {
 
       const stationCode = payload.extractedData?.station_code;
       if (stationCode) {
-        setLoadingHistory(true);
-        fetch(`/api/station-history?station=${stationCode}`)
-          .then((res) => res.json())
-          .then((data) => {
-            if (data.error) {
-              setHistoryError(data.error);
-            } else {
-              setStationHistory(data.history);
-            }
-          })
-          .catch((e) => setHistoryError(e.message))
-          .finally(() => setLoadingHistory(false));
+        loadStationHistory(stationCode);
       }
     } catch (error) {
       setMarketDetailsError(
@@ -752,6 +758,27 @@ export function App() {
       setLoadingMarketDetails(false);
     }
   }
+
+  // Auto-refresh: station history every 2 min, forecast every 5 min
+  useEffect(() => {
+    if (!viewingMarketSlug || !marketDetails) return;
+
+    const stationCode = marketDetails.extractedData?.station_code;
+
+    const historyInterval = stationCode
+      ? setInterval(() => loadStationHistory(stationCode), 2 * 60 * 1000)
+      : null;
+
+    const forecastInterval = setInterval(
+      () => loadHourlyForecast(viewingMarketSlug),
+      5 * 60 * 1000,
+    );
+
+    return () => {
+      if (historyInterval) clearInterval(historyInterval);
+      clearInterval(forecastInterval);
+    };
+  }, [viewingMarketSlug, marketDetails]);
 
   function handleTabSwitch(nextTab: AppTab) {
     if (nextTab === activeTab) {
@@ -1239,25 +1266,37 @@ export function App() {
                               </tr>
                             </thead>
                             <tbody>
-                              {hourlyForecast
-                                ?.filter(p => {
-                                  const targetDay = marketDetails?.extractedData?.day;
-                                  return !targetDay || p.time.includes(targetDay);
-                                })
-                                .map((point, index) => (
-                                <tr key={index} style={{ opacity: new Date(point.time).getTime() < Date.now() ? 0.5 : 1 }}>
-                                  <td style={{ fontSize: "0.75rem" }}>
-                                    {new Date(point.time).toLocaleString("en-GB", {
-                                      hour: "2-digit",
-                                      minute: "2-digit",
-                                      hour12: false
-                                    })}
-                                  </td>
-                                  <td style={{ color: "var(--mint)", fontWeight: "600" }}>
-                                    {point.temp.toFixed(1)}
-                                  </td>
-                                </tr>
-                              ))}
+                              {(() => {
+                                const tz = marketDetails?.extractedData?.timezone || "UTC";
+                                const nowInCity = new Date().toLocaleString("en-CA", { timeZone: tz, hour12: false, hour: "2-digit", minute: "2-digit" });
+                                const currentHourStr = nowInCity.split(":")[0];
+                                const targetDay = marketDetails?.extractedData?.day;
+                                
+                                return hourlyForecast
+                                  ?.filter(p => !targetDay || p.time.includes(targetDay))
+                                  .filter(p => parseInt(p.time.slice(11, 13)) >= parseInt(currentHourStr))
+                                  .map((point, index) => {
+                                    const hourStr = point.time.slice(11, 13);
+                                    const isCurrent = hourStr === currentHourStr;
+                                    
+                                    return (
+                                      <tr 
+                                        key={index} 
+                                        style={{ 
+                                          background: isCurrent ? "rgba(0, 255, 163, 0.1)" : "transparent",
+                                          borderLeft: isCurrent ? "2px solid var(--mint)" : "2px solid transparent"
+                                        }}
+                                      >
+                                        <td style={{ fontSize: "0.75rem", fontWeight: isCurrent ? "700" : "400" }}>
+                                          {point.time.slice(11, 16)} {isCurrent ? "◀ now" : ""}
+                                        </td>
+                                        <td style={{ color: "var(--mint)", fontWeight: "600" }}>
+                                          {point.temp.toFixed(1)}
+                                        </td>
+                                      </tr>
+                                    );
+                                  });
+                              })()}
                               {!loadingHourly && (!hourlyForecast || hourlyForecast.length === 0) && (
                                 <tr>
                                   <td colSpan={2} style={{ textAlign: "center", padding: "20px", color: "var(--muted)" }}>

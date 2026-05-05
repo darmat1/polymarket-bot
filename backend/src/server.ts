@@ -23,7 +23,7 @@ import {
   forceRederiveApiCreds,
 } from "./runtime-auth.js";
 import { WebSocketServer } from "ws";
-import { initBotManager, activateBot, deactivateBot, getBotStatus, getAllActiveBots, getCachedWeather, type BotTask } from "./bot-manager.js";
+import { initBotManager, activateBot, deactivateBot, getBotStatus, getAllActiveBots, getOrFetchStationHistory, type BotTask } from "./bot-manager.js";
 import { getEventLog, clearEventLog, logEvent } from "./event-log.js";
 import { readFile } from "node:fs/promises";
 import { join, extname } from "node:path";
@@ -78,27 +78,8 @@ const server = createServer(async (req, res) => {
         return json(res, 400, { error: "Missing station parameter" });
       }
       try {
-        const cached = getCachedWeather(station);
-        
-        // Fetch fresh data from API
-        const metarUrl = `https://aviationweather.gov/api/data/metar?ids=${station}&format=json&hours=168`;
-        const metarRes = await fetch(metarUrl);
-        let apiData = [];
-        if (metarRes.ok) {
-          apiData = await metarRes.json();
-        }
-
-        // Merge and deduplicate
-        const merged = [...cached];
-        for (const obs of apiData) {
-          if (!merged.some(m => m.obsTime === obs.obsTime)) {
-            merged.push(obs);
-          }
-        }
-        // Sort by time descending
-        merged.sort((a, b) => b.obsTime - a.obsTime);
-
-        return json(res, 200, { history: merged });
+        const history = await getOrFetchStationHistory(station);
+        return json(res, 200, { history });
       } catch (err) {
         return json(res, 500, { error: err instanceof Error ? err.message : "Internal error" });
       }
