@@ -105,10 +105,24 @@ const STATIONS: WeatherStation[] = [
 
 export function matchWeatherStation(text: string): WeatherStation | null {
   const normalized = text.toLowerCase();
+  
+  // 1. Try to find a 4-letter station code in parentheses or as a word, e.g. (RJTT)
+  const stationMatch = text.match(/\b([A-Z]{4})\b/);
+  if (stationMatch) {
+    const code = stationMatch[1].toUpperCase();
+    const found = STATIONS.find(s => s.station === code);
+    if (found) return found;
+  }
+
   let bestMatch: WeatherStation | null = null;
   let bestAliasLength = -1;
 
   for (const station of STATIONS) {
+    // Check station code itself
+    if (normalized.includes(station.station.toLowerCase())) {
+       return station;
+    }
+
     for (const alias of station.aliases) {
       if (!normalized.includes(alias)) {
         continue;

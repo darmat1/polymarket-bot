@@ -11,6 +11,7 @@ export interface BotTask {
   outcome: string;    // "Yes" or "No"
   tokenId: string;
   active: boolean;
+  expectHigher?: boolean;
   lastPollTime?: number;
   logs: { timestamp: number; message: string; type: "info" | "warn" | "error" | "success" }[];
 }
@@ -150,8 +151,17 @@ async function pollSingleTask(marketSlug: string) {
 async function checkExitCondition(task: BotTask, currentTemp: number) {
   // currentTemp is already in the market's unit (C or F)
   // Logic: if Outcome is "No", we bet it WON'T reach targetTemp.
-  // If currentTemp >= targetTemp, we must SELL.
-  const isEmergency = task.outcome === "No" && currentTemp >= task.targetTemp;
+  // If currentTemp >= targetTemp, we must SELL, UNLESS expectHigher is true.
+  let isEmergency = task.outcome === "No" && currentTemp >= task.targetTemp;
+  
+  if (isEmergency && task.expectHigher) {
+    // If we expect higher, we only exit if the temp is SIGNIFICANTLY higher (e.g. 1 degree)
+    // or if the trend suggests it's going to stay in the losing zone.
+    // For now, let's just make it NOT exit if expectHigher is on, 
+    // effectively allowing the user to take the risk.
+    isEmergency = false; 
+    addBotLog(task.marketSlug, `Temp ${currentTemp.toFixed(1)} hit target, but 'Expect Higher' is ON. Holding...`, "info");
+  }
   const unitSymbol = task.tempUnit === "F" ? "°F" : "°C";
 
   if (isEmergency) {

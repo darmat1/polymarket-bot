@@ -50,6 +50,12 @@ export interface ForecastPoint {
   unit: "F" | "C";
 }
 
+export interface HourlyForecastPoint {
+  time: string; // ISO string
+  temp: number;
+  unit: "F" | "C";
+}
+
 export interface WeatherProbabilityResult {
   probability: number;
   blendedForecastHigh: number;

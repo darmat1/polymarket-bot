@@ -215,8 +215,11 @@ export function App() {
   };
 
   const [stationHistory, setStationHistory] = useState<any[] | null>(null);
+  const [hourlyForecast, setHourlyForecast] = useState<any[] | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [loadingHourly, setLoadingHourly] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [expectHigher, setExpectHigher] = useState(false);
 
   const viewingMarketSlugRef = useRef<string | null>(null);
   useEffect(() => {
@@ -464,6 +467,7 @@ export function App() {
             tempUnit: details.extractedData.t_sys ?? "C",
             outcome: pos.outcome,
             tokenId: pos.asset,
+            expectHigher: expectHigher,
           }),
         });
         if (slug === viewingMarketSlug) setBotActive(true);
@@ -591,6 +595,21 @@ export function App() {
     }
   }
 
+  async function loadHourlyForecast(slug: string) {
+    setLoadingHourly(true);
+    setHourlyForecast([]); // Clear previous to avoid showing stale data
+    try {
+      const res = await fetch(`/api/hourly-forecast?slug=${slug}&past_days=1`);
+      const data = await res.json();
+      setHourlyForecast(data.forecast ?? []);
+    } catch (err) {
+      console.error("Failed to load hourly forecast:", err);
+      setHourlyForecast([]);
+    } finally {
+      setLoadingHourly(false);
+    }
+  }
+
   async function loadAccountSummary() {
     try {
       const response = await fetch("/api/account-summary");
@@ -695,6 +714,7 @@ export function App() {
     setMarketDetailsError(null);
     setStationHistory(null);
     setHistoryError(null);
+    setHourlyForecast([]);
     try {
       const response = await fetch(`/api/market-details?slug=${slug}`);
       const payload = await response.json();
@@ -702,6 +722,9 @@ export function App() {
         throw new Error(payload.error ?? "Failed to load market details");
       }
       setMarketDetails(payload);
+
+      // Load hourly forecast
+      loadHourlyForecast(slug);
 
       const stationCode = payload.extractedData?.station_code;
       if (stationCode) {
@@ -895,6 +918,19 @@ export function App() {
                           {new Date(lastPollTime).toLocaleTimeString()} (Next in
                           ~5 min)
                         </span>
+                      )}
+                      {!botActive && (
+                        <label className="toggle-container">
+                          <div className="switch">
+                            <input 
+                              type="checkbox" 
+                              checked={expectHigher} 
+                              onChange={(e) => setExpectHigher(e.target.checked)}
+                            />
+                            <span className="slider"></span>
+                          </div>
+                          <span className="toggle-label">Expect higher temp (Hold through target)</span>
+                        </label>
                       )}
                       <button
                         type="button"
@@ -1147,64 +1183,104 @@ export function App() {
                     </p>
                   )}
                   {stationHistory && stationHistory.length > 0 && (
-                    <article
-                      className="market-history"
-                      style={{ marginTop: "20px" }}
-                    >
-                      <span
-                        style={{ color: "var(--muted)", fontSize: "0.82rem" }}
-                      >
-                        Station History (
-                        {marketDetails.extractedData.station_code})
-                      </span>
-                      <div
-                        className="positions-table-wrap"
-                        style={{ maxHeight: "250px", overflowY: "auto" }}
-                      >
-                        <table className="positions-table">
-                          <thead>
-                            <tr>
-                              <th>Date / Time</th>
-                              <th>Temp (°{marketDetails.extractedData.t_sys || "C"})</th>
-                              <th>Wind</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {stationHistory
-                              .filter((obs: any) => {
-                                const targetDayStr =
-                                  marketDetails.extractedData.day;
-                                if (!targetDayStr) return true;
-                                
-                                const tz = marketDetails.extractedData.timezone || "UTC";
-                                // Get YYYY-MM-DD in the station's timezone
-                                const obsDayStr = new Date(obs.obsTime * 1000).toLocaleDateString("en-CA", { timeZone: tz });
-                                
-                                // targetDayStr is already YYYY-MM-DD from AI
-                                return obsDayStr === targetDayStr;
-                              })
-                              .map((obs: any, index: number) => (
-                                <tr key={index}>
-                                  <td>
-                                    {new Date(obs.obsTime * 1000).toLocaleString("en-GB", { 
-                                      timeZone: marketDetails.extractedData.timezone || "UTC",
-                                      hour12: false 
+                    <div className="weather-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px", marginTop: "20px" }}>
+                      <article className="market-history">
+                        <span style={{ color: "var(--muted)", fontSize: "0.82rem" }}>
+                          Station History ({marketDetails.extractedData.station_code})
+                        </span>
+                        <div className="positions-table-wrap" style={{ maxHeight: "300px", overflowY: "auto" }}>
+                          <table className="positions-table">
+                            <thead>
+                              <tr>
+                                <th>Time</th>
+                                <th>Temp (°{marketDetails.extractedData.t_sys || "C"})</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {stationHistory
+                                .filter((obs: any) => {
+                                  const targetDayStr = marketDetails.extractedData.day;
+                                  if (!targetDayStr) return true;
+                                  const tz = marketDetails.extractedData.timezone || "UTC";
+                                  const obsDayStr = new Date(obs.obsTime * 1000).toLocaleDateString("en-CA", { timeZone: tz });
+                                  return obsDayStr === targetDayStr;
+                                })
+                                .map((obs: any, index: number) => (
+                                  <tr key={index}>
+                                    <td style={{ fontSize: "0.75rem" }}>
+                                      {new Date(obs.obsTime * 1000).toLocaleTimeString("en-GB", { 
+                                        timeZone: marketDetails.extractedData.timezone || "UTC",
+                                        hour: "2-digit", minute: "2-digit",
+                                        hour12: false 
+                                      })}
+                                    </td>
+                                    <td style={{ fontWeight: "600" }}>
+                                      {marketDetails.extractedData.t_sys === "F"
+                                        ? ((obs.temp * 9) / 5 + 32).toFixed(1)
+                                        : obs.temp}
+                                    </td>
+                                  </tr>
+                                ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </article>
+
+                      <article className="market-history forecast-panel">
+                        <span style={{ color: "var(--mint)", fontSize: "0.82rem" }}>
+                          Hourly Forecast (Open-Meteo)
+                        </span>
+                        <div className="positions-table-wrap" style={{ maxHeight: "300px", overflowY: "auto" }}>
+                          <table className="positions-table">
+                            <thead>
+                              <tr>
+                                <th>Time</th>
+                                <th>Forecast (°{marketDetails.extractedData.t_sys || "C"})</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {hourlyForecast
+                                ?.filter(p => {
+                                  const targetDay = marketDetails?.extractedData?.day;
+                                  return !targetDay || p.time.includes(targetDay);
+                                })
+                                .map((point, index) => (
+                                <tr key={index} style={{ opacity: new Date(point.time).getTime() < Date.now() ? 0.5 : 1 }}>
+                                  <td style={{ fontSize: "0.75rem" }}>
+                                    {new Date(point.time).toLocaleString("en-GB", {
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                      hour12: false
                                     })}
                                   </td>
-                                  <td>
-                                    {marketDetails.extractedData.t_sys === "F"
-                                      ? ((obs.temp * 9) / 5 + 32).toFixed(1)
-                                      : obs.temp}
-                                  </td>
-                                  <td>
-                                    {obs.wdir}° / {obs.wspd} kts
+                                  <td style={{ color: "var(--mint)", fontWeight: "600" }}>
+                                    {point.temp.toFixed(1)}
                                   </td>
                                 </tr>
                               ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </article>
+                              {!loadingHourly && (!hourlyForecast || hourlyForecast.length === 0) && (
+                                <tr>
+                                  <td colSpan={2} style={{ textAlign: "center", padding: "20px", color: "var(--muted)" }}>
+                                    No forecast data available from API
+                                  </td>
+                                </tr>
+                              )}
+                              {!loadingHourly && hourlyForecast && hourlyForecast.length > 0 && hourlyForecast.filter(p => p.time.includes(marketDetails?.extractedData?.day || "")).length === 0 && (
+                                <tr>
+                                  <td colSpan={2} style={{ textAlign: "center", padding: "10px", color: "var(--gold)", fontSize: "0.75rem" }}>
+                                    Found {hourlyForecast.length} points but none match {marketDetails?.extractedData?.day}. 
+                                    First point: {hourlyForecast[0]?.time}
+                                  </td>
+                                </tr>
+                              )}
+                              {loadingHourly && (
+                                <tr><td colSpan={2} style={{ textAlign: "center", padding: "20px", color: "var(--muted)" }}>Loading forecast...</td></tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </article>
+                    </div>
                   )}
                 </div>
               ) : null}

@@ -18,10 +18,7 @@ const MONTHS = new Map<string, number>([
 
 export function parseWeatherMarket(market: MarketSummary): ParsedWeatherMarket | null {
   const station = matchWeatherStation(`${market.question} ${market.slug}`);
-  if (!station) {
-    return null;
-  }
-
+  
   const bucket = parseTemperatureBucket(market.question);
   if (!bucket) {
     return null;
@@ -32,10 +29,14 @@ export function parseWeatherMarket(market: MarketSummary): ParsedWeatherMarket |
     return null;
   }
 
+  // Extract station code (e.g. RJTT)
+  const stationMatch = market.question.match(/\(([A-Z]{4})\)/) || market.question.match(/\b([A-Z]{4})\b/);
+  const stationCode = stationMatch ? stationMatch[1] : (station?.station || null);
+
   return {
-    cityKey: station.key,
-    cityLabel: station.label,
-    station: station.station,
+    cityKey: station?.key || stationCode?.toLowerCase() || "unknown",
+    cityLabel: station?.label || stationCode || "Unknown Station",
+    station: stationCode || "Unknown",
     targetDate,
     unit: bucket.unit,
     bucket: bucket.bucket,

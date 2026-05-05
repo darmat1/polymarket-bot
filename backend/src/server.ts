@@ -15,6 +15,7 @@ import {
   updateRuntimeAllowance,
   getMarketDetails,
   updateTokenAllowance,
+  getHourlyForecast,
 } from "./app.js";
 import {
   getRuntimeAuthState,
@@ -98,8 +99,22 @@ const server = createServer(async (req, res) => {
         merged.sort((a, b) => b.obsTime - a.obsTime);
 
         return json(res, 200, { history: merged });
-      } catch (err: any) {
-        return json(res, 500, { error: err.message });
+      } catch (err) {
+        return json(res, 500, { error: err instanceof Error ? err.message : "Internal error" });
+      }
+    }
+
+    if (requestUrl.pathname === "/api/hourly-forecast" && req.method === "GET") {
+      const slug = requestUrl.searchParams.get("slug");
+      console.log(`[API] GET /api/hourly-forecast slug=${slug}`);
+      if (!slug) {
+        return json(res, 400, { error: "Missing slug parameter" });
+      }
+      try {
+        const forecast = await getHourlyForecast(slug);
+        return json(res, 200, { forecast });
+      } catch (err) {
+        return json(res, 500, { error: err instanceof Error ? err.message : "Internal error" });
       }
     }
 

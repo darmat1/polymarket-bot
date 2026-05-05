@@ -11,8 +11,9 @@ import {
 import { getRuntimeAuthState, getRuntimeTradingClient, initializeRuntimeApiCreds } from "./runtime-auth.js";
 import { evaluateBinaryOutcome } from "./strategy.js";
 import { TradingClient } from "./trading.js";
-import { fetchForecastPoints } from "./weather/forecasts.js";
+import { fetchForecastPoints, fetchHourlyForecast } from "./weather/forecasts.js";
 import { parseWeatherMarket } from "./weather/parser.js";
+import { matchWeatherStation } from "./weather/stations.js";
 import { estimateWeatherProbability } from "./weather/probability.js";
 import { createPublicClient, erc20Abi, formatUnits, http } from "viem";
 import { polygon } from "viem/chains";
@@ -130,6 +131,36 @@ export async function searchEvents(options: SearchEventsOptions): Promise<Search
   }
 
   return (await gamma.searchEvents(search, limit)).filter((event) => event.active && !event.closed);
+}
+
+export async function getHourlyForecast(marketSlug: string) {
+  const settings = loadSettings();
+  const gamma = new GammaClient(settings.gammaHost);
+  const rawMarket = await gamma.getMarketBySlug(marketSlug);
+  const market = parseMarket(rawMarket);
+  if (!market) return [];
+
+  // Try standard parser first
+  const parsed = parseWeatherMarket(market);
+  if (parsed) {
+    return await fetchHourlyForecast(parsed);
+  }
+
+  // Fallback: just try to match station and date for visual forecast
+  const station = matchWeatherStation(`${market.question} ${market.slug}`);
+  if (station) {
+    const targetDate = market.endDateIso?.slice(0, 10) || new Date().toISOString().slice(0, 10);
+    return await fetchHourlyForecast({
+      cityKey: station.key,
+      cityLabel: station.label,
+      station: station.station,
+      targetDate,
+      unit: station.unit, // default to station unit
+      bucket: { kind: "exact", lowerInclusive: 0, upperInclusive: 0, label: "Visual" } // dummy bucket
+    });
+  }
+
+  return [];
 }
 
 export async function evaluateMarket(params: {
