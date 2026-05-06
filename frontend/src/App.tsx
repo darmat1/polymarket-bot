@@ -486,6 +486,7 @@ export function App() {
             outcome: pos.outcome,
             tokenId: pos.asset,
             expectHigher: expectHigher,
+            timezone: details.extractedData.timezone,
           }),
         });
         if (slug === viewingMarketSlug) setBotActive(true);
@@ -1086,7 +1087,7 @@ export function App() {
                     </div>
                   </div>
 
-                  {botActive && botLogs.length > 0 && (
+                  {botLogs.length > 0 && (
                     <div
                       style={{
                         backgroundColor: "rgba(0,0,0,0.2)",

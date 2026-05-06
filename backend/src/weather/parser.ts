@@ -16,30 +16,38 @@ const MONTHS = new Map<string, number>([
   ["december", 12],
 ]);
 
-export function parseWeatherMarket(market: MarketSummary): ParsedWeatherMarket | null {
+export function parseWeatherMarket(market: MarketSummary, extractedData?: any): ParsedWeatherMarket | null {
   const station = matchWeatherStation(`${market.question} ${market.slug}`);
   
   const bucket = parseTemperatureBucket(market.question);
-  if (!bucket) {
+  if (!bucket && !extractedData) {
     return null;
   }
 
-  const targetDate = parseTargetDate(market.question, market.endDateIso);
+  const targetDate = parseTargetDate(market.question, market.endDateIso) || (extractedData?.day);
   if (!targetDate) {
     return null;
   }
 
   // Extract station code (e.g. RJTT)
   const stationMatch = market.question.match(/\(([A-Z]{4})\)/) || market.question.match(/\b([A-Z]{4})\b/);
-  const stationCode = stationMatch ? stationMatch[1] : (station?.station || null);
+  const stationCode = extractedData?.station_code || stationMatch?.[1] || (station?.station || null);
+
+  const finalUnit = extractedData?.t_sys === "F" ? "F" : extractedData?.t_sys === "C" ? "C" : bucket?.unit || "C";
+  const finalBucket = bucket?.bucket || {
+    kind: "exact",
+    lowerInclusive: extractedData?.t,
+    upperInclusive: extractedData?.t,
+    label: `${extractedData?.t}°${finalUnit}`
+  };
 
   return {
     cityKey: station?.key || stationCode?.toLowerCase() || "unknown",
     cityLabel: station?.label || stationCode || "Unknown Station",
     station: stationCode || "Unknown",
     targetDate,
-    unit: bucket.unit,
-    bucket: bucket.bucket,
+    unit: finalUnit as "F" | "C",
+    bucket: finalBucket as TemperatureBucket,
   };
 }
 

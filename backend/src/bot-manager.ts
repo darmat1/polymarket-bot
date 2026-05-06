@@ -12,6 +12,7 @@ export interface BotTask {
   tokenId: string;
   active: boolean;
   expectHigher?: boolean;
+  timezone?: string;
   lastPollTime?: number;
   logs: { timestamp: number; message: string; type: "info" | "warn" | "error" | "success" }[];
 }
@@ -107,7 +108,11 @@ export function activateBot(task: BotTask) {
 }
 
 export function deactivateBot(marketSlug: string) {
-  activeTasks.delete(marketSlug);
+  const task = activeTasks.get(marketSlug);
+  if (task) {
+    task.active = false;
+    addBotLog(marketSlug, "Bot deactivated.", "info");
+  }
   console.log(`Bot deactivated for ${marketSlug}`);
 }
 
@@ -164,13 +169,28 @@ async function pollSingleTask(marketSlug: string) {
 
     addBotLog(marketSlug, `API returned ${data.length} items. Parsing for ${task.targetDate}...`, "info");
 
-    // Filter by target date
-    const targetDate = new Date(task.targetDate);
+    // Filter by target date using local timezone
     const dayData = data.filter(obs => {
-      const d = new Date(obs.obsTime * 1000);
-      return d.getUTCDate() === targetDate.getUTCDate() &&
-             d.getUTCMonth() === targetDate.getUTCMonth() &&
-             d.getUTCFullYear() === targetDate.getUTCFullYear();
+      try {
+        const d = new Date(obs.obsTime * 1000);
+        const formatter = new Intl.DateTimeFormat('en-CA', {
+          timeZone: task.timezone || 'UTC',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+        });
+        const parts = formatter.formatToParts(d);
+        const y = parts.find(p => p.type === 'year')?.value;
+        const m = parts.find(p => p.type === 'month')?.value;
+        const day = parts.find(p => p.type === 'day')?.value;
+        const localDateStr = `${y}-${m}-${day}`;
+        return localDateStr === task.targetDate;
+      } catch (e) {
+        // Fallback to UTC if timezone is invalid
+        const d = new Date(obs.obsTime * 1000);
+        const iso = d.toISOString().split('T')[0];
+        return iso === task.targetDate;
+      }
     });
 
     if (dayData.length === 0) {
@@ -195,7 +215,9 @@ async function pollSingleTask(marketSlug: string) {
       const tempF = (tempC * 9 / 5) + 32;
       const tempInMarketUnit = task.tempUnit === "F" ? tempF : tempC;
       
-      addBotLog(marketSlug, `Peak for today: ${tempC.toFixed(1)}°C / ${tempF.toFixed(1)}°F (Latest: ${new Date(dayData[0].obsTime * 1000).toLocaleTimeString()})`, "info");
+      const peakTime = new Date(peakObs.obsTime * 1000).toLocaleTimeString();
+      addBotLog(marketSlug, `Peak for today: ${tempC.toFixed(1)}°C / ${tempF.toFixed(1)}°F (Recorded at: ${peakTime})`, "info");
+      console.log(`[BotManager] ${marketSlug} peak temp ${tempC}°C found at ${peakTime} UTC`);
 
       // Broadcast to clients (use the peak observation for the UI)
       broadcast({
@@ -234,22 +256,28 @@ async function checkExitCondition(task: BotTask, currentTemp: number) {
     try {
       // 1. Get current position size
       const positions = await getOpenPositions();
-      addBotLog(task.marketSlug, `Found ${positions.positions.length} total open positions. Looking for ${task.marketSlug} outcome ${task.outcome}...`, "info");
+      addBotLog(task.marketSlug, `Checking exit condition. Found ${positions.positions.length} positions.`, "info");
       
       const pos = positions.positions.find(p => {
-        const slugMatch = p.slug === task.marketSlug;
-        // Case-insensitive match for outcome
-        const outcomeMatch = p.outcome?.toLowerCase() === task.outcome.toLowerCase();
-        return slugMatch && outcomeMatch;
+        const pSlug = (p.slug || "").toLowerCase();
+        const tSlug = (task.marketSlug || "").toLowerCase();
+        // Robust matching: either exact, or one contains the other
+        return pSlug === tSlug || pSlug.startsWith(tSlug) || tSlug.startsWith(pSlug) || p.eventSlug === tSlug;
       });
       
       if (!pos) {
-        addBotLog(task.marketSlug, `Could not find an active position for ${task.outcome}. (Available in API: ${positions.positions.map(p => `${p.slug}:${p.outcome}`).join(", ")})`, "warn");
+        // If we hit target but position is gone, it might have been sold manually or by another task
+        addBotLog(task.marketSlug, `Target hit, but no active position found for ${task.marketSlug}. Deactivating...`, "info");
+        deactivateBot(task.marketSlug);
         return;
       }
 
       if (typeof pos.size === "number" && pos.size > 0) {
-        const sizeToSell = Number(pos.size.toFixed(2));
+        // Prevent concurrent exit attempts for the same task
+        if ((task as any).isExiting) return;
+        (task as any).isExiting = true;
+
+        const sizeToSell = Math.floor(Number(pos.size) * 100) / 100;
         const tokenIdToSell = pos.asset || task.tokenId; // Use asset ID from position if available
         
         console.log(`Selling ${sizeToSell} shares of ${task.marketSlug} (${task.outcome}) | Token: ${tokenIdToSell}`);

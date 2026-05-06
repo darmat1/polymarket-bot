@@ -99,6 +99,66 @@ export interface RuntimeAuthDebugPayload {
   balance_allowance: unknown;
 }
 
+const extractionCache = new Map<string, { data: any; expires: number }>();
+const EXTRACTION_TTL = 30 * 60 * 1000; // 30 minutes
+
+export async function extractWeatherMarketData(question: string, description: string, slug?: string): Promise<any> {
+  const cacheKey = slug || question;
+  const now = Date.now();
+  const cached = extractionCache.get(cacheKey);
+  if (cached && cached.expires > now) {
+    return cached.data;
+  }
+
+  const settings = loadSettings();
+  if (!settings.groqApiKey) return null;
+
+  let extractedData = null;
+  try {
+    const prompt = `
+Extract weather market parameters in JSON format:
+{
+  "city": "string",
+  "timezone": "string (IANA format)",
+  "t": number (the target temperature value),
+  "t_sys": "C" or "F",
+  "day": "YYYY-MM-DD",
+  "station_code": "string (4-letter ICAO code, e.g. KJFK)"
+}
+
+Market Question: ${question}
+Market Description: ${description}
+Current Reference Time (UTC): ${new Date().toISOString()}
+    `;
+
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${settings.groqApiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0,
+        response_format: { type: "json_object" }
+      })
+    });
+
+    if (response.ok) {
+      const result = await response.json() as any;
+      const content = result.choices[0]?.message?.content;
+      if (content) {
+        extractedData = JSON.parse(content);
+        extractionCache.set(cacheKey, { data: extractedData, expires: now + EXTRACTION_TTL });
+      }
+    }
+  } catch (e) {
+    console.error("AI extraction failed", e);
+  }
+  return extractedData;
+}
+
 export async function scanMarkets(options: ScanMarketsOptions = {}): Promise<MarketSummary[]> {
   const settings = loadSettings();
   const gamma = new GammaClient(settings.gammaHost);
@@ -140,8 +200,10 @@ export async function getHourlyForecast(marketSlug: string) {
   const market = parseMarket(rawMarket);
   if (!market) return [];
 
+  const extractedData = await extractWeatherMarketData(market.question, market.description);
+
   // Try standard parser first
-  const parsed = parseWeatherMarket(market);
+  const parsed = parseWeatherMarket(market, extractedData);
   if (parsed) {
     return await fetchHourlyForecast(parsed);
   }
@@ -233,7 +295,8 @@ export async function evaluateMarket(params: {
 async function deriveWeatherProbability(
   market: MarketSummary,
 ): Promise<{ parsed: ParsedWeatherMarket; result: WeatherProbabilityResult; probability: number } | null> {
-  const parsed = parseWeatherMarket(market);
+  const extractedData = await extractWeatherMarketData(market.question, market.description);
+  const parsed = parseWeatherMarket(market, extractedData);
   if (!parsed) {
     return null;
   }
@@ -269,72 +332,17 @@ export async function getMarketDetails(slug: string) {
   const gamma = new GammaClient(settings.gammaHost);
   const rawMarket = await gamma.getMarketBySlug(slug);
 
-  if (!rawMarket) {
+  const market = parseMarket(rawMarket);
+  if (!market) {
     throw new Error("Market not found");
   }
 
-  let extractedData = null;
-  if (settings.groqApiKey && rawMarket.description && rawMarket.question) {
-    try {
-      const prompt = `
-Extract structured information from the following market data. The "Market Question" is the primary source for the temperature threshold and target date.
-Return ONLY a JSON object with the following schema, and no other text or formatting.
-{
-  "url": "<exact Event URL provided below>",
-  "res_source": "<resolution source url if available>",
-  "city": "<city name if applicable>",
-  "timezone": "<IANA timezone string for the city, e.g. 'America/Los_Angeles' or 'Europe/London'>",
-  "t": <numeric threshold temperature value. If a range is provided like '68-69', always use the LOWER value (68). Return as number, not string.>,
-  "t_sys": "<'C' or 'F' — detect from Question or Description: if either mentions 'Fahrenheit', '°F', or 'degrees F', use 'F'; otherwise use 'C'>",
-  "day": "<target date in YYYY-MM-DD format>",
-  "station_code": "<weather station code extracted by the following rules, in priority order:
-    1. If res_source contains 'weather.gov' and has a '?site=' query parameter, use that value (e.g. '?site=UUWW' → 'UUWW').
-    2. If res_source is a wunderground.com URL like 'https://www.wunderground.com/history/daily/us/ca/los-angeles/KLAX', use the LAST path segment (e.g. 'KLAX').
-    3. Otherwise null.>"
-}
-
-Market Question: ${rawMarket.question}
-Market Slug: ${rawMarket.slug}
-Event URL: https://polymarket.com/event/${Array.isArray(rawMarket.events) && rawMarket.events.length > 0 ? rawMarket.events[0].slug : rawMarket.slug}
-Market Description: ${rawMarket.description}
-Current Reference Time (UTC): ${new Date().toISOString()}
-      `;
-
-      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${settings.groqApiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0,
-          response_format: { type: "json_object" }
-        })
-      });
-
-      if (response.ok) {
-        const result = await response.json() as any;
-        const content = result.choices[0]?.message?.content;
-        if (content) {
-          extractedData = JSON.parse(content);
-        }
-        if (extractedData && (extractedData.t === null || extractedData.t === undefined)) {
-          console.warn(`[AI] Failed to extract target temperature for market: ${slug}`);
-        }
-      } else {
-        console.error("Groq API error", await response.text());
-      }
-    } catch (e) {
-      console.error("Failed to parse Groq response", e);
-    }
-  }
+  const extractedData = await extractWeatherMarketData(market.question, market.description, market.slug);
 
   return {
-    question: rawMarket.question,
-    description: rawMarket.description,
-    slug: rawMarket.slug,
+    question: market.question,
+    description: market.description,
+    slug: market.slug,
     extractedData
   };
 }
