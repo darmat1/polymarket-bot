@@ -466,7 +466,8 @@ export function App() {
           (p) => p.slug === slug,
         );
         if (activePositions.length === 0) {
-          addToast("warn", "No positions", "No open positions for this market. Buy some shares first.");
+          const availableSlugs = (positionsPayload?.positions || []).map(p => p.slug).join(", ");
+          addToast("warn", "No positions found", `Could not find an open position for slug: ${slug}. (Available in your portfolio: ${availableSlugs || 'none'})`);
           setBotLoading(false);
           return;
         }

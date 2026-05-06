@@ -94,12 +94,14 @@ export function initBotManager(serverWss: WebSocketServer) {
 }
 
 export function activateBot(task: BotTask) {
+  console.log(`[BotManager] Activating bot for ${task.marketSlug}:`, JSON.stringify(task, null, 2));
+  
   activeTasks.set(task.marketSlug, { 
     ...task, 
     active: true,
-    logs: [{ timestamp: Date.now(), message: "Bot activated", type: "success" }]
+    logs: [{ timestamp: Date.now(), message: `Bot activated for ${task.outcome} (Target: ${task.targetTemp}${task.tempUnit})`, type: "success" }]
   });
-  console.log(`Bot activated for ${task.marketSlug}`);
+  
   // Immediate poll for the newly activated task
   void pollSingleTask(task.marketSlug);
 }
