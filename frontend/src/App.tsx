@@ -88,7 +88,7 @@ type OpenPositionsPayload = {
   positions: PolymarketPositionRow[];
 };
 
-type AppTab = "weather" | "crypto" | "positions";
+type AppTab = "weather" | "crypto" | "positions" | "scanner";
 
 type EventLogEntry = {
   id: number;
@@ -97,6 +97,16 @@ type EventLogEntry = {
   type: "info" | "success" | "warn" | "error";
   trigger: "auto" | "manual";
   message: string;
+};
+
+type ScannerEvent = {
+  conditionId: string;
+  oracle: string;
+  questionId: string;
+  outcomeSlotCount: string;
+  txHash: string;
+  blockNumber: number;
+  timestamp: number;
 };
 
 type Toast = {
@@ -149,6 +159,8 @@ export function App() {
   const [marketDetailsError, setMarketDetailsError] = useState<string | null>(
     null,
   );
+  const [scannerEvents, setScannerEvents] = useState<ScannerEvent[]>([]);
+
   const [posSortField, setPosSortField] = useState<string>("value");
   const [posSortDir, setPosSortDir] = useState<"asc" | "desc">("desc");
 
@@ -369,6 +381,11 @@ export function App() {
             );
             void loadEventLog();
           }
+          if (msg.type === "scanner_event") {
+            setScannerEvents((prev) => [msg as ScannerEvent, ...prev].slice(0, 50));
+            addToast("info", "New Market Detected", `Condition: ${msg.conditionId.slice(0, 10)}...`);
+          }
+
         } catch (err) {
           console.error("WS message error", err);
         }
@@ -891,7 +908,100 @@ export function App() {
         </div>
       </header>
 
-      {activeTab === "positions" ? (
+      {!viewingMarketSlug && (
+        <nav style={{ padding: "0 30px", marginTop: "10px", display: "flex", gap: "10px" }}>
+          <button className={`button ${activeTab === "positions" ? "button-primary" : "button-secondary"}`} onClick={() => handleTabSwitch("positions")}>Positions</button>
+          {(import.meta as any).env?.VITE_TEST === "1" && (
+            <button className={`button ${activeTab === "scanner" as any ? "button-primary" : "button-secondary"}`} onClick={() => handleTabSwitch("scanner" as any)}>Scanner</button>
+          )}
+        </nav>
+      )}
+
+      {activeTab === "scanner" as any ? (
+        <main className="layout layout-single">
+          <section className="panel">
+            <div className="card">
+              <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                  <span className="badge badge-success">NEW FEATURE</span>
+                  <h2>Blockchain Scanner</h2>
+                </div>
+                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: "#10b981" }}>
+                    <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981", display: "inline-block" }}></span>
+                    Listener Active
+                  </div>
+                  <button 
+                    className="button button-secondary" 
+                    style={{ padding: "4px 10px", fontSize: "12px" }}
+                    onClick={() => {
+                      const mockEvent = {
+                        type: "scanner_event",
+                        conditionId: "0x" + Math.random().toString(16).slice(2, 66).padEnd(64, '0'),
+                        oracle: "0x4D97DCd97eC945f40cF65F87097CAe4B54fafa76",
+                        questionId: "0x" + Math.random().toString(16).slice(2, 66).padEnd(64, '0'),
+                        outcomeSlotCount: "2",
+                        txHash: "0x" + Math.random().toString(16).slice(2, 66).padEnd(64, '0'),
+                        blockNumber: 654321,
+                        timestamp: Date.now()
+                      };
+                      setScannerEvents(prev => [mockEvent as any, ...prev].slice(0, 50));
+                      addToast("success", "Test Event Generated", "Local mock event added to list.");
+                    }}
+                  >
+                    Test UI
+                  </button>
+                </div>
+              </div>
+              <div className="card-body">
+                <p style={{ marginBottom: "20px", color: "var(--text-muted)" }}>
+                  Real-time monitoring of the Polymarket CTF contract on Polygon. 
+                  Detecting new markets at the moment of creation.
+                </p>
+
+                {scannerEvents.length === 0 ? (
+                  <div style={{ textAlign: "center", padding: "40px", border: "1px dashed var(--border-color)", borderRadius: "12px" }}>
+                    <div style={{ fontSize: "24px", marginBottom: "10px" }}>📡</div>
+                    <div style={{ color: "var(--text-muted)" }}>Waiting for new market events from blockchain...</div>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                    {scannerEvents.map((ev, idx) => (
+                      <div key={idx} className="card" style={{ padding: "16px", border: "1px solid var(--border-color)", background: "rgba(255,255,255,0.02)" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
+                          <span style={{ fontWeight: "bold", color: "var(--primary-color)" }}>🔥 New Market Detected</span>
+                          <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>{new Date(ev.timestamp).toLocaleTimeString()}</span>
+                        </div>
+                        <div style={{ fontSize: "14px", display: "grid", gridTemplateColumns: "120px 1fr", gap: "8px" }}>
+                          <span style={{ color: "var(--text-muted)" }}>Condition ID:</span>
+                          <code style={{ background: "rgba(0,0,0,0.2)", padding: "2px 4px", borderRadius: "4px" }}>{ev.conditionId}</code>
+                          
+                          <span style={{ color: "var(--text-muted)" }}>Question ID:</span>
+                          <code style={{ background: "rgba(0,0,0,0.2)", padding: "2px 4px", borderRadius: "4px" }}>{ev.questionId}</code>
+
+                          <span style={{ color: "var(--text-muted)" }}>Tx Hash:</span>
+                          <a 
+                            href={`https://polygonscan.com/tx/${ev.txHash}`} 
+                            target="_blank" 
+                            rel="noreferrer" 
+                            style={{ color: "#3b82f6", textDecoration: "none" }}
+                          >
+                            {ev.txHash.slice(0, 20)}...
+                          </a>
+                        </div>
+                        <div style={{ marginTop: "12px", display: "flex", gap: "8px" }}>
+                          <span className="badge badge-info">Slots: {ev.outcomeSlotCount}</span>
+                          <span className="badge badge-secondary">Block: {ev.blockNumber}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        </main>
+      ) : activeTab === "positions" ? (
         <main className="layout layout-single">
           {viewingMarketSlug ? (
             <section className="panel positions-panel">

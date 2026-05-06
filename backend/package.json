@@ -9,7 +9,9 @@
     "cli": "tsx src/cli.ts",
     "serve": "node dist/server.js",
     "dev": "tsx src/server.ts",
-    "wallet:setup": "tsx scripts/setup-wallet.ts"
+    "wallet:setup": "tsx scripts/setup-wallet.ts",
+    "listen": "tsx src/blockchain-listener.ts",
+    "listen:prod": "node dist/blockchain-listener.js"
   },
   "dependencies": {
     "@polymarket/clob-client-v2": "^1.0.3",

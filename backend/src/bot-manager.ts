@@ -68,6 +68,26 @@ export async function getOrFetchStationHistory(stationCode: string): Promise<any
 
 export function initBotManager(serverWss: WebSocketServer) {
   wss = serverWss;
+
+  wss.on("connection", (ws) => {
+    ws.on("message", (data) => {
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === "scanner_event") {
+          // Broadcast to all clients
+          const payload = JSON.stringify(msg);
+          wss?.clients.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(payload);
+            }
+          });
+        }
+      } catch (e) {
+        // Not JSON or other error
+      }
+    });
+  });
+
   if (!pollInterval) {
     pollInterval = setInterval(pollActiveTasks, 2 * 60 * 1000); // 2 minutes
   }
@@ -140,32 +160,49 @@ async function pollSingleTask(marketSlug: string) {
       return;
     }
 
-    // Filter by target date (UTC comparison)
-    // Simplify: instead of strict date match, just take the latest observation if it's within 24h
-    const latestObs = data[0];
-    const obsAgeMs = Date.now() - (latestObs.obsTime * 1000);
-    const isRecent = obsAgeMs < 24 * 60 * 60 * 1000;
+    addBotLog(marketSlug, `API returned ${data.length} items. Parsing for ${task.targetDate}...`, "info");
 
-    addBotLog(marketSlug, `API returned ${data.length} items. Latest: ${new Date(latestObs.obsTime * 1000).toLocaleTimeString()}`, "info");
+    // Filter by target date
+    const targetDate = new Date(task.targetDate);
+    const dayData = data.filter(obs => {
+      const d = new Date(obs.obsTime * 1000);
+      return d.getUTCDate() === targetDate.getUTCDate() &&
+             d.getUTCMonth() === targetDate.getUTCMonth() &&
+             d.getUTCFullYear() === targetDate.getUTCFullYear();
+    });
 
-    if (isRecent) {
-      const latest = latestObs;
+    if (dayData.length === 0) {
+      addBotLog(marketSlug, `No data found for target date ${task.targetDate}. Waiting...`, "warn");
+      return;
+    }
 
-      const tempC: number = typeof latest.temp === "number" ? latest.temp : parseFloat(latest.temp);
+    // Find highest temperature of the day so far
+    let maxTempC = -Infinity;
+    let peakObs = dayData[0];
+
+    for (const obs of dayData) {
+      const t = typeof obs.temp === "number" ? obs.temp : parseFloat(obs.temp);
+      if (t > maxTempC) {
+        maxTempC = t;
+        peakObs = obs;
+      }
+    }
+
+    if (maxTempC !== -Infinity) {
+      const tempC = maxTempC;
       const tempF = (tempC * 9 / 5) + 32;
       const tempInMarketUnit = task.tempUnit === "F" ? tempF : tempC;
-      const unitSymbol = task.tempUnit === "F" ? "°F" : "°C";
+      
+      addBotLog(marketSlug, `Peak for today: ${tempC.toFixed(1)}°C / ${tempF.toFixed(1)}°F (Latest: ${new Date(dayData[0].obsTime * 1000).toLocaleTimeString()})`, "info");
 
-      addBotLog(marketSlug, `Temp check: ${tempC.toFixed(1)}°C / ${tempF.toFixed(1)}°F`, "info");
-
-      // Broadcast to clients
+      // Broadcast to clients (use the peak observation for the UI)
       broadcast({
         type: "weather_update",
         marketSlug,
-        observation: latest
+        observation: peakObs
       });
 
-      // Check exit condition using converted temperature
+      // Check exit condition using the peak temperature
       await checkExitCondition(task, tempInMarketUnit);
     }
   } catch (error) {
@@ -179,15 +216,13 @@ async function checkExitCondition(task: BotTask, currentTemp: number) {
   // currentTemp is already in the market's unit (C or F)
   // Logic: if Outcome is "No", we bet it WON'T reach targetTemp.
   // If currentTemp >= targetTemp, we must SELL, UNLESS expectHigher is true.
-  let isEmergency = task.outcome === "No" && currentTemp >= task.targetTemp;
+  // Simplify: if temp reaches target, we trigger the exit (sell).
+  let isEmergency = currentTemp >= task.targetTemp;
   
   if (isEmergency && task.expectHigher) {
-    // If we expect higher, we only exit if the temp is SIGNIFICANTLY higher (e.g. 1 degree)
-    // or if the trend suggests it's going to stay in the losing zone.
-    // For now, let's just make it NOT exit if expectHigher is on, 
-    // effectively allowing the user to take the risk.
+    // If 'Expect Higher' is ON, we don't sell yet.
     isEmergency = false; 
-    addBotLog(task.marketSlug, `Temp ${currentTemp.toFixed(1)} hit target, but 'Expect Higher' is ON. Holding...`, "info");
+    addBotLog(task.marketSlug, `Temp ${currentTemp.toFixed(1)} hit target, but 'Hold through target' is ON. Holding...`, "info");
   }
   const unitSymbol = task.tempUnit === "F" ? "°F" : "°C";
 
@@ -197,11 +232,25 @@ async function checkExitCondition(task: BotTask, currentTemp: number) {
     try {
       // 1. Get current position size
       const positions = await getOpenPositions();
-      const pos = positions.positions.find(p => p.slug === task.marketSlug && p.outcome === task.outcome);
+      addBotLog(task.marketSlug, `Found ${positions.positions.length} total open positions. Looking for ${task.marketSlug} outcome ${task.outcome}...`, "info");
       
-      if (pos && typeof pos.size === "number" && pos.size > 0) {
+      const pos = positions.positions.find(p => {
+        const slugMatch = p.slug === task.marketSlug;
+        // Case-insensitive match for outcome
+        const outcomeMatch = p.outcome?.toLowerCase() === task.outcome.toLowerCase();
+        return slugMatch && outcomeMatch;
+      });
+      
+      if (!pos) {
+        addBotLog(task.marketSlug, `Could not find an active position for ${task.outcome}. (Available in API: ${positions.positions.map(p => `${p.slug}:${p.outcome}`).join(", ")})`, "warn");
+        return;
+      }
+
+      if (typeof pos.size === "number" && pos.size > 0) {
         const sizeToSell = Number(pos.size.toFixed(2));
-        console.log(`Selling ${sizeToSell} shares of ${task.marketSlug} (${task.outcome})`);
+        const tokenIdToSell = pos.asset || task.tokenId; // Use asset ID from position if available
+        
+        console.log(`Selling ${sizeToSell} shares of ${task.marketSlug} (${task.outcome}) | Token: ${tokenIdToSell}`);
         
         const warnMsg = `EMERGENCY! Temp ${currentTemp.toFixed(1)}${unitSymbol} >= Target ${task.targetTemp}${unitSymbol}. Selling ${sizeToSell} shares...`;
         addBotLog(task.marketSlug, warnMsg, "warn");
@@ -209,7 +258,7 @@ async function checkExitCondition(task: BotTask, currentTemp: number) {
         
         // 2. Place sell order at a low price (e.g. 0.01) to exit immediately
         const sellResult: any = await placeLimitOrder({
-          tokenId: task.tokenId,
+          tokenId: tokenIdToSell,
           side: "sell",
           price: 0.01, // Market-like exit
           size: sizeToSell,
@@ -218,6 +267,11 @@ async function checkExitCondition(task: BotTask, currentTemp: number) {
         });
         
         console.log("Sell result:", sellResult);
+        
+        // IMPORTANT: Deactivate IMMEDIATELY after submission to prevent duplicate orders 
+        // in the next poll cycle if the position hasn't updated yet.
+        deactivateBot(task.marketSlug);
+
         const successMsg = `Emergency exit executed. Order: ${sellResult?.orderId || 'submitted'} | Size: ${sizeToSell} | Price: 0.01`;
         addBotLog(task.marketSlug, successMsg, "success");
         logEvent(task.marketSlug, successMsg, "success");
@@ -228,9 +282,6 @@ async function checkExitCondition(task: BotTask, currentTemp: number) {
           reason: `Temp ${currentTemp.toFixed(1)}${unitSymbol} hit target ${task.targetTemp}${unitSymbol}. Emergency sell executed.`,
           result: sellResult
         });
-        
-        // Deactivate task after exit
-        deactivateBot(task.marketSlug);
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);

@@ -12,3 +12,13 @@ services:
       - PORT=3001
       - NODE_ENV=production
     restart: unless-stopped
+  
+  listener:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: polymarket-listener
+    command: ["node", "backend/dist/blockchain-listener.js"]
+    env_file:
+      - backend/.env
+    restart: unless-stopped
