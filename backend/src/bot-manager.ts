@@ -1,6 +1,7 @@
 import { WebSocket, WebSocketServer } from "ws";
 import { getOpenPositions, placeLimitOrder } from "./app.js";
 import { logEvent } from "./event-log.js";
+import { matchWeatherStation } from "./weather/stations.js";
 
 export interface BotTask {
   marketSlug: string;
@@ -121,7 +122,9 @@ export function getBotStatus(marketSlug: string) {
 }
 
 export function getAllActiveBots() {
-  return Array.from(activeTasks.keys());
+  return Array.from(activeTasks.entries())
+    .filter(([_, task]) => task.active)
+    .map(([slug, _]) => slug);
 }
 
 function addBotLog(marketSlug: string, message: string, type: "info" | "warn" | "error" | "success" = "info") {
@@ -167,23 +170,25 @@ async function pollSingleTask(marketSlug: string) {
       return;
     }
 
-    addBotLog(marketSlug, `API returned ${data.length} items. Parsing for ${task.targetDate}...`, "info");
+    // Attempt to derive timezone if missing
+    if (!task.timezone) {
+      const matched = matchWeatherStation(task.stationCode);
+      if (matched?.timezone) {
+        task.timezone = matched.timezone;
+        console.log(`[BotManager] Derived timezone ${task.timezone} for station ${task.stationCode}`);
+      }
+    }
+
+    addBotLog(marketSlug, `API returned ${data.length} items. Parsing for ${task.targetDate} (TZ: ${task.timezone || 'UTC'})...`, "info");
 
     // Filter by target date using local timezone
     const dayData = data.filter(obs => {
       try {
+        const tz = task.timezone || 'UTC';
         const d = new Date(obs.obsTime * 1000);
-        const formatter = new Intl.DateTimeFormat('en-CA', {
-          timeZone: task.timezone || 'UTC',
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-        });
-        const parts = formatter.formatToParts(d);
-        const y = parts.find(p => p.type === 'year')?.value;
-        const m = parts.find(p => p.type === 'month')?.value;
-        const day = parts.find(p => p.type === 'day')?.value;
-        const localDateStr = `${y}-${m}-${day}`;
+        
+        // Robust way to get YYYY-MM-DD in the target timezone
+        const localDateStr = d.toLocaleDateString('en-CA', { timeZone: tz });
         return localDateStr === task.targetDate;
       } catch (e) {
         // Fallback to UTC if timezone is invalid
@@ -215,9 +220,17 @@ async function pollSingleTask(marketSlug: string) {
       const tempF = (tempC * 9 / 5) + 32;
       const tempInMarketUnit = task.tempUnit === "F" ? tempF : tempC;
       
-      const peakTime = new Date(peakObs.obsTime * 1000).toLocaleTimeString();
-      addBotLog(marketSlug, `Peak for today: ${tempC.toFixed(1)}°C / ${tempF.toFixed(1)}°F (Recorded at: ${peakTime})`, "info");
-      console.log(`[BotManager] ${marketSlug} peak temp ${tempC}°C found at ${peakTime} UTC`);
+      const tz = task.timezone || 'UTC';
+      const peakTimeStr = new Date(peakObs.obsTime * 1000).toLocaleTimeString('en-US', { 
+        timeZone: tz,
+        hour12: true,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+
+      addBotLog(marketSlug, `Peak for today: ${tempC.toFixed(1)}°C / ${tempF.toFixed(1)}°F (Recorded at: ${peakTimeStr} ${tz})`, "info");
+      console.log(`[BotManager] ${marketSlug} peak temp ${tempC}°C found at ${peakTimeStr} ${tz}`);
 
       // Broadcast to clients (use the peak observation for the UI)
       broadcast({

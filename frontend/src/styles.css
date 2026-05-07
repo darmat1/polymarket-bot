@@ -389,6 +389,42 @@ select {
   background: rgba(0, 0, 0, 0.18);
 }
 
+.positions-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 1580px) {
+  .positions-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.position-group {
+  margin-bottom: 12px;
+}
+
+.position-group-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--gold);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0.9;
+}
+
+.position-group-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
 .positions-table {
   width: 100%;
   border-collapse: collapse;
@@ -669,6 +705,9 @@ button.button-clear {
   font-weight: 700;
   letter-spacing: 0.04em;
   transition: background 150ms ease, transform 140ms ease, opacity 140ms ease;
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
 }
 
 .sell-btn:hover:not(:disabled) {

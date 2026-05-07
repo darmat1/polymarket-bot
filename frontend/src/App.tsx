@@ -208,6 +208,40 @@ export function App() {
     });
   }, [positionsPayload?.positions, activeBotSlugs, posSortField, posSortDir]);
 
+  const groupedPositions = useMemo(() => {
+    if (!sortedPositions.length) return [];
+    
+    const groupsMap: Record<string, PolymarketPositionRow[]> = {};
+    
+    sortedPositions.forEach(pos => {
+      let dateKey = "Unknown";
+      if (pos.endDate) {
+        try {
+          // Format as YYYY-MM-DD
+          dateKey = new Date(pos.endDate).toISOString().split('T')[0];
+        } catch (e) {
+          dateKey = pos.endDate;
+        }
+      }
+      if (!groupsMap[dateKey]) groupsMap[dateKey] = [];
+      groupsMap[dateKey].push(pos);
+    });
+
+    const today = new Date().toISOString().split('T')[0];
+    
+    return Object.entries(groupsMap)
+      .map(([date, positions]) => ({ date, positions }))
+      .sort((a, b) => {
+        if (a.date === "Unknown") return 1;
+        if (b.date === "Unknown") return -1;
+        
+        if (a.date === today) return -1;
+        if (b.date === today) return 1;
+        
+        return a.date.localeCompare(b.date);
+      });
+  }, [sortedPositions]);
+
   const toggleSort = (field: string) => {
     if (posSortField === field) {
       setPosSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
@@ -1477,7 +1511,7 @@ export function App() {
                     set; otherwise the signer EOA from your private key.
                   </p>
                 </div>
-              ) : positionsPayload.positions.length === 0 ? (
+              ) : sortedPositions.length === 0 ? (
                 <div className="empty-state">
                   <strong>No open positions</strong>
                   <p>
@@ -1486,169 +1520,187 @@ export function App() {
                   </p>
                 </div>
               ) : (
-                <div className="positions-table-wrap">
-                  <table className="positions-table">
-                    <thead>
-                      <tr>
-                        <th 
-                          style={{ width: "80px", cursor: "pointer" }}
-                          onClick={() => toggleSort("bot")}
-                        >
-                          Bot {renderSortIcon("bot")}
-                        </th>
-                        <th 
-                          style={{ cursor: "pointer" }}
-                          onClick={() => toggleSort("market")}
-                        >
-                          Market {renderSortIcon("market")}
-                        </th>
-                        <th 
-                          style={{ cursor: "pointer" }}
-                          onClick={() => toggleSort("avg")}
-                        >
-                          Avg → Now {renderSortIcon("avg")}
-                        </th>
-                        <th 
-                          style={{ cursor: "pointer" }}
-                          onClick={() => toggleSort("traded")}
-                        >
-                          Traded {renderSortIcon("traded")}
-                        </th>
-                        <th 
-                          style={{ cursor: "pointer" }}
-                          onClick={() => toggleSort("toWin")}
-                        >
-                          To Win {renderSortIcon("toWin")}
-                        </th>
-                        <th 
-                          style={{ cursor: "pointer" }}
-                          onClick={() => toggleSort("value")}
-                        >
-                          Value {renderSortIcon("value")}
-                        </th>
-                        <th 
-                          style={{ cursor: "pointer" }}
-                          onClick={() => toggleSort("ends")}
-                        >
-                          Ends {renderSortIcon("ends")}
-                        </th>
-                        <th style={{ width: "160px" }}>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sortedPositions.map((row, index) => {
-                        const key = `${row.conditionId ?? row.slug ?? "row"}-${row.outcome ?? ""}-${index}`;
-                        const isBotActive = !!(
-                          row.slug && activeBotSlugs.includes(row.slug)
-                        );
-                        return (
-                          <tr key={key}>
-                            <td>
-                              {isBotActive ? (
-                                <span className="status-badge on">
-                                  <span className="indicator-dot pulse" />
-                                  ON
-                                </span>
-                              ) : (
-                                <span className="status-badge off">
-                                  <span className="indicator-dot" />
-                                  OFF
-                                </span>
-                              )}
-                            </td>
-                            <td style={{ minWidth: "220px" }}>
-                              <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
-                                {row.icon ? (
-                                  <img 
-                                    src={row.icon} 
-                                    alt="" 
-                                    style={{ width: "32px", height: "32px", borderRadius: "4px", marginTop: "2px" }} 
-                                  />
-                                ) : (
-                                  <div style={{ width: "32px", height: "32px", borderRadius: "4px", backgroundColor: "rgba(255,255,255,0.05)", marginTop: "2px" }} />
-                                )}
-                                <div>
-                                  {row.slug ? (
-                                    <button
-                                      type="button"
-                                      className="positions-link button-clear"
-                                      style={{ fontWeight: "600", fontSize: "0.85rem", marginBottom: "4px", display: "block" }}
-                                      onClick={() => void loadMarketDetails(row.slug!)}
-                                    >
-                                      {row.title ?? row.slug ?? "—"}
-                                    </button>
-                                  ) : (
-                                    <span style={{ fontWeight: "600", fontSize: "0.85rem", marginBottom: "4px", display: "block" }}>
-                                      {row.title ?? row.slug ?? "—"}
-                                    </span>
-                                  )}
-                                  <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.75rem" }}>
-                                    <span style={{ 
-                                      padding: "2px 6px", 
-                                      borderRadius: "3px", 
-                                      backgroundColor: row.outcome === "Yes" ? "rgba(114, 221, 188, 0.12)" : "rgba(255, 141, 141, 0.12)",
-                                      color: row.outcome === "Yes" ? "var(--mint)" : "var(--rose)",
-                                      fontWeight: "bold"
-                                    }}>
-                                      {row.outcome} {row.avgPrice ? (row.avgPrice * 100).toFixed(0) : ""}¢
-                                    </span>
-                                    <span style={{ color: "var(--muted)" }}>
-                                      {formatPosNum(row.size)} shares
-                                    </span>
-                                  </div>
-                                </div>
-                              </div>
-                            </td>
-                            <td style={{ whiteSpace: "nowrap" }}>
-                              <span style={{ color: "var(--muted)" }}>
-                                {((row.avgPrice ?? 0) * 100).toFixed(0)}¢
-                              </span>
-                              <span style={{ margin: "0 6px", color: "var(--line)" }}>→</span>
-                              <span style={{ fontWeight: "600" }}>
-                                {((row.curPrice ?? 0) * 100).toFixed(0)}¢
-                              </span>
-                            </td>
-                            <td>${formatPosNum((row.size ?? 0) * (row.avgPrice ?? 0))}</td>
-                            <td>${formatPosNum(row.size)}</td>
-                            <td>
-                              <div style={{ fontWeight: "600" }}>${formatPosNum(row.currentValue)}</div>
-                              {row.cashPnl != null ? (
-                                <div
-                                  className={row.cashPnl >= 0 ? "pnl-pos" : "pnl-neg"}
-                                  style={{ fontSize: "0.75rem", marginTop: "2px" }}
+                <div className="positions-grid">
+                  {groupedPositions.map((group) => {
+                    const today = new Date().toISOString().split('T')[0];
+                    const isActual = group.date === today;
+                    
+                    return (
+                      <div key={group.date} className="position-group">
+                        <div className="position-group-title">
+                          {isActual ? "Actual Today" : group.date === "Unknown" ? "No Date" : group.date}
+                        </div>
+                        <div className="positions-table-wrap" style={{ marginTop: 0 }}>
+                          <table className="positions-table">
+                            <thead>
+                              <tr>
+                                <th 
+                                  style={{ width: "80px", cursor: "pointer" }}
+                                  onClick={() => toggleSort("bot")}
                                 >
-                                  {row.cashPnl >= 0 ? "+" : ""}
-                                  ${row.cashPnl.toFixed(2)}
-                                  {row.percentPnl != null
-                                    ? ` (${row.percentPnl >= 0 ? "+" : ""}${row.percentPnl.toFixed(1)}%)`
-                                    : ""}
-                                </div>
-                              ) : null}
-                            </td>
-                            <td className="positions-date">
-                              {row.endDate ? formatPosDate(row.endDate) : "—"}
-                            </td>
-                            <td>
-                              <div style={{ display: "flex", gap: "6px" }}>
-                                {row.slug ? (
-                                  <button
-                                    type="button"
-                                    className={`button button-small ${isBotActive ? "button-secondary" : "button-primary"}`}
-                                    style={{
-                                      padding: "4px 10px",
-                                      fontSize: "0.75rem",
-                                      minWidth: "60px",
-                                    }}
-                                    onClick={() =>
-                                      void toggleBotForSlug(
-                                        row.slug!,
-                                        isBotActive,
-                                      )
-                                    }
-                                    disabled={botLoading}
-                                  >
-                                    {isBotActive ? "Stop" : "Start"}
-                                  </button>
+                                  Bot {renderSortIcon("bot")}
+                                </th>
+                                <th 
+                                  style={{ cursor: "pointer" }}
+                                  onClick={() => toggleSort("market")}
+                                >
+                                  Market {renderSortIcon("market")}
+                                </th>
+                                <th 
+                                  style={{ cursor: "pointer" }}
+                                  onClick={() => toggleSort("avg")}
+                                >
+                                  Avg → Now {renderSortIcon("avg")}
+                                </th>
+                                <th 
+                                  style={{ cursor: "pointer" }}
+                                  onClick={() => toggleSort("traded")}
+                                >
+                                  Traded {renderSortIcon("traded")}
+                                </th>
+                                <th 
+                                  style={{ cursor: "pointer" }}
+                                  onClick={() => toggleSort("toWin")}
+                                >
+                                  To Win {renderSortIcon("toWin")}
+                                </th>
+                                <th 
+                                  style={{ cursor: "pointer" }}
+                                  onClick={() => toggleSort("value")}
+                                >
+                                  Value {renderSortIcon("value")}
+                                </th>
+                                <th 
+                                  style={{ cursor: "pointer" }}
+                                  onClick={() => toggleSort("ends")}
+                                >
+                                  Ends {renderSortIcon("ends")}
+                                </th>
+                                <th style={{ width: "80px" }}>Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {group.positions.map((row, index) => {
+                                const key = `${row.conditionId ?? row.slug ?? "row"}-${row.outcome ?? ""}-${index}`;
+                                const isBotActive = !!(
+                                  row.slug && activeBotSlugs.includes(row.slug)
+                                );
+                                return (
+                                  <tr key={key}>
+                                    <td>
+                                      {isBotActive ? (
+                                        <span className="status-badge on">
+                                          <span className="indicator-dot pulse" />
+                                          ON
+                                        </span>
+                                      ) : (
+                                        <span className="status-badge off">
+                                          <span className="indicator-dot" />
+                                          OFF
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td style={{ minWidth: "220px" }}>
+                                      <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                                        {row.icon ? (
+                                          <img 
+                                            src={row.icon} 
+                                            alt="" 
+                                            style={{ width: "32px", height: "32px", borderRadius: "4px", marginTop: "2px" }} 
+                                          />
+                                        ) : (
+                                          <div style={{ width: "32px", height: "32px", borderRadius: "4px", backgroundColor: "rgba(255,255,255,0.05)", marginTop: "2px" }} />
+                                        )}
+                                        <div>
+                                          {row.slug ? (
+                                            <button
+                                              type="button"
+                                              className="positions-link button-clear"
+                                              style={{ fontWeight: "600", fontSize: "0.85rem", marginBottom: "4px", display: "block" }}
+                                              onClick={() => void loadMarketDetails(row.slug!)}
+                                            >
+                                              {row.title ?? row.slug ?? "—"}
+                                            </button>
+                                          ) : (
+                                            <span style={{ fontWeight: "600", fontSize: "0.85rem", marginBottom: "4px", display: "block" }}>
+                                              {row.title ?? row.slug ?? "—"}
+                                            </span>
+                                          )}
+                                          <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.75rem" }}>
+                                            <span style={{ 
+                                              padding: "2px 6px", 
+                                              borderRadius: "3px", 
+                                              backgroundColor: row.outcome === "Yes" ? "rgba(114, 221, 188, 0.12)" : "rgba(255, 141, 141, 0.12)",
+                                              color: row.outcome === "Yes" ? "var(--mint)" : "var(--rose)",
+                                              fontWeight: "bold"
+                                            }}>
+                                              {row.outcome} {row.avgPrice ? (row.avgPrice * 100).toFixed(0) : ""}¢
+                                            </span>
+                                            <span style={{ color: "var(--muted)" }}>
+                                              {formatPosNum(row.size)} shares
+                                            </span>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </td>
+                                    <td style={{ whiteSpace: "nowrap" }}>
+                                      <span style={{ color: "var(--muted)" }}>
+                                        {((row.avgPrice ?? 0) * 100).toFixed(0)}¢
+                                      </span>
+                                      <span style={{ margin: "0 6px", color: "var(--line)" }}>→</span>
+                                      <span style={{ fontWeight: "600" }}>
+                                        {((row.curPrice ?? 0) * 100).toFixed(0)}¢
+                                      </span>
+                                    </td>
+                                    <td>${formatPosNum((row.size ?? 0) * (row.avgPrice ?? 0))}</td>
+                                    <td>${formatPosNum(row.size)}</td>
+                                    <td>
+                                      <div style={{ fontWeight: "600" }}>${formatPosNum(row.currentValue)}</div>
+                                      {row.cashPnl != null ? (
+                                        <div
+                                          className={row.cashPnl >= 0 ? "pnl-pos" : "pnl-neg"}
+                                          style={{ fontSize: "0.75rem", marginTop: "2px" }}
+                                        >
+                                          {row.cashPnl >= 0 ? "+" : ""}
+                                          ${row.cashPnl.toFixed(2)}
+                                          {row.percentPnl != null
+                                            ? ` (${row.percentPnl >= 0 ? "+" : ""}${row.percentPnl.toFixed(1)}%)`
+                                            : ""}
+                                        </div>
+                                      ) : null}
+                                    </td>
+                                    <td className="positions-date" style={{ whiteSpace: "normal", minWidth: "90px" }}>
+                                      {row.endDate ? (
+                                        <div style={{ lineHeight: "1.2" }}>
+                                          {formatPosDate(row.endDate).split(", ").map((part, i) => (
+                                            <div key={i} style={i === 1 ? { fontSize: "0.7rem", opacity: 0.7, marginTop: "2px" } : {}}>
+                                              {part}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      ) : "—"}
+                                    </td>
+                                    <td style={{ width: "80px", position: "relative" }}>
+                                      <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                        {row.slug ? (
+                                          <button
+                                            type="button"
+                                            className={`button button-small ${isBotActive ? "button-secondary" : "button-primary"}`}
+                                            style={{
+                                              padding: "4px 10px",
+                                              fontSize: "0.75rem",
+                                              minWidth: "60px",
+                                            }}
+                                            onClick={() =>
+                                              void toggleBotForSlug(
+                                                row.slug!,
+                                                isBotActive,
+                                              )
+                                            }
+                                            disabled={botLoading}
+                                          >
+                                            {isBotActive ? "Stop" : "Start"}
+                                          </button>
                                 ) : null}
                                 {row.asset ? (
                                   <button
@@ -1677,7 +1729,11 @@ export function App() {
                     </tbody>
                   </table>
                 </div>
-              )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
             </section>
           )}
 

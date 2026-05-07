@@ -22,6 +22,16 @@ const STATIONS: WeatherStation[] = [
     aliases: ["new york", "nyc", "central park"],
   },
   {
+    key: "laguardia",
+    label: "LaGuardia Airport",
+    station: "KLGA",
+    latitude: 40.7769,
+    longitude: -73.874,
+    unit: "F",
+    timezone: "America/New_York",
+    aliases: ["laguardia", "lga"],
+  },
+  {
     key: "singapore",
     label: "Singapore",
     station: "WSSS",
