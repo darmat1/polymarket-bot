@@ -61,8 +61,10 @@ export interface EvaluatedMarketPayload {
 export interface AccountSummaryPayload {
   address: string | null;
   usdc_balance: string | null;
+  available_to_trade: string | null;
+  portfolio_value: string | null;
   dry_run: boolean;
-  source: "wallet-usdc";
+  source: "polymarket-account";
 }
 
 const POLYMARKET_DATA_API = "https://data-api.polymarket.com";
@@ -367,8 +369,10 @@ export async function getAccountSummary(): Promise<AccountSummaryPayload> {
     return {
       address: null,
       usdc_balance: null,
+      available_to_trade: null,
+      portfolio_value: null,
       dry_run: settings.dryRun,
-      source: "wallet-usdc",
+      source: "polymarket-account",
     };
   }
 
@@ -388,33 +392,78 @@ export async function getAccountSummary(): Promise<AccountSummaryPayload> {
     args: [accountAddress as `0x${string}`],
   });
 
+  const { user } = resolvePolymarketUser(settings);
+  let availableToTrade: string | null = null;
+  let portfolioValue: string | null = null;
+
+  try {
+    const runtimeClient = await getRuntimeTradingClient();
+    const balanceAllowance = await runtimeClient.getBalanceAllowance();
+    availableToTrade = formatUsdcMicro(balanceAllowance?.balance);
+  } catch {
+    availableToTrade = null;
+  }
+
+  try {
+    const positions = await fetchOpenPositions(user);
+    const positionsValue = positions.reduce(
+      (sum, row) => sum + (typeof row.currentValue === "number" ? row.currentValue : 0),
+      0,
+    );
+    portfolioValue = (
+      (availableToTrade === null ? 0 : Number(availableToTrade)) + positionsValue
+    ).toFixed(2);
+  } catch {
+    portfolioValue = availableToTrade;
+  }
+
   return {
-    address: accountAddress,
+    address: user,
     usdc_balance: formatUnits(balance, 6),
+    available_to_trade: availableToTrade,
+    portfolio_value: portfolioValue,
     dry_run: settings.dryRun,
-    source: "wallet-usdc",
+    source: "polymarket-account",
   };
 }
 
 export async function getOpenPositions(): Promise<OpenPositionsPayload> {
   const settings = loadSettings();
-  const funder = settings.funderAddress?.trim();
-  let user: string;
-  let wallet_source: "funder" | "eoa";
-
-  if (funder) {
-    user = funder;
-    wallet_source = "funder";
-  } else if (settings.privateKey) {
-    const normalized = settings.privateKey.startsWith("0x")
-      ? settings.privateKey
-      : `0x${settings.privateKey}`;
-    user = new ethers.Wallet(normalized).address;
-    wallet_source = "eoa";
-  } else {
+  if (!settings.privateKey && !settings.funderAddress?.trim()) {
     return { user: null, wallet_source: null, positions: [] };
   }
 
+  const { user, wallet_source } = resolvePolymarketUser(settings);
+  const positions = await fetchOpenPositions(user);
+
+  return { user, wallet_source, positions };
+}
+
+function resolvePolymarketUser(settings: ReturnType<typeof loadSettings>): {
+  user: string;
+  wallet_source: "funder" | "eoa";
+} {
+  const funder = settings.funderAddress?.trim();
+
+  if (funder) {
+    return { user: funder, wallet_source: "funder" };
+  }
+
+  if (!settings.privateKey) {
+    throw new Error("Private key not configured");
+  }
+
+  const normalized = settings.privateKey.startsWith("0x")
+    ? settings.privateKey
+    : `0x${settings.privateKey}`;
+
+  return {
+    user: new ethers.Wallet(normalized).address,
+    wallet_source: "eoa",
+  };
+}
+
+async function fetchOpenPositions(user: string): Promise<PolymarketPositionRow[]> {
   const url = new URL("/positions", POLYMARKET_DATA_API);
   url.searchParams.set("user", user);
   url.searchParams.set("sizeThreshold", "0");
@@ -437,9 +486,19 @@ export async function getOpenPositions(): Promise<OpenPositionsPayload> {
   }
 
   const rows = (await res.json()) as PolymarketPositionRow[];
-  const positions = rows.filter((row) => typeof row.size === "number" && row.size > 0);
+  return rows.filter((row) => typeof row.size === "number" && row.size > 0);
+}
 
-  return { user, wallet_source, positions };
+function formatUsdcMicro(value: unknown): string | null {
+  if (typeof value !== "string" && typeof value !== "number" && typeof value !== "bigint") {
+    return null;
+  }
+
+  try {
+    return formatUnits(BigInt(value), 6);
+  } catch {
+    return null;
+  }
 }
 
 export async function getRuntimeAuthDebug(): Promise<RuntimeAuthDebugPayload> {
