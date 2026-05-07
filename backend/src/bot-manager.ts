@@ -32,8 +32,8 @@ export async function getOrFetchStationHistory(stationCode: string): Promise<any
   const lastFetched = weatherLastFetched.get(stationCode) || 0;
   let cached = weatherCache.get(stationCode) || [];
 
-  // If fetched in the last 120 seconds and we have data, use cache to prevent API spam
-  if (now - lastFetched < 120 * 1000 && cached.length > 0) {
+  // If fetched in the last 60 seconds and we have data, use cache to prevent API spam
+  if (now - lastFetched < 60 * 1000 && cached.length > 0) {
     return cached;
   }
 
@@ -91,7 +91,7 @@ export function initBotManager(serverWss: WebSocketServer) {
   });
 
   if (!pollInterval) {
-    pollInterval = setInterval(pollActiveTasks, 2 * 60 * 1000); // 2 minutes
+    pollInterval = setInterval(pollActiveTasks, 65 * 1000); // 65 seconds
   }
 }
 

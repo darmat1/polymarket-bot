@@ -88,7 +88,39 @@ type OpenPositionsPayload = {
   positions: PolymarketPositionRow[];
 };
 
-type AppTab = "weather" | "crypto" | "positions" | "scanner";
+type UserWebSocketAuthPayload = {
+  available: boolean;
+  source: "derived" | "env-fallback" | "unavailable";
+  auth: {
+    apiKey: string;
+    secret: string;
+    passphrase: string;
+  } | null;
+  key_preview: string | null;
+  passphrase_preview: string | null;
+  last_error: string | null;
+};
+
+type UserWsConnectionState =
+  | "idle"
+  | "loading-auth"
+  | "ready"
+  | "connecting"
+  | "connected"
+  | "error";
+
+type UserWsLogEntry = {
+  id: number;
+  timestamp: number;
+  direction: "in" | "out" | "system";
+  eventType: string;
+  summary: string;
+  market: string | null;
+  status: string | null;
+  raw: string;
+};
+
+type AppTab = "weather" | "crypto" | "positions" | "scanner" | "userws";
 
 type EventLogEntry = {
   id: number;
@@ -160,6 +192,18 @@ export function App() {
     null,
   );
   const [scannerEvents, setScannerEvents] = useState<ScannerEvent[]>([]);
+  const [userWsAuth, setUserWsAuth] = useState<UserWebSocketAuthPayload | null>(null);
+  const [userWsState, setUserWsState] = useState<UserWsConnectionState>("idle");
+  const [userWsError, setUserWsError] = useState<string | null>(null);
+  const [userWsSelectedMarkets, setUserWsSelectedMarkets] = useState<string[]>([]);
+  const [userWsDraftMarket, setUserWsDraftMarket] = useState("");
+  const [userWsLogs, setUserWsLogs] = useState<UserWsLogEntry[]>([]);
+  const [userWsEventCounts, setUserWsEventCounts] = useState<Record<string, number>>({});
+  const [userWsLastMessageAt, setUserWsLastMessageAt] = useState<number | null>(null);
+  const [userWsPongAt, setUserWsPongAt] = useState<number | null>(null);
+  const userWsRef = useRef<WebSocket | null>(null);
+  const userWsPingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const userWsLogIdRef = useRef(0);
 
   const [posSortField, setPosSortField] = useState<string>("value");
   const [posSortDir, setPosSortDir] = useState<"asc" | "desc">("desc");
@@ -326,6 +370,32 @@ export function App() {
       setTimeout(() => {
         setToasts((prev) => prev.filter((t) => t.id !== id));
       }, ttl);
+    },
+    [],
+  );
+
+  const appendUserWsLog = useCallback(
+    (
+      direction: UserWsLogEntry["direction"],
+      eventType: string,
+      summary: string,
+      raw: string,
+      options?: { market?: string | null; status?: string | null },
+    ) => {
+      const id = ++userWsLogIdRef.current;
+      setUserWsLogs((prev) => [
+        {
+          id,
+          timestamp: Date.now(),
+          direction,
+          eventType,
+          summary,
+          market: options?.market ?? null,
+          status: options?.status ?? null,
+          raw,
+        },
+        ...prev,
+      ].slice(0, 200));
     },
     [],
   );
@@ -577,6 +647,26 @@ export function App() {
       void loadPositions();
     }
   }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab === "userws" && userWsState === "idle") {
+      void loadUserWsAuth();
+    }
+  }, [activeTab, userWsState]);
+
+  useEffect(() => {
+    return () => {
+      cleanupUserWsHeartbeat();
+      if (userWsRef.current) {
+        userWsRef.current.onopen = null;
+        userWsRef.current.onmessage = null;
+        userWsRef.current.onerror = null;
+        userWsRef.current.onclose = null;
+        userWsRef.current.close();
+        userWsRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!selectedEvent) {
@@ -867,6 +957,186 @@ export function App() {
     }
   }
 
+  async function loadUserWsAuth() {
+    setUserWsState("loading-auth");
+    setUserWsError(null);
+    try {
+      const res = await fetch("/api/user-ws-auth");
+      const payload = (await res.json()) as UserWebSocketAuthPayload & {
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(payload.error ?? "Failed to load user websocket auth");
+      }
+      setUserWsAuth(payload);
+      setUserWsState(payload.available ? "ready" : "error");
+      if (!payload.available) {
+        setUserWsError(payload.last_error ?? "User WebSocket auth is unavailable");
+      }
+    } catch (error) {
+      setUserWsAuth(null);
+      setUserWsState("error");
+      setUserWsError(
+        error instanceof Error ? error.message : "Failed to load user websocket auth",
+      );
+    }
+  }
+
+  function cleanupUserWsHeartbeat() {
+    if (userWsPingIntervalRef.current) {
+      clearInterval(userWsPingIntervalRef.current);
+      userWsPingIntervalRef.current = null;
+    }
+  }
+
+  function disconnectUserWs(options?: { silent?: boolean }) {
+    cleanupUserWsHeartbeat();
+    const ws = userWsRef.current;
+    userWsRef.current = null;
+    if (ws) {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+      ws.close();
+    }
+    setUserWsState(userWsAuth?.available ? "ready" : "idle");
+    if (!options?.silent) {
+      appendUserWsLog("system", "disconnect", "Disconnected from user channel", "disconnect");
+    }
+  }
+
+  function summarizeUserWsMessage(data: Record<string, unknown>) {
+    const eventType = typeof data.event_type === "string" ? data.event_type : "message";
+    const status = typeof data.status === "string" ? data.status : null;
+    const market = typeof data.market === "string" ? data.market : null;
+    if (eventType === "order") {
+      const side = typeof data.side === "string" ? data.side : "?";
+      const price = typeof data.price === "string" ? data.price : "?";
+      const size = typeof data.original_size === "string" ? data.original_size : "?";
+      const type = typeof data.type === "string" ? data.type : "UPDATE";
+      return {
+        eventType,
+        summary: `${type} ${side} ${size} @ ${price}`,
+        market,
+        status,
+      };
+    }
+    if (eventType === "trade") {
+      const side = typeof data.side === "string" ? data.side : "?";
+      const price = typeof data.price === "string" ? data.price : "?";
+      const size = typeof data.size === "string" ? data.size : "?";
+      return {
+        eventType,
+        summary: `${side} ${size} @ ${price}`,
+        market,
+        status,
+      };
+    }
+    return {
+      eventType,
+      summary: status ? `${eventType} (${status})` : eventType,
+      market,
+      status,
+    };
+  }
+
+  function connectUserWs() {
+    if (!userWsAuth?.available || !userWsAuth.auth) {
+      setUserWsError("User WebSocket auth is unavailable");
+      setUserWsState("error");
+      return;
+    }
+
+    disconnectUserWs({ silent: true });
+    setUserWsError(null);
+    setUserWsState("connecting");
+
+    const ws = new WebSocket("wss://ws-subscriptions-clob.polymarket.com/ws/user");
+    userWsRef.current = ws;
+
+    ws.onopen = () => {
+      const subscription = {
+        auth: userWsAuth.auth,
+        type: "user",
+        ...(userWsSelectedMarkets.length > 0
+          ? { markets: userWsSelectedMarkets }
+          : {}),
+      };
+      ws.send(JSON.stringify(subscription));
+      appendUserWsLog(
+        "out",
+        "subscribe",
+        userWsSelectedMarkets.length > 0
+          ? `Subscribed to ${userWsSelectedMarkets.length} market(s)`
+          : "Subscribed to all markets",
+        JSON.stringify(subscription, null, 2),
+      );
+      setUserWsState("connected");
+      userWsPingIntervalRef.current = setInterval(() => {
+        if (userWsRef.current?.readyState === WebSocket.OPEN) {
+          userWsRef.current.send("PING");
+          appendUserWsLog("out", "PING", "Heartbeat sent", "PING");
+        }
+      }, 10_000);
+    };
+
+    ws.onmessage = (event) => {
+      const raw = typeof event.data === "string" ? event.data : String(event.data);
+      setUserWsLastMessageAt(Date.now());
+
+      if (raw === "PONG") {
+        setUserWsPongAt(Date.now());
+        appendUserWsLog("in", "PONG", "Heartbeat acknowledged", raw);
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        const summary = summarizeUserWsMessage(parsed);
+        setUserWsEventCounts((prev) => ({
+          ...prev,
+          [summary.eventType]: (prev[summary.eventType] ?? 0) + 1,
+        }));
+        appendUserWsLog(
+          "in",
+          summary.eventType,
+          summary.summary,
+          JSON.stringify(parsed, null, 2),
+          { market: summary.market, status: summary.status },
+        );
+      } catch {
+        appendUserWsLog("in", "raw", raw, raw);
+      }
+    };
+
+    ws.onerror = () => {
+      setUserWsError("User WebSocket connection error");
+      setUserWsState("error");
+      appendUserWsLog("system", "error", "WebSocket transport error", "error");
+    };
+
+    ws.onclose = () => {
+      cleanupUserWsHeartbeat();
+      userWsRef.current = null;
+      setUserWsState(userWsAuth?.available ? "ready" : "idle");
+      appendUserWsLog("system", "close", "Connection closed", "close");
+    };
+  }
+
+  function addUserWsMarket() {
+    const next = userWsDraftMarket.trim();
+    if (!next) {
+      return;
+    }
+    setUserWsSelectedMarkets((prev) => (prev.includes(next) ? prev : [...prev, next]));
+    setUserWsDraftMarket("");
+  }
+
+  function removeUserWsMarket(market: string) {
+    setUserWsSelectedMarkets((prev) => prev.filter((item) => item !== market));
+  }
+
   return (
     <div className="shell">
       {/* ── Toast stack ── */}
@@ -947,6 +1217,7 @@ export function App() {
       {!viewingMarketSlug && (
         <nav style={{ padding: "0 30px", marginTop: "10px", display: "flex", gap: "10px" }}>
           <button className={`button ${activeTab === "positions" ? "button-primary" : "button-secondary"}`} onClick={() => handleTabSwitch("positions")}>Positions</button>
+          <button className={`button ${activeTab === "userws" ? "button-primary" : "button-secondary"}`} onClick={() => handleTabSwitch("userws")}>User WS</button>
           {(import.meta as any).env?.VITE_TEST === "1" && (
             <button className={`button ${activeTab === "scanner" as any ? "button-primary" : "button-secondary"}`} onClick={() => handleTabSwitch("scanner" as any)}>Scanner</button>
           )}
@@ -1035,6 +1306,201 @@ export function App() {
                 )}
               </div>
             </div>
+          </section>
+        </main>
+      ) : activeTab === "userws" ? (
+        <main className="layout layout-single">
+          <section className="panel user-ws-panel">
+            <div className="panel-head">
+              <div>
+                <p className="section-kicker">Polymarket User Channel</p>
+                <h2>User WebSocket Console</h2>
+              </div>
+              <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                <span className={`user-ws-state user-ws-state-${userWsState}`}>
+                  {userWsState}
+                </span>
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={() => void loadUserWsAuth()}
+                  disabled={userWsState === "loading-auth"}
+                >
+                  {userWsState === "loading-auth" ? "Loading..." : "Reload Auth"}
+                </button>
+                <button
+                  type="button"
+                  className="button button-primary"
+                  onClick={connectUserWs}
+                  disabled={!userWsAuth?.available || userWsState === "connecting" || userWsState === "connected"}
+                >
+                  {userWsState === "connecting" ? "Connecting..." : "Connect"}
+                </button>
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={() => disconnectUserWs()}
+                  disabled={userWsState !== "connected"}
+                >
+                  Disconnect
+                </button>
+              </div>
+            </div>
+
+            <div className="user-ws-grid">
+              <article className="user-ws-card user-ws-auth-card">
+                <span className="user-ws-card-title">Auth</span>
+                <div className="user-ws-meta-grid">
+                  <div>
+                    <span>Source</span>
+                    <strong>{userWsAuth?.source ?? "-"}</strong>
+                  </div>
+                  <div>
+                    <span>Key</span>
+                    <strong>{userWsAuth?.key_preview ?? "-"}</strong>
+                  </div>
+                  <div>
+                    <span>Passphrase</span>
+                    <strong>{userWsAuth?.passphrase_preview ?? "-"}</strong>
+                  </div>
+                  <div>
+                    <span>Available</span>
+                    <strong>{userWsAuth?.available ? "yes" : "no"}</strong>
+                  </div>
+                </div>
+                {userWsError ? <p className="status">{userWsError}</p> : null}
+                {userWsAuth?.last_error ? (
+                  <p className="status status-muted">Last auth error: {userWsAuth.last_error}</p>
+                ) : null}
+              </article>
+
+              <article className="user-ws-card">
+                <span className="user-ws-card-title">Subscription Scope</span>
+                <p className="status status-muted">
+                  Empty list means all markets. Use condition IDs only.
+                </p>
+                <div className="user-ws-subscribe-row">
+                  <input
+                    type="text"
+                    placeholder="0x... condition id"
+                    value={userWsDraftMarket}
+                    onChange={(event) => setUserWsDraftMarket(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addUserWsMarket();
+                      }
+                    }}
+                  />
+                  <button type="button" className="button button-secondary" onClick={addUserWsMarket}>
+                    Add
+                  </button>
+                </div>
+                <div className="user-ws-chip-list">
+                  {userWsSelectedMarkets.length === 0 ? (
+                    <span className="user-ws-empty-chip">All markets</span>
+                  ) : (
+                    userWsSelectedMarkets.map((market) => (
+                      <button
+                        key={market}
+                        type="button"
+                        className="user-ws-chip"
+                        onClick={() => removeUserWsMarket(market)}
+                        title="Remove from subscription"
+                      >
+                        {market}
+                      </button>
+                    ))
+                  )}
+                </div>
+                <p className="status status-muted">
+                  To apply updated filters, reconnect the socket.
+                </p>
+              </article>
+
+              <article className="user-ws-card">
+                <span className="user-ws-card-title">Session Stats</span>
+                <div className="user-ws-meta-grid">
+                  <div>
+                    <span>Messages</span>
+                    <strong>{userWsLogs.filter((entry) => entry.direction === "in").length}</strong>
+                  </div>
+                  <div>
+                    <span>Pings/Pongs</span>
+                    <strong>
+                      {userWsLogs.filter((entry) => entry.eventType === "PING").length}/
+                      {userWsLogs.filter((entry) => entry.eventType === "PONG").length}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>Last message</span>
+                    <strong>{userWsLastMessageAt ? new Date(userWsLastMessageAt).toLocaleTimeString() : "-"}</strong>
+                  </div>
+                  <div>
+                    <span>Last pong</span>
+                    <strong>{userWsPongAt ? new Date(userWsPongAt).toLocaleTimeString() : "-"}</strong>
+                  </div>
+                </div>
+                <div className="user-ws-counter-list">
+                  {Object.entries(userWsEventCounts).length === 0 ? (
+                    <span className="status status-muted">No event traffic yet.</span>
+                  ) : (
+                    Object.entries(userWsEventCounts)
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([eventType, count]) => (
+                        <div key={eventType} className="user-ws-counter-row">
+                          <span>{eventType}</span>
+                          <strong>{count}</strong>
+                        </div>
+                      ))
+                  )}
+                </div>
+              </article>
+            </div>
+
+            <article className="user-ws-card user-ws-log-card">
+              <div className="panel-head" style={{ marginBottom: "12px" }}>
+                <div>
+                  <span className="user-ws-card-title">Live Feed</span>
+                </div>
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={() => {
+                    setUserWsLogs([]);
+                    setUserWsEventCounts({});
+                    setUserWsLastMessageAt(null);
+                    setUserWsPongAt(null);
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
+              {userWsLogs.length === 0 ? (
+                <div className="empty-state">
+                  <strong>No user channel messages yet</strong>
+                  <p>Load auth, connect, then watch order and trade updates stream in here.</p>
+                </div>
+              ) : (
+                <div className="user-ws-log-list">
+                  {userWsLogs.map((entry) => (
+                    <details key={entry.id} className="user-ws-log-entry">
+                      <summary>
+                        <span className={`user-ws-dir user-ws-dir-${entry.direction}`}>{entry.direction}</span>
+                        <span className="user-ws-type">{entry.eventType}</span>
+                        <span className="user-ws-summary">{entry.summary}</span>
+                        <span className="user-ws-time">{new Date(entry.timestamp).toLocaleTimeString()}</span>
+                      </summary>
+                      <div className="user-ws-log-meta">
+                        <span>market: {entry.market ?? "-"}</span>
+                        <span>status: {entry.status ?? "-"}</span>
+                      </div>
+                      <pre className="result-json">{entry.raw}</pre>
+                    </details>
+                  ))}
+                </div>
+              )}
+            </article>
           </section>
         </main>
       ) : activeTab === "positions" ? (
@@ -1680,8 +2146,8 @@ export function App() {
                                         </div>
                                       ) : "—"}
                                     </td>
-                                    <td style={{ width: "80px", position: "relative" }}>
-                                      <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                    <td style={{ width: "80px" }}>
+                                      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                                         {row.slug ? (
                                           <button
                                             type="button"

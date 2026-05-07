@@ -99,6 +99,19 @@ export interface RuntimeAuthDebugPayload {
   balance_allowance: unknown;
 }
 
+export interface UserWebSocketAuthPayload {
+  available: boolean;
+  source: "derived" | "env-fallback" | "unavailable";
+  auth: {
+    apiKey: string;
+    secret: string;
+    passphrase: string;
+  } | null;
+  key_preview: string | null;
+  passphrase_preview: string | null;
+  last_error: string | null;
+}
+
 const extractionCache = new Map<string, { data: any; expires: number }>();
 const EXTRACTION_TTL = 30 * 60 * 1000; // 30 minutes
 
@@ -120,7 +133,7 @@ Extract weather market parameters in JSON format:
 {
   "city": "string",
   "timezone": "string (IANA format)",
-  "t": number (the target temperature value),
+  "t": number (the target temperature value; if it is a range, ALWAYS use the LOWER value of the range),
   "t_sys": "C" or "F",
   "day": "YYYY-MM-DD",
   "station_code": "string (4-letter ICAO code, e.g. KJFK)"
@@ -454,6 +467,35 @@ export async function getRuntimeAuthDebug(): Promise<RuntimeAuthDebugPayload> {
       },
     };
   }
+}
+
+export async function getUserWebSocketAuth(): Promise<UserWebSocketAuthPayload> {
+  const runtime = getRuntimeAuthState();
+  const creds = await initializeRuntimeApiCreds();
+
+  if (!creds) {
+    return {
+      available: false,
+      source: runtime.credsSource,
+      auth: null,
+      key_preview: runtime.keyPreview,
+      passphrase_preview: runtime.passphrasePreview,
+      last_error: runtime.lastError,
+    };
+  }
+
+  return {
+    available: true,
+    source: runtime.credsSource,
+    auth: {
+      apiKey: creds.key,
+      secret: creds.secret,
+      passphrase: creds.passphrase,
+    },
+    key_preview: runtime.keyPreview,
+    passphrase_preview: runtime.passphrasePreview,
+    last_error: runtime.lastError,
+  };
 }
 
 export async function updateRuntimeAllowance(): Promise<{ ok: true }> {

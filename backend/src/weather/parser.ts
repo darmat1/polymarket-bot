@@ -97,6 +97,23 @@ function parseTemperatureBucket(question: string): { unit: "F" | "C"; bucket: Te
     };
   }
 
+  const range = question.match(/between\s+(-?\d+(?:\.\d+)?)\s*(?:-|and)\s*(-?\d+(?:\.\d+)?)°\s*([CF])/i);
+  if (range) {
+    const val1 = Number(range[1]);
+    const val2 = Number(range[2]);
+    const unit = range[3].toUpperCase() as "F" | "C";
+    const lower = Math.min(val1, val2);
+    return {
+      unit,
+      bucket: {
+        kind: "exact",
+        lowerInclusive: lower,
+        upperInclusive: lower,
+        label: `${lower}°${unit}`,
+      },
+    };
+  }
+
   return null;
 }
 

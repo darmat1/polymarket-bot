@@ -9,6 +9,7 @@ import {
   getAccountSummary,
   getOpenPositions,
   getRuntimeAuthDebug,
+  getUserWebSocketAuth,
   placeLimitOrder,
   scanMarkets,
   searchEvents,
@@ -126,6 +127,14 @@ const server = createServer(async (req, res) => {
       req.method === "GET"
     ) {
       const payload = await getRuntimeAuthDebug();
+      return json(res, 200, payload);
+    }
+
+    if (
+      requestUrl.pathname === "/api/user-ws-auth" &&
+      req.method === "GET"
+    ) {
+      const payload = await getUserWebSocketAuth();
       return json(res, 200, payload);
     }
 
