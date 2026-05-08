@@ -6,7 +6,9 @@ import {
 
 import {
   evaluateMarket,
+  getBtcCandles,
   getAccountSummary,
+  getCurrentBtc5mMarketSnapshot,
   getOpenPositions,
   getRuntimeAuthDebug,
   getUserWebSocketAuth,
@@ -17,6 +19,7 @@ import {
   getMarketDetails,
   updateTokenAllowance,
   getHourlyForecast,
+  getRecentScannerEvents,
 } from "./app.js";
 import {
   getRuntimeAuthState,
@@ -24,8 +27,10 @@ import {
   forceRederiveApiCreds,
 } from "./runtime-auth.js";
 import { WebSocketServer } from "ws";
-import { initBotManager, activateBot, deactivateBot, getBotStatus, getAllActiveBots, getOrFetchStationHistory, type BotTask } from "./bot-manager.js";
+import { initBotManager, activateBot, deactivateBot, getBotStatus, getAllActiveBots, getOrFetchStationHistory, getScannerLiveStatus, type BotTask } from "./bot-manager.js";
 import { getEventLog, clearEventLog, logEvent } from "./event-log.js";
+import { activateBtc5mSimulation, deactivateBtc5mSimulation, flushBtc5mSimulationState, getBtc5mSimulationState, initBtc5mSim } from "./btc5m-sim.js";
+import { getLatestBtc5mSnapshot, initBtc5mMonitor } from "./btc5m-monitor.js";
 import { readFile } from "node:fs/promises";
 import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -95,6 +100,39 @@ const server = createServer(async (req, res) => {
       try {
         const forecast = await getHourlyForecast(slug);
         return json(res, 200, { forecast });
+      } catch (err) {
+        return json(res, 500, { error: err instanceof Error ? err.message : "Internal error" });
+      }
+    }
+
+    if (requestUrl.pathname === "/api/scanner-events" && req.method === "GET") {
+      const limit = Number(requestUrl.searchParams.get("limit") ?? "10");
+      try {
+        const events = await getRecentScannerEvents(limit);
+        return json(res, 200, { events });
+      } catch (err) {
+        return json(res, 500, { error: err instanceof Error ? err.message : "Internal error" });
+      }
+    }
+
+    if (requestUrl.pathname === "/api/scanner-status" && req.method === "GET") {
+      return json(res, 200, getScannerLiveStatus());
+    }
+
+    if (requestUrl.pathname === "/api/btc-5m-current" && req.method === "GET") {
+      try {
+        const payload = getLatestBtc5mSnapshot() ?? await getCurrentBtc5mMarketSnapshot();
+        return json(res, 200, payload);
+      } catch (err) {
+        return json(res, 500, { error: err instanceof Error ? err.message : "Internal error" });
+      }
+    }
+
+    if (requestUrl.pathname === "/api/btc-candles" && req.method === "GET") {
+      const limit = Number(requestUrl.searchParams.get("limit") ?? "60");
+      try {
+        const candles = await getBtcCandles(limit);
+        return json(res, 200, { candles });
       } catch (err) {
         return json(res, 500, { error: err instanceof Error ? err.message : "Internal error" });
       }
@@ -195,6 +233,27 @@ const server = createServer(async (req, res) => {
 
     if (requestUrl.pathname === "/api/bot/active-slugs" && req.method === "GET") {
       return json(res, 200, { slugs: getAllActiveBots() });
+    }
+
+    if (requestUrl.pathname === "/api/btc5m-sim/status" && req.method === "GET") {
+      return json(res, 200, getBtc5mSimulationState());
+    }
+
+    if (requestUrl.pathname === "/api/btc5m-sim/activate" && req.method === "POST") {
+      const body = await readJsonBody(req) as { bankrollUsd?: unknown };
+      const bankrollUsd = Number(body.bankrollUsd);
+      if (!Number.isFinite(bankrollUsd) || bankrollUsd < 1) {
+        return json(res, 400, { error: "bankrollUsd must be at least 1" });
+      }
+      activateBtc5mSimulation(bankrollUsd);
+      await flushBtc5mSimulationState();
+      return json(res, 200, { ok: true, state: getBtc5mSimulationState() });
+    }
+
+    if (requestUrl.pathname === "/api/btc5m-sim/deactivate" && req.method === "POST") {
+      deactivateBtc5mSimulation();
+      await flushBtc5mSimulationState();
+      return json(res, 200, { ok: true, state: getBtc5mSimulationState() });
     }
 
     if (requestUrl.pathname === "/api/event-log" && req.method === "GET") {
@@ -305,6 +364,8 @@ async function start(): Promise<void> {
 
   const wss = new WebSocketServer({ server });
   initBotManager(wss);
+  initBtc5mSim(wss);
+  initBtc5mMonitor(wss);
 
   if (authState.credsSource === "derived") {
     console.log(

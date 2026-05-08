@@ -22,3 +22,10 @@
 - **Frontend Dev**: `cd frontend && pnpm run dev`
 - **Backend Build**: `cd backend && pnpm run build`
 - **Cleanup Docker**: `docker builder prune -f && docker system prune -f`
+
+## Verification Rules
+- After any backend code change that affects HTTP routes, server behavior, or background services, restart the backend with `docker-compose up --build -d` before doing HTTP verification.
+- If `docker-compose` is unavailable in the current environment, record that blocker explicitly before claiming verification is complete.
+
+## Session Continuity Rule
+- If the conversation is at risk of ending before the work is fully wrapped due to token limits or context pressure, record the current implementation state, files changed, unresolved risks, and next steps in `SESSION_NOTES.md` before stopping.

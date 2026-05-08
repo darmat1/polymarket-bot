@@ -12,3 +12,4 @@ backend/.env
 frontend/.env
 .env
 .opencode/
+data/

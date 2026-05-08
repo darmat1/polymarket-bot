@@ -5,7 +5,7 @@ import { WebSocket } from "ws";
 dotenv.config();
 
 // Polymarket Conditional Tokens Framework (CTF) Address on Polygon
-const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097CAe4B54fafa76";
+const CTF_ADDRESS = "0x4d97dcd97ec945f40cf65f87097cae4b54fafa76";
 
 // Minimal ABI for ConditionPreparation event (emitted when a new market is initialized)
 const CTF_ABI = [
@@ -20,11 +20,34 @@ async function main() {
   console.log(`Connecting to WebSocket server: ${wsUrl}`);
   
   let ws: WebSocket;
+  let statusInterval: NodeJS.Timeout | null = null;
+
+  function sendListenerStatus(connected: boolean) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: "scanner_listener_status",
+        connected,
+        timestamp: Date.now(),
+      }));
+    }
+  }
+
   function connectWS() {
     ws = new WebSocket(wsUrl);
-    ws.on("open", () => console.log("Connected to main server WebSocket"));
+    ws.on("open", () => {
+      console.log("Connected to main server WebSocket");
+      sendListenerStatus(true);
+      if (statusInterval) {
+        clearInterval(statusInterval);
+      }
+      statusInterval = setInterval(() => sendListenerStatus(true), 15000);
+    });
     ws.on("error", (err) => console.error("WS Error:", err.message));
     ws.on("close", () => {
+      if (statusInterval) {
+        clearInterval(statusInterval);
+        statusInterval = null;
+      }
       console.log("WS connection closed, retrying in 5s...");
       setTimeout(connectWS, 5000);
     });

@@ -103,7 +103,7 @@ type UserWebSocketAuthPayload = {
   last_error: string | null;
 };
 
-type AppTab = "weather" | "crypto" | "positions" | "scanner";
+type AppTab = "weather" | "crypto" | "positions" | "scanner" | "btc5m";
 
 type EventLogEntry = {
   id: number;
@@ -122,6 +122,218 @@ type ScannerEvent = {
   txHash: string;
   blockNumber: number;
   timestamp: number;
+  title?: string;
+  slug?: string;
+  source?: "blockchain" | "gamma-recent";
+};
+
+type ScannerStatus = {
+  listenerConnected: boolean;
+  lastListenerHeartbeatAt: number;
+  lastScannerEventAt: number;
+};
+
+type BtcCandle = {
+  openTime: number;
+  closeTime: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
+type Btc5mSnapshotPayload = {
+  market: {
+    slug: string;
+    question: string;
+    startTime: number | null;
+    endTime: number | null;
+    status: "live" | "upcoming" | "recent";
+    selectionReason: "actual-live" | "nearest-upcoming" | "latest-recent";
+    selectionLabel: "Actual Live" | "Nearest Upcoming" | "Latest Recent";
+    yesOutcome: OutcomeToken | null;
+    noOutcome: OutcomeToken | null;
+  };
+  pricing: {
+    marketStartPrice: number | null;
+    marketEndPrice: number | null;
+    currentBtcPrice: number | null;
+    marketPriceChangePct: number | null;
+  };
+  prediction: {
+    source: "groq" | "heuristic" | "unavailable";
+    direction: "up" | "down" | "neutral";
+    confidence: number | null;
+    summary: string | null;
+    reasoning: string[];
+    generatedAt: number | null;
+  };
+  book: {
+    yes: {
+      bestBid: number | null;
+      bestAsk: number | null;
+      midpoint: number | null;
+      spreadBps: number | null;
+    } | null;
+    no: {
+      bestBid: number | null;
+      bestAsk: number | null;
+      midpoint: number | null;
+      spreadBps: number | null;
+    } | null;
+  };
+  quotes: {
+    up: number | null;
+    down: number | null;
+  };
+};
+
+type Btc5mSimulationState = {
+  active: boolean;
+  bankrollUsd: number;
+  availableUsd: number;
+  minStakeUsd: number;
+  realizedPnlUsd: number;
+  grossRealizedPnlUsd: number;
+  totalStakedUsd: number;
+  wins: number;
+  losses: number;
+  trades: number;
+  winRate: number;
+  sessionEquityUsd: number;
+  unrealizedPnlUsd: number;
+  grossUnrealizedPnlUsd: number;
+  lastUpdateAt: number | null;
+  lastMarketSlug: string | null;
+  strategyId: "momentum_book_v1";
+  openPosition: {
+    strategyId: "momentum_book_v1";
+    side: "up" | "down";
+    marketSlug: string;
+    assetId: string | null;
+    stakeUsd: number;
+    entryFeeUsd: number;
+    totalEntryCostUsd: number;
+    shares: number;
+    entryPrice: number;
+    openedAt: number;
+    currentPrice: number | null;
+    grossExitProceedsUsd: number | null;
+    netExitProceedsUsd: number | null;
+    grossPnlUsd: number | null;
+    unrealizedPnlUsd: number | null;
+    toWinUsd: number;
+    enteredAtTimeToExpiryMs: number | null;
+    spreadBpsAtEntry: number | null;
+    spreadBucket: "lt_150" | "150_300" | "300_500" | "gte_500" | "unknown";
+    timeBucket: "early" | "mid" | "late";
+    targetProfitUsd: number;
+    maxLossUsd: number;
+    entrySignals: {
+      btcMove1mPct: number | null;
+      btcMove3mPct: number | null;
+      btcMove5mPct: number | null;
+      bookMoveBps: number | null;
+      spreadBps: number | null;
+      timeToExpiryMs: number | null;
+      predictionDirection: "up" | "down" | "neutral";
+      predictionConfidence: number | null;
+      bookMidpoint: number | null;
+      liveBestAsk: number | null;
+      liveBestBid: number | null;
+    };
+  } | null;
+  closedTrades: Array<{
+    strategyId: "momentum_book_v1";
+    side: "up" | "down";
+    marketSlug: string;
+    stakeUsd: number;
+    entryFeeUsd: number;
+    totalEntryCostUsd: number;
+    shares: number;
+    entryPrice: number;
+    exitPrice: number;
+    grossProceedsUsd: number;
+    proceedsUsd: number;
+    grossPnlUsd: number;
+    pnlUsd: number;
+    openedAt: number;
+    closedAt: number;
+    holdTimeMs: number;
+    result: "win" | "loss";
+    note: string;
+    exitReason: "take_profit" | "stop_loss" | "reversal" | "time_stop" | "settlement" | "forced_flatten";
+    spreadBpsAtEntry: number | null;
+    spreadBpsAtExit: number | null;
+    spreadBucket: "lt_150" | "150_300" | "300_500" | "gte_500" | "unknown";
+    timeToExpiryMsAtEntry: number | null;
+    timeToExpiryMsAtExit: number | null;
+    timeBucket: "early" | "mid" | "late";
+    entrySignals: {
+      btcMove1mPct: number | null;
+      btcMove3mPct: number | null;
+      btcMove5mPct: number | null;
+      bookMoveBps: number | null;
+      spreadBps: number | null;
+      timeToExpiryMs: number | null;
+      predictionDirection: "up" | "down" | "neutral";
+      predictionConfidence: number | null;
+      bookMidpoint: number | null;
+      liveBestAsk: number | null;
+      liveBestBid: number | null;
+    };
+    exitSignals: {
+      btcMove1mPct: number | null;
+      btcMove3mPct: number | null;
+      btcMove5mPct: number | null;
+      bookMoveBps: number | null;
+      spreadBps: number | null;
+      timeToExpiryMs: number | null;
+    };
+  }>;
+  analytics: {
+    avgHoldTimeMs: number;
+    maxDrawdownUsd: number;
+    peakEquityUsd: number;
+    pnlByStrategy: Record<"momentum_book_v1", {
+      trades: number;
+      wins: number;
+      losses: number;
+      grossPnlUsd: number;
+      netPnlUsd: number;
+      totalHoldTimeMs: number;
+    }>;
+    pnlByDirection: Record<"up" | "down", {
+      trades: number;
+      wins: number;
+      losses: number;
+      grossPnlUsd: number;
+      netPnlUsd: number;
+      totalHoldTimeMs: number;
+    }>;
+    pnlBySpreadBucket: Record<"lt_150" | "150_300" | "300_500" | "gte_500" | "unknown", {
+      trades: number;
+      wins: number;
+      losses: number;
+      grossPnlUsd: number;
+      netPnlUsd: number;
+      totalHoldTimeMs: number;
+    }>;
+    pnlByTimeBucket: Record<"early" | "mid" | "late", {
+      trades: number;
+      wins: number;
+      losses: number;
+      grossPnlUsd: number;
+      netPnlUsd: number;
+      totalHoldTimeMs: number;
+    }>;
+  };
+  logs: Array<{
+    timestamp: number;
+    message: string;
+    type: "info" | "warn" | "error" | "success";
+  }>;
 };
 
 type Toast = {
@@ -188,6 +400,14 @@ export function App() {
     null,
   );
   const [scannerEvents, setScannerEvents] = useState<ScannerEvent[]>([]);
+  const [scannerStatus, setScannerStatus] = useState<ScannerStatus | null>(null);
+  const [btc5mSnapshot, setBtc5mSnapshot] = useState<Btc5mSnapshotPayload | null>(null);
+  const [btcCandles, setBtcCandles] = useState<BtcCandle[]>([]);
+  const [btc5mLoading, setBtc5mLoading] = useState(false);
+  const [btc5mError, setBtc5mError] = useState<string | null>(null);
+  const [btc5mSimBankroll, setBtc5mSimBankroll] = useState("1");
+  const [btc5mSimState, setBtc5mSimState] = useState<Btc5mSimulationState | null>(null);
+  const [btc5mSimLoading, setBtc5mSimLoading] = useState(false);
   const portfolioSyncWsRef = useRef<WebSocket | null>(null);
   const portfolioSyncPingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const portfolioSyncReconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -275,6 +495,41 @@ export function App() {
       });
   }, [sortedPositions]);
 
+  const btc5mTrend = useMemo(() => {
+    if (btcCandles.length < 2) {
+      return null;
+    }
+
+    const first = btcCandles[0]?.open ?? null;
+    const last = btcCandles[btcCandles.length - 1]?.close ?? null;
+    if (first === null || last === null || first === 0) {
+      return null;
+    }
+
+    return {
+      direction: last >= first ? "up" : "down",
+      changePct: ((last - first) / first) * 100,
+    };
+  }, [btcCandles]);
+
+  const btcChartPoints = useMemo(() => {
+    if (btcCandles.length === 0) {
+      return "";
+    }
+
+    const min = Math.min(...btcCandles.map((candle) => candle.low));
+    const max = Math.max(...btcCandles.map((candle) => candle.high));
+    const range = Math.max(max - min, 1);
+
+    return btcCandles
+      .map((candle, index) => {
+        const x = btcCandles.length === 1 ? 0 : (index / (btcCandles.length - 1)) * 100;
+        const y = 100 - ((candle.close - min) / range) * 100;
+        return `${x},${y}`;
+      })
+      .join(" ");
+  }, [btcCandles]);
+
   const toggleSort = (field: string) => {
     if (posSortField === field) {
       setPosSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
@@ -330,12 +585,16 @@ export function App() {
       ? "Weather"
       : activeTab === "crypto"
         ? "Crypto"
+        : activeTab === "btc5m"
+          ? "BTC 5m"
         : "Positions";
   const searchPlaceholder =
     activeTab === "weather"
       ? "nyc high temp"
       : activeTab === "crypto"
         ? "btc up"
+        : activeTab === "btc5m"
+          ? "current btc 5m"
         : "";
   const statusText =
     activeTab === "positions"
@@ -344,6 +603,14 @@ export function App() {
         : positionsError
           ? positionsError
           : `${positionsPayload?.positions.length ?? 0} open position(s)`
+      : activeTab === "btc5m"
+        ? btc5mLoading
+          ? "Loading BTC 5m panel..."
+          : btc5mError
+            ? btc5mError
+            : btc5mSnapshot
+              ? `Tracking ${btc5mSnapshot.market.slug}`
+              : "No BTC 5m market loaded"
       : loadingEvents
         ? "Loading events..."
         : eventsError
@@ -525,7 +792,25 @@ export function App() {
           }
           if (msg.type === "scanner_event") {
             setScannerEvents((prev) => [msg as ScannerEvent, ...prev].slice(0, 50));
+            setScannerStatus((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    lastScannerEventAt: typeof msg.timestamp === "number" ? msg.timestamp : Date.now(),
+                  }
+                : {
+                    listenerConnected: true,
+                    lastListenerHeartbeatAt: 0,
+                    lastScannerEventAt: typeof msg.timestamp === "number" ? msg.timestamp : Date.now(),
+                  },
+            );
             addToast("info", "New Market Detected", `Condition: ${msg.conditionId.slice(0, 10)}...`);
+          }
+          if (msg.type === "btc5m_sim_state" && msg.state) {
+            setBtc5mSimState(msg.state as Btc5mSimulationState);
+          }
+          if (msg.type === "btc5m_sim_log" && msg.state) {
+            setBtc5mSimState(msg.state as Btc5mSimulationState);
           }
 
         } catch (err) {
@@ -730,7 +1015,26 @@ export function App() {
   useEffect(() => {
     if (activeTab === "positions") {
       void loadPositions();
+    } else if (activeTab === "btc5m") {
+      void loadBtc5mPanel();
+      void loadBtc5mSimState();
+    } else if (activeTab === "scanner") {
+      void loadScannerEvents();
+      void loadScannerStatus();
     }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== "btc5m") {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      void loadBtc5mPanel();
+      void loadBtc5mSimState();
+    }, 15_000);
+
+    return () => clearInterval(interval);
   }, [activeTab]);
 
   useEffect(() => {
@@ -870,6 +1174,117 @@ export function App() {
       } catch (e) {
         console.error("Failed to fetch active bots", e);
       }
+    }
+  }
+
+  async function loadScannerEvents() {
+    try {
+      const response = await fetch("/api/scanner-events?limit=20");
+      const payload = (await response.json()) as {
+        error?: string;
+        events?: ScannerEvent[];
+      };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Failed to load scanner events");
+      }
+      setScannerEvents(payload.events ?? []);
+    } catch (error) {
+      console.error(
+        "Failed to load scanner events",
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
+  async function loadScannerStatus() {
+    try {
+      const response = await fetch("/api/scanner-status");
+      const payload = (await response.json()) as ScannerStatus & {
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Failed to load scanner status");
+      }
+      setScannerStatus(payload);
+    } catch (error) {
+      console.error(
+        "Failed to load scanner status",
+        error instanceof Error ? error.message : error,
+      );
+      setScannerStatus(null);
+    }
+  }
+
+  async function loadBtc5mPanel() {
+    try {
+      setBtc5mLoading(true);
+      setBtc5mError(null);
+
+      const [snapshotResponse, candlesResponse] = await Promise.all([
+        fetch("/api/btc-5m-current"),
+        fetch("/api/btc-candles?limit=60"),
+      ]);
+
+      const snapshotPayload = (await snapshotResponse.json()) as Btc5mSnapshotPayload & {
+        error?: string;
+      };
+      const candlesPayload = (await candlesResponse.json()) as {
+        candles?: BtcCandle[];
+        error?: string;
+      };
+
+      if (!snapshotResponse.ok) {
+        throw new Error(snapshotPayload.error ?? "Failed to load BTC 5m market");
+      }
+      if (!candlesResponse.ok) {
+        throw new Error(candlesPayload.error ?? "Failed to load BTC candles");
+      }
+
+      setBtc5mSnapshot(snapshotPayload);
+      setBtcCandles(candlesPayload.candles ?? []);
+    } catch (error) {
+      setBtc5mError(
+        error instanceof Error ? error.message : "Failed to load BTC 5m panel",
+      );
+      setBtc5mSnapshot(null);
+      setBtcCandles([]);
+    } finally {
+      setBtc5mLoading(false);
+    }
+  }
+
+  async function loadBtc5mSimState() {
+    try {
+      const response = await fetch("/api/btc5m-sim/status");
+      const payload = (await response.json()) as Btc5mSimulationState & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Failed to load BTC sim state");
+      }
+      setBtc5mSimState(payload);
+    } catch (error) {
+      console.error("Failed to load BTC sim state", error instanceof Error ? error.message : error);
+    }
+  }
+
+  async function toggleBtc5mSimulation(nextActive: boolean) {
+    setBtc5mSimLoading(true);
+    try {
+      const response = await fetch(nextActive ? "/api/btc5m-sim/activate" : "/api/btc5m-sim/deactivate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: nextActive ? JSON.stringify({ bankrollUsd: Number(btc5mSimBankroll) }) : undefined,
+      });
+      const payload = (await response.json()) as { error?: string; state?: Btc5mSimulationState };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Failed to update BTC sim state");
+      }
+      if (payload.state) {
+        setBtc5mSimState(payload.state);
+      }
+    } catch (error) {
+      setBtc5mError(error instanceof Error ? error.message : "Failed to update BTC simulation");
+    } finally {
+      setBtc5mSimLoading(false);
     }
   }
 
@@ -1347,15 +1762,275 @@ export function App() {
       </header>
 
       {!viewingMarketSlug && (
-        <nav style={{ padding: "0 30px", marginTop: "10px", display: "flex", gap: "10px" }}>
+        <nav className="app-nav">
           <button className={`button ${activeTab === "positions" ? "button-primary" : "button-secondary"}`} onClick={() => handleTabSwitch("positions")}>Positions</button>
+          <button className={`button ${activeTab === "btc5m" ? "button-primary" : "button-secondary"}`} onClick={() => handleTabSwitch("btc5m")}>BTC 5m</button>
           {(import.meta as any).env?.VITE_TEST === "1" && (
             <button className={`button ${activeTab === "scanner" as any ? "button-primary" : "button-secondary"}`} onClick={() => handleTabSwitch("scanner" as any)}>Scanner</button>
           )}
         </nav>
       )}
 
-      {activeTab === "scanner" as any ? (
+      {activeTab === "btc5m" ? (
+        <main className="layout layout-single">
+          <section className="panel">
+            <div className="panel-head">
+              <div>
+                <p className="section-kicker">BTC Up/Down</p>
+                <h2>Current 5 Minute Market</h2>
+              </div>
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() => void loadBtc5mPanel()}
+                disabled={btc5mLoading}
+              >
+                {btc5mLoading ? "Refreshing..." : "Refresh"}
+              </button>
+            </div>
+
+            {btc5mError ? <p className="status">{btc5mError}</p> : null}
+
+            {!btc5mSnapshot ? (
+              <div className="empty-state">
+                <strong>No BTC 5m market loaded</strong>
+                <p>Open the panel during live trading hours to resolve the current `btc-updown-5m-*` market.</p>
+              </div>
+            ) : (
+              <div className="btc5m-shell">
+                <section className="btc5m-hero btc5m-span-2">
+                  <div>
+                    <div className="btc5m-market-title">{btc5mSnapshot.market.question}</div>
+                    <div className="btc5m-market-meta">
+                      <span className={`status-badge ${btc5mSnapshot.market.status === "live" ? "on" : "off"}`}>
+                        <span className={`indicator-dot ${btc5mSnapshot.market.status === "live" ? "pulse" : ""}`} />
+                        {btc5mSnapshot.market.status}
+                      </span>
+                      <span>{btc5mSnapshot.market.selectionLabel}</span>
+                      <span>{btc5mSnapshot.market.slug}</span>
+                      <span>
+                        Ends {btc5mSnapshot.market.endTime ? new Date(btc5mSnapshot.market.endTime).toLocaleTimeString() : "n/a"}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="btc5m-pricing">
+                    <article>
+                      <span>Start BTC</span>
+                      <strong>{formatBtcPrice(btc5mSnapshot.pricing.marketStartPrice)}</strong>
+                    </article>
+                    <article>
+                      <span>Current BTC</span>
+                      <strong>{formatBtcPrice(btc5mSnapshot.pricing.currentBtcPrice)}</strong>
+                    </article>
+                    <article>
+                      <span>Move</span>
+                      <strong className={
+                        (btc5mSnapshot.pricing.marketPriceChangePct ?? 0) >= 0 ? "pnl-pos" : "pnl-neg"
+                      }>
+                        {formatPercentSigned(btc5mSnapshot.pricing.marketPriceChangePct)}
+                      </strong>
+                    </article>
+                  </div>
+                </section>
+
+                <section className="btc5m-grid btc5m-span-2">
+                  <section className="btc5m-chart-card">
+                    <div className="btc5m-chart-head">
+                      <span>Underlying BTC 1m trend</span>
+                      <span className={btc5mTrend?.direction === "up" ? "pnl-pos" : btc5mTrend?.direction === "down" ? "pnl-neg" : "status-muted"}>
+                        {btc5mTrend ? `${btc5mTrend.direction} ${formatPercentSigned(btc5mTrend.changePct)}` : "not enough data"}
+                      </span>
+                    </div>
+                    <div className="btc5m-chart-wrap">
+                      {btcChartPoints ? (
+                        <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="btc5m-chart">
+                          <polyline points={btcChartPoints} className="btc5m-chart-line" />
+                        </svg>
+                      ) : (
+                        <div className="empty-state" style={{ padding: "18px" }}>
+                          <p>No candle data yet.</p>
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  <section className="btc5m-card btc5m-prediction-card">
+                    <div className="btc5m-chart-head">
+                      <span>Market prediction</span>
+                      <span className={
+                        btc5mSnapshot.prediction.direction === "up"
+                          ? "pnl-pos"
+                          : btc5mSnapshot.prediction.direction === "down"
+                            ? "pnl-neg"
+                            : "status-muted"
+                      }>
+                        {btc5mSnapshot.prediction.direction.toUpperCase()} {formatConfidence(btc5mSnapshot.prediction.confidence)}
+                      </span>
+                    </div>
+                    <div className="btc5m-rule-list" style={{ marginTop: 0 }}>
+                      <div>Source: {btc5mSnapshot.prediction.source}</div>
+                      <div>
+                        Summary: {btc5mSnapshot.prediction.summary ?? "No prediction summary available."}
+                      </div>
+                      {btc5mSnapshot.prediction.reasoning.length > 0 ? (
+                        <div>
+                          {btc5mSnapshot.prediction.reasoning.join(" | ")}
+                        </div>
+                      ) : (
+                        <div>No reasoning available.</div>
+                      )}
+                    </div>
+                  </section>
+                </section>
+
+                <section className="btc5m-card">
+                  <div className="btc5m-chart-head">
+                    <span>Simulation bankroll</span>
+                    <span className={btc5mSimState?.active ? "pnl-pos" : "status-muted"}>
+                      {btc5mSimState?.active ? "RUNNING" : "STOPPED"}
+                    </span>
+                  </div>
+                  <div className="btc5m-sim-controls">
+                    <label>
+                      <span>Virtual dollars for this market</span>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={btc5mSimBankroll}
+                        onChange={(event) => setBtc5mSimBankroll(event.target.value)}
+                        disabled={btc5mSimState?.active || btc5mSimLoading}
+                      />
+                    </label>
+                    <button
+                      className={`button ${btc5mSimState?.active ? "button-secondary" : "button-primary"}`}
+                      type="button"
+                      disabled={btc5mSimLoading}
+                      onClick={() => void toggleBtc5mSimulation(!(btc5mSimState?.active ?? false))}
+                    >
+                      {btc5mSimLoading ? "Working..." : btc5mSimState?.active ? "Stop Simulation" : "Start Simulation"}
+                    </button>
+                  </div>
+                  <div className="btc5m-rule-list">
+                    <div>Minimum stake: $1.00</div>
+                    <div>Strategy: {btc5mSimState?.strategyId ?? "momentum_book_v1"}</div>
+                    <div>Entry rule: BTC momentum + rising book + spread under 300 bps</div>
+                    <div>Exit rule: TP, stop, reversal, time stop, settlement, forced flatten</div>
+                    <div>Trend: {btc5mTrend ? `${btc5mTrend.direction} ${formatPercentSigned(btc5mTrend.changePct)}` : "waiting for candles"}</div>
+                    <div>Up ask / spread: {formatMarketPrice(btc5mSnapshot.book.yes?.bestAsk ?? btc5mSnapshot.quotes.up)} / {formatBpsValue(btc5mSnapshot.book.yes?.spreadBps ?? null)}</div>
+                    <div>Down ask / spread: {formatMarketPrice(btc5mSnapshot.book.no?.bestAsk ?? btc5mSnapshot.quotes.down)} / {formatBpsValue(btc5mSnapshot.book.no?.spreadBps ?? null)}</div>
+                    <div>Available: {formatUsdValue(btc5mSimState?.availableUsd ?? null)}</div>
+                    <div>Net realized PnL: {formatUsdSigned(btc5mSimState?.realizedPnlUsd ?? null)}</div>
+                    <div>Gross realized PnL: {formatUsdSigned(btc5mSimState?.grossRealizedPnlUsd ?? null)}</div>
+                    <div>Net unrealized PnL: {formatUsdSigned(btc5mSimState?.unrealizedPnlUsd ?? null)}</div>
+                    <div>Gross unrealized PnL: {formatUsdSigned(btc5mSimState?.grossUnrealizedPnlUsd ?? null)}</div>
+                    <div>Session equity: {formatUsdValue(btc5mSimState?.sessionEquityUsd ?? null)}</div>
+                    <div>Trades: {btc5mSimState?.trades ?? 0} | Wins: {btc5mSimState?.wins ?? 0} | Losses: {btc5mSimState?.losses ?? 0} | Win rate: {formatPercentSigned(btc5mSimState?.winRate ?? null)}</div>
+                    <div>Avg hold: {formatDurationMs(btc5mSimState?.analytics?.avgHoldTimeMs ?? null)} | Max drawdown: {formatUsdValue(btc5mSimState?.analytics?.maxDrawdownUsd ?? null)}</div>
+                  </div>
+                </section>
+
+                <section className="btc5m-card">
+                  <div className="btc5m-card-title">Simulated position</div>
+                  {!btc5mSimState?.openPosition ? (
+                    <p className="status status-muted btc5m-note">No simulated position is open right now.</p>
+                  ) : (
+                    <>
+                      <div className="btc5m-sim-position-head">
+                        <strong>{btc5mSimState.openPosition.side === "up" ? "Up" : "Down"} to win</strong>
+                      </div>
+                      <div className="btc5m-rule-list">
+                        <div>Stake: {formatUsdValue(btc5mSimState.openPosition.stakeUsd)}</div>
+                        <div>Total entry cost: {formatUsdValue(btc5mSimState.openPosition.totalEntryCostUsd)}</div>
+                        <div>Entry fee: {formatUsdValue(btc5mSimState.openPosition.entryFeeUsd)}</div>
+                        <div>To win: {formatUsdValue(btc5mSimState.openPosition.toWinUsd)}</div>
+                        <div>Avg. Price: {formatMarketPrice(btc5mSimState.openPosition.entryPrice)}</div>
+                        <div>Live price: {formatMarketPrice(btc5mSimState.openPosition.currentPrice)}</div>
+                        <div>Shares: {formatPosNum(btc5mSimState.openPosition.shares)}</div>
+                        <div>Gross exit value: {formatUsdValue(btc5mSimState.openPosition.grossExitProceedsUsd)}</div>
+                        <div>Net exit value: {formatUsdValue(btc5mSimState.openPosition.netExitProceedsUsd)}</div>
+                        <div>Gross unrealized: {formatUsdSigned(btc5mSimState.openPosition.grossPnlUsd)}</div>
+                        <div>Net unrealized: {formatUsdSigned(btc5mSimState.openPosition.unrealizedPnlUsd)}</div>
+                        <div>Hold time: {formatDurationMs(Date.now() - btc5mSimState.openPosition.openedAt)}</div>
+                        <div>Target / max loss: {formatUsdValue(btc5mSimState.openPosition.targetProfitUsd)} / {formatUsdValue(btc5mSimState.openPosition.maxLossUsd)}</div>
+                        <div>Spread at entry: {formatBpsValue(btc5mSimState.openPosition.spreadBpsAtEntry)}</div>
+                        <div>Time to expiry at entry: {formatDurationMs(btc5mSimState.openPosition.enteredAtTimeToExpiryMs)}</div>
+                        <div>BTC 1m / 3m / 5m: {formatPercentSigned(btc5mSimState.openPosition.entrySignals.btcMove1mPct)} / {formatPercentSigned(btc5mSimState.openPosition.entrySignals.btcMove3mPct)} / {formatPercentSigned(btc5mSimState.openPosition.entrySignals.btcMove5mPct)}</div>
+                        <div>Book move / spread: {formatBpsValue(btc5mSimState.openPosition.entrySignals.bookMoveBps)} / {formatBpsValue(btc5mSimState.openPosition.entrySignals.spreadBps)}</div>
+                      </div>
+                      <p className="status status-muted btc5m-note">
+                        The simulator continuously reprices the live exit, then exits on net TP, stop-loss, BTC reversal, timeout, late flatten, or settlement.
+                      </p>
+                    </>
+                  )}
+                </section>
+
+                <section className="btc5m-card">
+                  <div className="btc5m-chart-head">
+                    <span>Session summary</span>
+                    <span className={(btc5mSimState?.sessionEquityUsd ?? 0) >= (btc5mSimState?.bankrollUsd ?? 0) ? "pnl-pos" : "pnl-neg"}>
+                      {formatUsdSigned((btc5mSimState?.sessionEquityUsd ?? 0) - (btc5mSimState?.bankrollUsd ?? 0))}
+                    </span>
+                  </div>
+                  <div className="btc5m-rule-list">
+                    <div>Started with: {formatUsdValue(btc5mSimState?.bankrollUsd ?? null)}</div>
+                    <div>Current equity: {formatUsdValue(btc5mSimState?.sessionEquityUsd ?? null)}</div>
+                    <div>Total staked: {formatUsdValue(btc5mSimState?.totalStakedUsd ?? null)}</div>
+                    <div>Last market: {btc5mSimState?.lastMarketSlug ?? "n/a"}</div>
+                    <div>Peak equity: {formatUsdValue(btc5mSimState?.analytics?.peakEquityUsd ?? null)}</div>
+                    <div>Up net PnL: {formatUsdSigned(btc5mSimState?.analytics?.pnlByDirection?.up?.netPnlUsd ?? null)} | Down net PnL: {formatUsdSigned(btc5mSimState?.analytics?.pnlByDirection?.down?.netPnlUsd ?? null)}</div>
+                    <div>Spread &lt;150 bps: {formatUsdSigned(btc5mSimState?.analytics?.pnlBySpreadBucket?.lt_150?.netPnlUsd ?? null)} | 150-300: {formatUsdSigned(btc5mSimState?.analytics?.pnlBySpreadBucket?.["150_300"]?.netPnlUsd ?? null)}</div>
+                    <div>Early / Mid / Late: {formatUsdSigned(btc5mSimState?.analytics?.pnlByTimeBucket?.early?.netPnlUsd ?? null)} / {formatUsdSigned(btc5mSimState?.analytics?.pnlByTimeBucket?.mid?.netPnlUsd ?? null)} / {formatUsdSigned(btc5mSimState?.analytics?.pnlByTimeBucket?.late?.netPnlUsd ?? null)}</div>
+                  </div>
+                </section>
+
+                <section className="btc5m-card">
+                  <div className="btc5m-chart-head">
+                    <span>Closed simulated trades</span>
+                    <span className="status-muted">{btc5mSimState?.closedTrades.length ?? 0} trades</span>
+                  </div>
+                  <div className="btc5m-sim-log">
+                    {(btc5mSimState?.closedTrades ?? []).length === 0 ? (
+                      <div className="status status-muted">No closed simulated trades yet.</div>
+                    ) : (
+                      btc5mSimState!.closedTrades.map((trade, index) => (
+                        <div key={`${trade.closedAt}-${index}`} className={`btc5m-sim-log-entry ${trade.result === "win" ? "success" : "warn"}`}>
+                          <span>[{new Date(trade.closedAt).toLocaleTimeString()}] {trade.marketSlug}</span>
+                          <span>
+                            {trade.side.toUpperCase()} | {trade.exitReason} | gross {formatUsdValue(trade.grossProceedsUsd)} | net {formatUsdValue(trade.proceedsUsd)} | {formatUsdSigned(trade.pnlUsd)} | hold {formatDurationMs(trade.holdTimeMs)}
+                          </span>
+                          <span>
+                            entry {formatMarketPrice(trade.entryPrice)} to exit {formatMarketPrice(trade.exitPrice)} | spread {formatBpsValue(trade.spreadBpsAtEntry)} to {formatBpsValue(trade.spreadBpsAtExit)} | btc {formatPercentSigned(trade.entrySignals.btcMove1mPct)} to {formatPercentSigned(trade.exitSignals.btcMove1mPct)}
+                          </span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </section>
+
+                <section className="btc5m-card btc5m-span-2">
+                  <div className="btc5m-chart-head">
+                    <span>Simulation log</span>
+                    <span className="status-muted">{btc5mSimState?.logs.length ?? 0} entries</span>
+                  </div>
+                  <div className="btc5m-sim-log">
+                    {(btc5mSimState?.logs ?? []).length === 0 ? (
+                      <div className="status status-muted">No simulation activity yet.</div>
+                    ) : (
+                      btc5mSimState!.logs.map((log, index) => (
+                        <div key={`${log.timestamp}-${index}`} className={`btc5m-sim-log-entry ${log.type}`}>
+                          <span>[{new Date(log.timestamp).toLocaleTimeString()}]</span>
+                          <span>{log.message}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </section>
+              </div>
+            )}
+          </section>
+        </main>
+      ) : activeTab === "scanner" as any ? (
         <main className="layout layout-single">
           <section className="panel">
             <div className="card">
@@ -1365,9 +2040,17 @@ export function App() {
                   <h2>Blockchain Scanner</h2>
                 </div>
                 <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: "#10b981" }}>
-                    <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981", display: "inline-block" }}></span>
-                    Listener Active
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px", fontSize: "13px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", color: scannerStatus?.listenerConnected ? "#10b981" : "#f59e0b" }}>
+                      <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: scannerStatus?.listenerConnected ? "#10b981" : "#f59e0b", display: "inline-block" }}></span>
+                      {scannerStatus?.listenerConnected ? "Listener Connected" : "Listener Status Unknown"}
+                    </div>
+                    <div style={{ color: "var(--text-muted)", fontSize: "12px" }}>
+                      Last heartbeat: {scannerStatus?.lastListenerHeartbeatAt ? new Date(scannerStatus.lastListenerHeartbeatAt).toLocaleTimeString() : "n/a"}
+                    </div>
+                    <div style={{ color: "var(--text-muted)", fontSize: "12px" }}>
+                      Last live market: {scannerStatus?.lastScannerEventAt ? new Date(scannerStatus.lastScannerEventAt).toLocaleTimeString() : "none yet"}
+                    </div>
                   </div>
                   <button 
                     className="button button-secondary" 
@@ -1400,16 +2083,28 @@ export function App() {
                 {scannerEvents.length === 0 ? (
                   <div style={{ textAlign: "center", padding: "40px", border: "1px dashed var(--border-color)", borderRadius: "12px" }}>
                     <div style={{ fontSize: "24px", marginBottom: "10px" }}>📡</div>
-                    <div style={{ color: "var(--text-muted)" }}>Waiting for new market events from blockchain...</div>
+                    <div style={{ color: "var(--text-muted)" }}>
+                      No recent market creation events found yet. The list fills from recent blockchain history and live listener updates.
+                    </div>
                   </div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                     {scannerEvents.map((ev, idx) => (
                       <div key={idx} className="card" style={{ padding: "16px", border: "1px solid var(--border-color)", background: "rgba(255,255,255,0.02)" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
-                          <span style={{ fontWeight: "bold", color: "var(--primary-color)" }}>🔥 New Market Detected</span>
+                          <span style={{ fontWeight: "bold", color: "var(--primary-color)" }}>
+                            {ev.source === "gamma-recent" ? "Recent Market" : "🔥 New Market Detected"}
+                          </span>
                           <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>{new Date(ev.timestamp).toLocaleTimeString()}</span>
                         </div>
+                        {ev.title ? (
+                          <div style={{ marginBottom: "10px" }}>
+                            <div style={{ fontWeight: 600 }}>{ev.title}</div>
+                            {ev.slug ? (
+                              <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "4px" }}>{ev.slug}</div>
+                            ) : null}
+                          </div>
+                        ) : null}
                         <div style={{ fontSize: "14px", display: "grid", gridTemplateColumns: "120px 1fr", gap: "8px" }}>
                           <span style={{ color: "var(--text-muted)" }}>Condition ID:</span>
                           <code style={{ background: "rgba(0,0,0,0.2)", padding: "2px 4px", borderRadius: "4px" }}>{ev.conditionId}</code>
@@ -1418,18 +2113,23 @@ export function App() {
                           <code style={{ background: "rgba(0,0,0,0.2)", padding: "2px 4px", borderRadius: "4px" }}>{ev.questionId}</code>
 
                           <span style={{ color: "var(--text-muted)" }}>Tx Hash:</span>
-                          <a 
-                            href={`https://polygonscan.com/tx/${ev.txHash}`} 
-                            target="_blank" 
-                            rel="noreferrer" 
-                            style={{ color: "#3b82f6", textDecoration: "none" }}
-                          >
-                            {ev.txHash.slice(0, 20)}...
-                          </a>
+                          {ev.txHash ? (
+                            <a 
+                              href={`https://polygonscan.com/tx/${ev.txHash}`} 
+                              target="_blank" 
+                              rel="noreferrer" 
+                              style={{ color: "#3b82f6", textDecoration: "none" }}
+                            >
+                              {ev.txHash.slice(0, 20)}...
+                            </a>
+                          ) : (
+                            <span style={{ color: "var(--text-muted)" }}>Not available from fallback history</span>
+                          )}
                         </div>
                         <div style={{ marginTop: "12px", display: "flex", gap: "8px" }}>
                           <span className="badge badge-info">Slots: {ev.outcomeSlotCount}</span>
-                          <span className="badge badge-secondary">Block: {ev.blockNumber}</span>
+                          <span className="badge badge-secondary">Block: {ev.blockNumber || "n/a"}</span>
+                          <span className="badge badge-secondary">{ev.source === "gamma-recent" ? "Gamma History" : "Live Chain"}</span>
                         </div>
                       </div>
                     ))}
@@ -2178,7 +2878,7 @@ export function App() {
               </div>
             </div>
             {eventLog.length === 0 ? (
-              <div className="empty-state" style={{ padding: "20px 0" }}>
+              <div className="empty-state event-log-empty-state">
                 <strong>No events yet</strong>
                 <p>Sell operations and bot actions will appear here.</p>
               </div>
@@ -2230,12 +2930,16 @@ export function App() {
                 <p className="section-kicker">{tabTitle} Scan</p>
                 <h2>{tabTitle} Discovery</h2>
               </div>
-              <button
-                className="button button-secondary"
-                onClick={() => void loadEvents(search)}
-                type="button"
-              >
-                Refresh
+                <button
+                  className="button button-secondary"
+                  onClick={() =>
+                    void (activeTab === "scanner"
+                      ? loadScannerEvents()
+                      : loadEvents(search))
+                  }
+                  type="button"
+                >
+                  Refresh
               </button>
             </div>
 
@@ -2556,6 +3260,30 @@ function formatMaybeNumber(value: number | null) {
   return typeof value === "number" ? value.toFixed(2) : "-";
 }
 
+function formatPercentSigned(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`
+    : "-";
+}
+
+function formatBtcPrice(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+    : "-";
+}
+
+function formatMarketPrice(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `${Math.round(value * 100)}c`
+    : "-";
+}
+
+function formatConfidence(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `(${Math.round(value * 100)}%)`
+    : "";
+}
+
 function formatBalance(value: string) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed.toFixed(2) : value;
@@ -2567,6 +3295,37 @@ function formatMoneyValue(value: string | null | undefined) {
 
 function formatUsdcValue(value: string | null | undefined) {
   return value !== null && value !== undefined ? `${formatBalance(value)} USDC` : "0.00 USDC";
+}
+
+function formatUsdValue(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(2)}` : "$0.00";
+}
+
+function formatUsdSigned(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`
+    : "$0.00";
+}
+
+function formatBpsValue(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `${Math.round(value)} bps`
+    : "-";
+}
+
+function formatDurationMs(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "-";
+  }
+  if (value < 1000) {
+    return `${Math.round(value)}ms`;
+  }
+  if (value < 60_000) {
+    return `${(value / 1000).toFixed(1)}s`;
+  }
+  const minutes = Math.floor(value / 60_000);
+  const seconds = Math.round((value % 60_000) / 1000);
+  return `${minutes}m ${seconds}s`;
 }
 
 function renderPendingSellBadge(pending: PendingSellState) {

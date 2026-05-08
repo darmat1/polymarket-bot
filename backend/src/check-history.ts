@@ -3,7 +3,7 @@ import * as dotenv from "dotenv";
 
 dotenv.config();
 
-const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097CAe4B54fafa76";
+const CTF_ADDRESS = "0x4d97dcd97ec945f40cf65f87097cae4b54fafa76";
 const CTF_ABI = [
   "event ConditionPreparation(bytes32 indexed conditionId, address indexed oracle, bytes32 indexed questionId, uint outcomeSlotCount)"
 ];
