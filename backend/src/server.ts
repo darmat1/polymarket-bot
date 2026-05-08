@@ -30,7 +30,7 @@ import { WebSocketServer } from "ws";
 import { initBotManager, activateBot, deactivateBot, getBotStatus, getAllActiveBots, getOrFetchStationHistory, getScannerLiveStatus, type BotTask } from "./bot-manager.js";
 import { getEventLog, clearEventLog, logEvent } from "./event-log.js";
 import { activateBtc5mSimulation, deactivateBtc5mSimulation, flushBtc5mSimulationState, getBtc5mSimulationState, initBtc5mSim } from "./btc5m-sim.js";
-import { getLatestBtc5mSnapshot, initBtc5mMonitor } from "./btc5m-monitor.js";
+import { bindBtc5mMonitorSubscriptions, getLatestBtc5mSnapshot, initBtc5mMonitor } from "./btc5m-monitor.js";
 import { readFile } from "node:fs/promises";
 import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -121,7 +121,7 @@ const server = createServer(async (req, res) => {
 
     if (requestUrl.pathname === "/api/btc-5m-current" && req.method === "GET") {
       try {
-        const payload = getLatestBtc5mSnapshot() ?? await getCurrentBtc5mMarketSnapshot();
+        const payload = getLatestBtc5mSnapshot() ?? await getCurrentBtc5mMarketSnapshot({ includeAi: true });
         return json(res, 200, payload);
       } catch (err) {
         return json(res, 500, { error: err instanceof Error ? err.message : "Internal error" });
@@ -365,6 +365,7 @@ async function start(): Promise<void> {
   const wss = new WebSocketServer({ server });
   initBotManager(wss);
   initBtc5mSim(wss);
+  bindBtc5mMonitorSubscriptions(wss);
   initBtc5mMonitor(wss);
 
   if (authState.credsSource === "derived") {

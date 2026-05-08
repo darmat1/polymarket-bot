@@ -168,6 +168,18 @@ export interface Btc5mMarketSnapshotPayload {
     summary: string | null;
     reasoning: string[];
     generatedAt: number | null;
+    aiStatus: "available" | "unavailable";
+    aiError: string | null;
+    heuristic: {
+      direction: "up" | "down" | "neutral";
+      confidence: number | null;
+      summary: string | null;
+    };
+    groq: {
+      direction: "up" | "down" | "neutral";
+      confidence: number | null;
+      summary: string | null;
+    } | null;
   };
   book: {
     yes: {
@@ -192,14 +204,25 @@ export interface Btc5mMarketSnapshotPayload {
 const extractionCache = new Map<string, { data: any; expires: number }>();
 const EXTRACTION_TTL = 30 * 60 * 1000; // 30 minutes
 const btcPredictionCache = new Map<string, { data: Btc5mMarketSnapshotPayload["prediction"]; expires: number }>();
+const btcAiPredictionCache = new Map<string, { data: Btc5mMarketSnapshotPayload["prediction"] | null; signal: string; expires: number }>();
 const btc5mSnapshotCache = new Map<string, { data: Btc5mMarketSnapshotPayload; expires: number }>();
 const BTC_PREDICTION_TTL = 15 * 1000;
+const BTC_AI_PREDICTION_TTL = 2 * 60 * 1000;
 const BTC_5M_SNAPSHOT_TTL = 15 * 1000;
 const BTC_5M_WINDOW_MS = 5 * 60 * 1000;
 const BTC_5M_MAX_UPCOMING_LOOKAHEAD_MS = 10 * 60 * 1000;
+const GROQ_RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1000;
 
-export async function extractWeatherMarketData(question: string, description: string, slug?: string): Promise<any> {
-  const cacheKey = slug || question;
+let groqCooldownUntil = 0;
+let groqCooldownReason: string | null = null;
+
+export async function extractWeatherMarketData(
+  question: string,
+  description: string,
+  marketSlug?: string,
+  marketEndDateIso?: string | null,
+): Promise<any> {
+  const cacheKey = marketSlug || question;
   const now = Date.now();
   const cached = extractionCache.get(cacheKey);
   if (cached && cached.expires > now) {
@@ -208,6 +231,7 @@ export async function extractWeatherMarketData(question: string, description: st
 
   const settings = loadSettings();
   if (!settings.groqApiKey) return null;
+  if (isGroqCoolingDown()) return null;
 
   let extractedData = null;
   try {
@@ -245,9 +269,16 @@ Current Reference Time (UTC): ${new Date().toISOString()}
       const result = await response.json() as any;
       const content = result.choices[0]?.message?.content;
       if (content) {
-        extractedData = JSON.parse(content);
-        extractionCache.set(cacheKey, { data: extractedData, expires: now + EXTRACTION_TTL });
+        extractedData = normalizeWeatherExtraction(JSON.parse(content));
+        extractionCache.set(cacheKey, {
+          data: extractedData,
+          expires: getWeatherExtractionExpiry(now, marketEndDateIso),
+        });
       }
+    } else {
+      const errorText = await response.text();
+      registerGroqFailure(response.status, `Groq weather extraction failed: ${response.status} ${response.statusText} ${errorText}`);
+      console.error("AI extraction failed", response.status, response.statusText, errorText);
     }
   } catch (e) {
     console.error("AI extraction failed", e);
@@ -296,10 +327,13 @@ export async function getHourlyForecast(marketSlug: string) {
   const market = parseMarket(rawMarket);
   if (!market) return [];
 
-  const extractedData = await extractWeatherMarketData(market.question, market.description);
-
-  // Try standard parser first
-  const parsed = parseWeatherMarket(market, extractedData);
+  const extractedData = await extractWeatherMarketData(
+    market.question,
+    market.description,
+    market.slug,
+    market.endDateIso,
+  );
+  let parsed = parseWeatherMarket(market, extractedData) ?? parseWeatherMarket(market);
   if (parsed) {
     return await fetchHourlyForecast(parsed);
   }
@@ -321,30 +355,39 @@ export async function getHourlyForecast(marketSlug: string) {
   return [];
 }
 
-export async function getCurrentBtc5mMarketSnapshot(): Promise<Btc5mMarketSnapshotPayload> {
+export async function getCurrentBtc5mMarketSnapshot(options?: {
+  includeAi?: boolean;
+}): Promise<Btc5mMarketSnapshotPayload> {
   const settings = loadSettings();
   const gamma = new GammaClient(settings.gammaHost);
   const eventMarkets = await getCandidateBtc5mMarkets(gamma);
+  const includeAi = options?.includeAi ?? true;
 
   const selection = pickCurrentBtc5mMarket(eventMarkets);
   if (!selection) {
     throw new Error("No active BTC 5m market found");
   }
 
-  const cached = btc5mSnapshotCache.get(selection.market.slug);
+  const cached = btc5mSnapshotCache.get(getBtc5mSnapshotCacheKey(selection.market.slug, includeAi));
   const now = Date.now();
   if (cached && cached.expires > now) {
     return cached.data;
   }
 
-  return buildBtc5mMarketSnapshot(selection.market, selection);
+  return buildBtc5mMarketSnapshot(selection.market, selection, { includeAi });
 }
 
-export async function getBtc5mMarketSnapshotBySlug(slug: string): Promise<Btc5mMarketSnapshotPayload> {
+export async function getBtc5mMarketSnapshotBySlug(
+  slug: string,
+  options?: {
+    includeAi?: boolean;
+  },
+): Promise<Btc5mMarketSnapshotPayload> {
   const settings = loadSettings();
   const gamma = new GammaClient(settings.gammaHost);
   const rawMarket = await gamma.getMarketBySlug(slug);
   const market = parseMarket(rawMarket);
+  const includeAi = options?.includeAi ?? true;
 
   if (!market || !isBtc5mMarket(market)) {
     throw new Error(`BTC 5m market not found for slug ${slug}`);
@@ -367,7 +410,7 @@ export async function getBtc5mMarketSnapshotBySlug(slug: string): Promise<Btc5mM
         : startTime !== null && startTime > now
           ? "Nearest Upcoming"
           : "Latest Recent",
-  });
+  }, { includeAi });
 }
 
 async function buildBtc5mMarketSnapshot(
@@ -376,8 +419,13 @@ async function buildBtc5mMarketSnapshot(
     reason: Btc5mMarketSnapshotPayload["market"]["selectionReason"];
     label: Btc5mMarketSnapshotPayload["market"]["selectionLabel"];
   },
+  options?: {
+    includeAi?: boolean;
+  },
 ): Promise<Btc5mMarketSnapshotPayload> {
-  const cached = btc5mSnapshotCache.get(market.slug);
+  const includeAi = options?.includeAi ?? true;
+  const cacheKey = getBtc5mSnapshotCacheKey(market.slug, includeAi);
+  const cached = btc5mSnapshotCache.get(cacheKey);
   const now = Date.now();
   if (cached && cached.expires > now) {
     return cached.data;
@@ -410,6 +458,8 @@ async function buildBtc5mMarketSnapshot(
     marketPriceChangePct,
     yesMidpoint: yesBook?.midpoint ?? null,
     noMidpoint: noBook?.midpoint ?? null,
+  }, {
+    includeAi,
   });
 
   const snapshot = {
@@ -460,7 +510,7 @@ async function buildBtc5mMarketSnapshot(
     },
   } satisfies Btc5mMarketSnapshotPayload;
 
-  btc5mSnapshotCache.set(market.slug, {
+  btc5mSnapshotCache.set(cacheKey, {
     data: snapshot,
     expires: now + BTC_5M_SNAPSHOT_TTL,
   });
@@ -566,8 +616,13 @@ export async function evaluateMarket(params: {
 async function deriveWeatherProbability(
   market: MarketSummary,
 ): Promise<{ parsed: ParsedWeatherMarket; result: WeatherProbabilityResult; probability: number } | null> {
-  const extractedData = await extractWeatherMarketData(market.question, market.description);
-  const parsed = parseWeatherMarket(market, extractedData);
+  const extractedData = await extractWeatherMarketData(
+    market.question,
+    market.description,
+    market.slug,
+    market.endDateIso,
+  );
+  const parsed = parseWeatherMarket(market, extractedData) ?? parseWeatherMarket(market);
   if (!parsed) {
     return null;
   }
@@ -608,7 +663,12 @@ export async function getMarketDetails(slug: string) {
     throw new Error("Market not found");
   }
 
-  const extractedData = await extractWeatherMarketData(market.question, market.description, market.slug);
+  const extractedData = await extractWeatherMarketData(
+    market.question,
+    market.description,
+    market.slug,
+    market.endDateIso,
+  );
 
   return {
     question: market.question,
@@ -1006,8 +1066,11 @@ async function getBtc5mPrediction(params: {
   marketPriceChangePct: number | null;
   yesMidpoint: number | null;
   noMidpoint: number | null;
+}, options?: {
+  includeAi?: boolean;
 }): Promise<Btc5mMarketSnapshotPayload["prediction"]> {
-  const cacheKey = params.market.slug;
+  const includeAi = options?.includeAi ?? true;
+  const cacheKey = getBtc5mPredictionCacheKey(params.market.slug, includeAi);
   const now = Date.now();
   const cached = btcPredictionCache.get(cacheKey);
   if (cached && cached.expires > now) {
@@ -1015,24 +1078,86 @@ async function getBtc5mPrediction(params: {
   }
 
   const settings = loadSettings();
-  let prediction = buildHeuristicBtcPrediction(params);
+  const heuristicPrediction = buildHeuristicBtcPrediction(params);
+  let groqPrediction: Btc5mMarketSnapshotPayload["prediction"] | null = null;
+  let aiError: string | null = settings.groqApiKey ? null : "GROQ_API_KEY is not configured";
+  let prediction = heuristicPrediction;
 
-  if (settings.groqApiKey) {
-    try {
-      const groqPrediction = await getGroqBtcPrediction(settings.groqApiKey, params);
-      if (groqPrediction) {
-        prediction = groqPrediction;
-      }
-    } catch {
-      // Heuristic fallback is intentional for short-lived 5m panels.
-    }
+  if (!includeAi) {
+    const backgroundPrediction = {
+      ...heuristicPrediction,
+      aiStatus: "unavailable",
+      aiError: "AI disabled for background BTC updates",
+      heuristic: {
+        direction: heuristicPrediction.direction,
+        confidence: heuristicPrediction.confidence,
+        summary: heuristicPrediction.summary,
+      },
+      groq: null,
+    } satisfies Btc5mMarketSnapshotPayload["prediction"];
+
+    btcPredictionCache.set(cacheKey, {
+      data: backgroundPrediction,
+      expires: now + BTC_PREDICTION_TTL,
+    });
+    return backgroundPrediction;
   }
 
+  const signal = buildBtcAiSignal(params, heuristicPrediction);
+  const cachedAi = btcAiPredictionCache.get(cacheKey);
+  if (cachedAi && cachedAi.expires > now && cachedAi.signal === signal) {
+    groqPrediction = cachedAi.data;
+    if (groqPrediction) {
+      prediction = groqPrediction;
+      aiError = null;
+    } else if (isGroqCoolingDown()) {
+      aiError = groqCooldownReason;
+    }
+  } else if (settings.groqApiKey && !isGroqCoolingDown()) {
+    try {
+      groqPrediction = await getGroqBtcPrediction(settings.groqApiKey, params);
+      if (groqPrediction) {
+        prediction = groqPrediction;
+        aiError = null;
+      } else {
+        aiError = "AI provider returned no usable prediction";
+      }
+    } catch (error) {
+      aiError = error instanceof Error ? error.message : String(error);
+      // Heuristic fallback is intentional for short-lived 5m panels.
+    }
+    btcAiPredictionCache.set(cacheKey, {
+      data: groqPrediction,
+      signal,
+      expires: now + BTC_AI_PREDICTION_TTL,
+    });
+  } else if (isGroqCoolingDown()) {
+    aiError = groqCooldownReason;
+  }
+
+  const enrichedPrediction = {
+    ...prediction,
+    aiStatus: groqPrediction ? "available" : "unavailable",
+    aiError,
+    heuristic: {
+      direction: heuristicPrediction.direction,
+      confidence: heuristicPrediction.confidence,
+      summary: heuristicPrediction.summary,
+    },
+    groq: groqPrediction
+      ? {
+          direction: groqPrediction.direction,
+          confidence: groqPrediction.confidence,
+          summary: groqPrediction.summary,
+        }
+      : null,
+  } satisfies Btc5mMarketSnapshotPayload["prediction"];
+
   btcPredictionCache.set(cacheKey, {
-    data: prediction,
+    data: enrichedPrediction,
     expires: now + BTC_PREDICTION_TTL,
   });
-  return prediction;
+  return enrichedPrediction;
 }
 
 function buildHeuristicBtcPrediction(params: {
@@ -1056,16 +1181,18 @@ function buildHeuristicBtcPrediction(params: {
   const direction = combinedScore > 0.03 ? "up" : combinedScore < -0.03 ? "down" : "neutral";
   const confidence = Math.min(0.74, Math.max(0.35, Math.abs(combinedScore) * 4 + 0.35));
 
+  const summary =
+    direction === "neutral"
+      ? "Short-term momentum is mixed; edge is weak."
+      : direction === "up"
+        ? "Short-term BTC momentum slightly favors an up close."
+        : "Short-term BTC momentum slightly favors a down close.";
+
   return {
     source: "heuristic",
     direction,
     confidence,
-    summary:
-      direction === "neutral"
-        ? "Short-term momentum is mixed; edge is weak."
-        : direction === "up"
-          ? "Short-term BTC momentum slightly favors an up close."
-          : "Short-term BTC momentum slightly favors a down close.",
+    summary,
     reasoning: [
       `5m momentum: ${marketMove >= 0 ? "+" : ""}${marketMove.toFixed(2)}%`,
       `recent 1m drift: ${shortMove >= 0 ? "+" : ""}${shortMove.toFixed(2)}%`,
@@ -1074,6 +1201,14 @@ function buildHeuristicBtcPrediction(params: {
         : "book bias unavailable",
     ],
     generatedAt: Date.now(),
+    aiStatus: "unavailable",
+    aiError: null,
+    heuristic: {
+      direction,
+      confidence,
+      summary,
+    },
+    groq: null,
   };
 }
 
@@ -1139,7 +1274,10 @@ Recent 1m candles: ${JSON.stringify(recentCandles)}
   });
 
   if (!response.ok) {
-    return null;
+    const errorText = await response.text();
+    const message = `Groq BTC prediction failed: ${response.status} ${response.statusText} ${errorText}`;
+    registerGroqFailure(response.status, message);
+    throw new Error(message);
   }
 
   const result = (await response.json()) as any;
@@ -1173,7 +1311,79 @@ Recent 1m candles: ${JSON.stringify(recentCandles)}
     summary: typeof parsed.summary === "string" ? parsed.summary : null,
     reasoning,
     generatedAt: Date.now(),
+    aiStatus: "available",
+    aiError: null,
+    heuristic: {
+      direction: "neutral",
+      confidence: null,
+      summary: null,
+    },
+    groq: null,
   };
+}
+
+function normalizeWeatherExtraction(payload: any) {
+  const base = payload?.market_parameters && typeof payload.market_parameters === "object"
+    ? payload.market_parameters
+    : payload;
+
+  return {
+    city: base?.city ?? base?.location ?? null,
+    timezone: base?.timezone ?? null,
+    t: typeof base?.t === "number" ? base.t : typeof base?.target_temperature === "number" ? base.target_temperature : null,
+    t_sys: base?.t_sys ?? base?.temperature_unit ?? null,
+    day: base?.day ?? base?.date ?? null,
+    station_code: base?.station_code ?? null,
+  };
+}
+
+function getWeatherExtractionExpiry(now: number, marketEndDateIso?: string | null) {
+  if (!marketEndDateIso) {
+    return now + EXTRACTION_TTL;
+  }
+
+  const endMs = Date.parse(marketEndDateIso);
+  if (!Number.isFinite(endMs)) {
+    return now + EXTRACTION_TTL;
+  }
+
+  return Math.max(now + 60_000, endMs);
+}
+
+function buildBtcAiSignal(
+  params: {
+    marketPriceChangePct: number | null;
+    yesMidpoint: number | null;
+    noMidpoint: number | null;
+  },
+  heuristicPrediction: { direction: "up" | "down" | "neutral"; confidence: number | null },
+) {
+  return JSON.stringify({
+    direction: heuristicPrediction.direction,
+    confidenceBucket: heuristicPrediction.confidence === null ? null : Math.round(heuristicPrediction.confidence * 10),
+    marketMoveBucket: params.marketPriceChangePct === null ? null : Math.round(params.marketPriceChangePct * 100),
+    yesMidBucket: params.yesMidpoint === null ? null : Math.round(params.yesMidpoint * 100),
+    noMidBucket: params.noMidpoint === null ? null : Math.round(params.noMidpoint * 100),
+  });
+}
+
+function getBtc5mSnapshotCacheKey(slug: string, includeAi: boolean) {
+  return `${slug}:${includeAi ? "ai" : "heuristic"}`;
+}
+
+function getBtc5mPredictionCacheKey(slug: string, includeAi: boolean) {
+  return `${slug}:${includeAi ? "ai" : "heuristic"}`;
+}
+
+function isGroqCoolingDown() {
+  return groqCooldownUntil > Date.now();
+}
+
+function registerGroqFailure(status: number, reason: string) {
+  if (status === 429) {
+    groqCooldownUntil = Date.now() + GROQ_RATE_LIMIT_COOLDOWN_MS;
+    groqCooldownReason = reason;
+  }
 }
 
 export async function getRuntimeAuthDebug(): Promise<RuntimeAuthDebugPayload> {

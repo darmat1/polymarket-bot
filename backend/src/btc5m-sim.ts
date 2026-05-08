@@ -294,7 +294,7 @@ async function stepSimulation() {
     return;
   }
 
-  const snapshot = await getCurrentBtc5mMarketSnapshot();
+  const snapshot = await getCurrentBtc5mMarketSnapshot({ includeAi: false });
   state.lastMarketSlug = snapshot.market.slug;
   rememberMarketAssets(snapshot);
   syncMarketSubscription();
@@ -384,7 +384,7 @@ async function maybeCloseOpenPosition() {
     return;
   }
 
-  const snapshot = await getBtc5mMarketSnapshotBySlug(position.marketSlug);
+  const snapshot = await getBtc5mMarketSnapshotBySlug(position.marketSlug, { includeAi: false });
   state.lastMarketSlug = snapshot.market.slug;
   rememberMarketAssets(snapshot);
   syncMarketSubscription();

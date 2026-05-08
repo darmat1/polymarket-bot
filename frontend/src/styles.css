@@ -516,6 +516,11 @@ select:focus {
   padding: 16px;
 }
 
+.btc5m-chart-card {
+  display: flex;
+  flex-direction: column;
+}
+
 .btc5m-chart-head {
   display: flex;
   justify-content: space-between;
@@ -525,7 +530,9 @@ select:focus {
 }
 
 .btc5m-chart-wrap {
-  height: 190px;
+  flex: 1;
+  min-height: 190px;
+  max-height: 300px;
   border-radius: 12px;
   background:
     linear-gradient(180deg, rgba(141, 247, 166, 0.08), rgba(141, 247, 166, 0.015)),
@@ -546,6 +553,20 @@ select:focus {
   vector-effect: non-scaling-stroke;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.btc5m-chart-start-line {
+  stroke: rgba(255, 215, 90, 0.9);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.btc5m-chart-start-label {
+  fill: rgba(255, 215, 90, 0.95);
+  font-size: 3.4px;
+  font-weight: 500;
+  letter-spacing: 0;
 }
 
 .btc5m-grid {

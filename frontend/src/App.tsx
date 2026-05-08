@@ -168,6 +168,18 @@ type Btc5mSnapshotPayload = {
     summary: string | null;
     reasoning: string[];
     generatedAt: number | null;
+    aiStatus: "available" | "unavailable";
+    aiError: string | null;
+    heuristic: {
+      direction: "up" | "down" | "neutral";
+      confidence: number | null;
+      summary: string | null;
+    };
+    groq: {
+      direction: "up" | "down" | "neutral";
+      confidence: number | null;
+      summary: string | null;
+    } | null;
   };
   book: {
     yes: {
@@ -355,6 +367,18 @@ type PendingSellState = {
   updatedAt: number;
 };
 
+function syncSharedBtc5mSubscription(socket: WebSocket | null, tab: AppTab) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  socket.send(
+    JSON.stringify({
+      type: tab === "btc5m" ? "btc5m_subscribe" : "btc5m_unsubscribe",
+    }),
+  );
+}
+
 export function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("positions");
   const [search, setSearch] = useState("");
@@ -403,16 +427,19 @@ export function App() {
   const [scannerStatus, setScannerStatus] = useState<ScannerStatus | null>(null);
   const [btc5mSnapshot, setBtc5mSnapshot] = useState<Btc5mSnapshotPayload | null>(null);
   const [btcCandles, setBtcCandles] = useState<BtcCandle[]>([]);
+  const [btc5mNow, setBtc5mNow] = useState(() => Date.now());
   const [btc5mLoading, setBtc5mLoading] = useState(false);
   const [btc5mError, setBtc5mError] = useState<string | null>(null);
   const [btc5mSimBankroll, setBtc5mSimBankroll] = useState("1");
   const [btc5mSimState, setBtc5mSimState] = useState<Btc5mSimulationState | null>(null);
   const [btc5mSimLoading, setBtc5mSimLoading] = useState(false);
+  const appWsRef = useRef<WebSocket | null>(null);
   const portfolioSyncWsRef = useRef<WebSocket | null>(null);
   const portfolioSyncPingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const portfolioSyncReconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const portfolioSyncRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const portfolioSyncStoppedRef = useRef(false);
+  const activeTabRef = useRef<AppTab>("positions");
 
   const [posSortField, setPosSortField] = useState<string>("value");
   const [posSortDir, setPosSortDir] = useState<"asc" | "desc">("desc");
@@ -530,6 +557,32 @@ export function App() {
       .join(" ");
   }, [btcCandles]);
 
+  const btcStartLine = useMemo(() => {
+    const startPrice = btc5mSnapshot?.pricing.marketStartPrice;
+    if (btcCandles.length === 0 || typeof startPrice !== "number" || !Number.isFinite(startPrice)) {
+      return null;
+    }
+
+    const min = Math.min(...btcCandles.map((candle) => candle.low));
+    const max = Math.max(...btcCandles.map((candle) => candle.high));
+    const range = Math.max(max - min, 1);
+    const y = 100 - ((startPrice - min) / range) * 100;
+
+    return {
+      y: Math.max(0, Math.min(100, y)),
+      label: `Start ${formatCompactBtcPrice(startPrice)}`,
+    };
+  }, [btc5mSnapshot, btcCandles]);
+
+  const btc5mTimeRemaining = useMemo(() => {
+    const endTime = btc5mSnapshot?.market.endTime;
+    if (typeof endTime !== "number" || !Number.isFinite(endTime)) {
+      return null;
+    }
+
+    return Math.max(0, endTime - btc5mNow);
+  }, [btc5mSnapshot, btc5mNow]);
+
   const toggleSort = (field: string) => {
     if (posSortField === field) {
       setPosSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
@@ -559,6 +612,10 @@ export function App() {
   useEffect(() => {
     viewingMarketSlugRef.current = viewingMarketSlug;
   }, [viewingMarketSlug]);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
 
   const [botActive, setBotActive] = useState(false);
   const [botLoading, setBotLoading] = useState(false);
@@ -746,6 +803,11 @@ export function App() {
     function connect() {
       console.log("Connecting to persistent WebSocket...");
       ws = new WebSocket(wsUrl);
+      appWsRef.current = ws;
+
+      ws.onopen = () => {
+        syncSharedBtc5mSubscription(ws, activeTabRef.current);
+      };
 
       ws.onmessage = (event) => {
         try {
@@ -812,6 +874,13 @@ export function App() {
           if (msg.type === "btc5m_sim_log" && msg.state) {
             setBtc5mSimState(msg.state as Btc5mSimulationState);
           }
+          if (msg.type === "btc5m_snapshot" && msg.snapshot) {
+            setBtc5mSnapshot(msg.snapshot as Btc5mSnapshotPayload);
+            if (Array.isArray(msg.candles)) {
+              setBtcCandles(msg.candles as BtcCandle[]);
+            }
+            setBtc5mError(null);
+          }
 
         } catch (err) {
           console.error("WS message error", err);
@@ -819,6 +888,7 @@ export function App() {
       };
 
       ws.onclose = () => {
+        appWsRef.current = null;
         console.log("WS closed, reconnecting in 3s...");
         reconnectTimeout = setTimeout(connect, 3000);
       };
@@ -833,12 +903,20 @@ export function App() {
 
     return () => {
       if (ws) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "btc5m_unsubscribe" }));
+        }
+        appWsRef.current = null;
         ws.onclose = null;
         ws.close();
       }
       clearTimeout(reconnectTimeout);
     };
   }, []);
+
+  useEffect(() => {
+    syncSharedBtc5mSubscription(appWsRef.current, activeTab);
+  }, [activeTab]);
 
   useEffect(() => {
     // Auto-refresh positions every 30 seconds when on the home page (no market viewed)
@@ -1016,13 +1094,15 @@ export function App() {
     if (activeTab === "positions") {
       void loadPositions();
     } else if (activeTab === "btc5m") {
-      void loadBtc5mPanel();
+      if (!btc5mSnapshot || btcCandles.length === 0) {
+        void loadBtc5mPanel();
+      }
       void loadBtc5mSimState();
     } else if (activeTab === "scanner") {
       void loadScannerEvents();
       void loadScannerStatus();
     }
-  }, [activeTab]);
+  }, [activeTab, btc5mSnapshot, btcCandles.length]);
 
   useEffect(() => {
     if (activeTab !== "btc5m") {
@@ -1030,9 +1110,21 @@ export function App() {
     }
 
     const interval = setInterval(() => {
-      void loadBtc5mPanel();
       void loadBtc5mSimState();
     }, 15_000);
+
+    return () => clearInterval(interval);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== "btc5m") {
+      return;
+    }
+
+    setBtc5mNow(Date.now());
+    const interval = setInterval(() => {
+      setBtc5mNow(Date.now());
+    }, 1_000);
 
     return () => clearInterval(interval);
   }, [activeTab]);
@@ -1838,12 +1930,20 @@ export function App() {
                     <div className="btc5m-chart-head">
                       <span>Underlying BTC 1m trend</span>
                       <span className={btc5mTrend?.direction === "up" ? "pnl-pos" : btc5mTrend?.direction === "down" ? "pnl-neg" : "status-muted"}>
-                        {btc5mTrend ? `${btc5mTrend.direction} ${formatPercentSigned(btc5mTrend.changePct)}` : "not enough data"}
+                        {btc5mTimeRemaining !== null ? `${formatCountdownMs(btc5mTimeRemaining)} left` : btc5mTrend ? `${btc5mTrend.direction} ${formatPercentSigned(btc5mTrend.changePct)}` : "not enough data"}
                       </span>
                     </div>
                     <div className="btc5m-chart-wrap">
                       {btcChartPoints ? (
                         <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="btc5m-chart">
+                          {btcStartLine ? (
+                            <>
+                              <line x1="0" y1={btcStartLine.y} x2="100" y2={btcStartLine.y} className="btc5m-chart-start-line" />
+                              <text x="3" y={Math.max(6, btcStartLine.y - 1.5)} textAnchor="start" className="btc5m-chart-start-label">
+                                {btcStartLine.label}
+                              </text>
+                            </>
+                          ) : null}
                           <polyline points={btcChartPoints} className="btc5m-chart-line" />
                         </svg>
                       ) : (
@@ -1856,7 +1956,7 @@ export function App() {
 
                   <section className="btc5m-card btc5m-prediction-card">
                     <div className="btc5m-chart-head">
-                      <span>Market prediction</span>
+                      <span>Signal comparison</span>
                       <span className={
                         btc5mSnapshot.prediction.direction === "up"
                           ? "pnl-pos"
@@ -1868,7 +1968,12 @@ export function App() {
                       </span>
                     </div>
                     <div className="btc5m-rule-list" style={{ marginTop: 0 }}>
-                      <div>Source: {btc5mSnapshot.prediction.source}</div>
+                      <div>
+                        Heuristic prediction: {btc5mSnapshot.prediction.heuristic.direction.toUpperCase()} {formatConfidence(btc5mSnapshot.prediction.heuristic.confidence)}
+                      </div>
+                      <div>
+                        AI prediction: {btc5mSnapshot.prediction.groq ? `${btc5mSnapshot.prediction.groq.direction.toUpperCase()} ${formatConfidence(btc5mSnapshot.prediction.groq.confidence)}` : btc5mSnapshot.prediction.aiError ? `unavailable (${btc5mSnapshot.prediction.aiError})` : "unavailable"}
+                      </div>
                       <div>
                         Summary: {btc5mSnapshot.prediction.summary ?? "No prediction summary available."}
                       </div>
@@ -3272,6 +3377,12 @@ function formatBtcPrice(value: number | null | undefined) {
     : "-";
 }
 
+function formatCompactBtcPrice(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `$${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}`
+    : "-";
+}
+
 function formatMarketPrice(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value)
     ? `${Math.round(value * 100)}c`
@@ -3326,6 +3437,17 @@ function formatDurationMs(value: number | null | undefined) {
   const minutes = Math.floor(value / 60_000);
   const seconds = Math.round((value % 60_000) / 1000);
   return `${minutes}m ${seconds}s`;
+}
+
+function formatCountdownMs(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "-";
+  }
+
+  const totalSeconds = Math.max(0, Math.floor(value / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
 function renderPendingSellBadge(pending: PendingSellState) {
