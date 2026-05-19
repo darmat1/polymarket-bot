@@ -63,7 +63,7 @@ export class Btc15mStateStore {
   async appendCompletedTrade(trade: Btc15mCompletedTrade): Promise<void> {
     await this.enqueue(async () => {
       const state = await this.loadState();
-      state.completedTrades = [...state.completedTrades, trade].slice(-MAX_TRADES);
+      state.completedTrades = dedupeCompletedTrades([...state.completedTrades, trade]).slice(-MAX_TRADES);
       state.updatedAt = Date.now();
       await this.persistState(state);
     });
@@ -140,7 +140,7 @@ export class Btc15mStateStore {
       version: 1,
       updatedAt: numberOr(input.updatedAt, fallback.updatedAt),
       config: normalizeConfig(input.config, fallback.config),
-      completedTrades: Array.isArray(input.completedTrades) ? input.completedTrades : [],
+      completedTrades: dedupeCompletedTrades(Array.isArray(input.completedTrades) ? input.completedTrades : []),
       budget: normalizeBudgetInput(input.budget, fallback.budget, this.defaultConfig.workingBudgetUsd),
       enginePhase: input.enginePhase === "running" || input.enginePhase === "auto_stopped"
         ? input.enginePhase
@@ -314,6 +314,32 @@ function normalizeBalanceCheck(value: unknown): BudgetBalanceCheck | null {
 
 function nullableNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function dedupeCompletedTrades(trades: Btc15mCompletedTrade[]): Btc15mCompletedTrade[] {
+  const seen = new Set<string>();
+  const result: Btc15mCompletedTrade[] = [];
+  for (const trade of trades) {
+    const key = completedTradeKey(trade);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(trade);
+  }
+  return result;
+}
+
+function completedTradeKey(trade: Btc15mCompletedTrade): string {
+  return [
+    trade.marketSlug,
+    trade.bettingSide,
+    trade.buyPrice,
+    trade.sellPrice,
+    trade.shares,
+    trade.exitReason,
+    trade.startedAt,
+  ].join("|");
 }
 
 function numberOr(value: unknown, fallback: number): number {

@@ -600,9 +600,19 @@ export class Btc15mBot {
   ): Promise<void> {
     const position = this.state.cycle.position;
     const market = this.state.market;
-    if (!position || !market || !this.state.cycle.sellOrder) {
+    const sellOrder = this.state.cycle.sellOrder;
+    if (!position || !market || !sellOrder) {
       return;
     }
+
+    sellOrder.status = "filled";
+    sellOrder.filledSize = position.shares;
+    sellOrder.updatedAt = this.runtime.now();
+    this.state.cycle.sellOrder = null;
+    this.state.cycle.position = null;
+    this.state.cycle.cyclePhase = "cycle_done";
+    this.runtime.onMarketBookUnsubscribe(position.tokenId);
+    this.subscribedTokens.delete(position.tokenId);
 
     const pnlUsd = roundUsd((sellPrice - position.avgEntryPrice) * position.shares);
     const trade: Btc15mCompletedTrade = {
@@ -622,11 +632,6 @@ export class Btc15mBot {
     await this.runtime.budget.addFunds(roundUsd(sellPrice * position.shares), "btc15m-sell-filled");
     this.state.completedTrades = [...this.state.completedTrades, trade].slice(-500);
     await this.runtime.persistTrade(trade);
-    this.runtime.onMarketBookUnsubscribe(position.tokenId);
-    this.subscribedTokens.delete(position.tokenId);
-    this.state.cycle.sellOrder = null;
-    this.state.cycle.position = null;
-    this.state.cycle.cyclePhase = "cycle_done";
     this.pushLog(`SELL filled. PnL ${pnlUsd.toFixed(2)} (${trade.result}).`, trade.result === "win" ? "success" : "warn");
     await this.refreshBudget();
     await this.persistRuntimeState();

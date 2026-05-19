@@ -34,6 +34,7 @@ function makeHarness(overrides: Partial<{
   reserveThrows: boolean;
   livePosition: { bettingSide: "up" | "down"; tokenId: string; shares: number } | null;
   topOfBook: { bestBid: number | null; bestAsk: number | null };
+  slowAddFunds: boolean;
 }> = {}) {
   let now = overrides.now ?? market.startTimeMs + 60_000;
   let currentBtc = overrides.currentBtc ?? 100_000;
@@ -82,6 +83,9 @@ function makeHarness(overrides: Partial<{
         reserved -= amount;
       },
       async addFunds(amount) {
+        if (overrides.slowAddFunds) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
         added += amount;
       },
       async snapshot() {
@@ -446,6 +450,27 @@ async function flipsStalePendingBuyWhenDirectionChanges() {
   console.log("direction flip cancels stale buy: OK");
 }
 
+async function deduplicatesConcurrentSellFills() {
+  const h = makeHarness({ currentBtc: 100_100, slowAddFunds: true });
+  const bot = new Btc15mBot({ config, dryRun: true, runtime: h.runtime });
+  await bot.start({ scheduleLoop: false });
+  h.listeners.get("tok-down")?.(null, 0.24);
+  await bot.flushPendingActions();
+
+  const listener = h.listeners.get("tok-down");
+  listener?.(0.41, null);
+  listener?.(0.41, null);
+  listener?.(0.41, null);
+  await bot.flushPendingActions();
+
+  assert.equal(h.trades.length, 1);
+  assert.equal(bot.getStatus().completedTrades.length, 1);
+  assert.equal(h.added, 2);
+  assert.equal(bot.getStatus().cycle.cyclePhase, "cycle_done");
+  await bot.stop();
+  console.log("dedupe concurrent sell fills: OK");
+}
+
 async function main() {
   await startStopTest();
   await placesBuyOnDownWhenBtcAboveStart();
@@ -463,6 +488,7 @@ async function main() {
   await doesNotOpenNewBuyInsideEntryCutoff();
   await holdingWaitsUntilForceSellCutoff();
   await flipsStalePendingBuyWhenDirectionChanges();
+  await deduplicatesConcurrentSellFills();
 }
 
 void main().catch((error) => {

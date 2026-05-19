@@ -94,6 +94,11 @@ async function main() {
       closedAt: 2,
     };
     await store.appendCompletedTrade(trade);
+    await store.appendCompletedTrade({
+      ...trade,
+      id: "t1-duplicate",
+      closedAt: trade.closedAt + 1,
+    });
     const afterTrade = await store.readState();
     assert.equal(afterTrade.completedTrades.length, 1);
     assert.equal(afterTrade.completedTrades[0].id, "t1");
