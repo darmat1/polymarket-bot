@@ -1093,3 +1093,168 @@ input:checked ~ .toggle-label {
   color: var(--mint) !important;
   opacity: 0.8;
 }
+
+/* BTC 15m */
+.btc15m-tab .btc15m-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.btc15m-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.btc15m-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.btc15m-stat-card,
+.btc15m-card {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.btc15m-stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 76px;
+}
+
+.btc15m-stat-card span,
+.btc15m-monitor-grid em,
+.btc15m-cycle-grid dt {
+  color: var(--gold);
+  font-size: 0.68rem;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.btc15m-stat-card strong {
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.btc15m-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.btc15m-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.btc15m-settings-field input {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 10px;
+}
+
+.btc15m-settings-field input:disabled {
+  opacity: 0.55;
+}
+
+.btc15m-monitor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.btc15m-monitor-grid span {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.btc15m-monitor-grid strong {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.btc15m-cycle-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.btc15m-cycle-grid > div {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.16);
+  min-height: 150px;
+}
+
+.btc15m-cycle-grid h3 {
+  margin: 0 0 10px;
+  color: var(--text);
+  font-size: 0.92rem;
+}
+
+.btc15m-cycle-grid dl {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 7px 10px;
+  margin: 0;
+}
+
+.btc15m-cycle-grid dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.btc15m-analytics-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.btc15m-trade-table .btc15m-row-win td {
+  color: var(--mint);
+}
+
+.btc15m-trade-table .btc15m-row-loss td {
+  color: var(--rose);
+}
+
+@media (max-width: 980px) {
+  .btc15m-summary-grid,
+  .btc15m-cycle-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .btc15m-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .btc15m-actions .button {
+    flex: 1;
+  }
+}

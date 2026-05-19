@@ -42,6 +42,18 @@ export interface Btc5mSettings {
   marketScanIntervalSec: number;
 }
 
+export interface Btc15mSettings {
+  buyPriceLimit: number;
+  sellPriceLimit: number;
+  orderSize: number;
+  workingBudgetUsd: number;
+  repeatThresholdMin: number;
+  forceSellThresholdMin: number;
+  neutralZoneUsd: number;
+  tickIntervalSec: number;
+  stateFile: string;
+}
+
 export interface Settings {
   polymarketHost: string;
   gammaHost: string;
@@ -68,6 +80,7 @@ export interface Settings {
   scalperScanIntervalSec: number;
   scalper: ScalperSettings;
   btc5m: Btc5mSettings;
+  btc15m: Btc15mSettings;
 }
 
 export function loadSettings(): Settings {
@@ -90,8 +103,21 @@ export function loadSettings(): Settings {
     marketScanIntervalSec: parseNumber(process.env.BTC5M_MARKET_SCAN_INTERVAL_SEC, 5),
   };
 
+  const btc15m: Btc15mSettings = {
+    buyPriceLimit: parseNumber(process.env.BTC15M_BUY_PRICE_LIMIT, 0.25),
+    sellPriceLimit: parseNumber(process.env.BTC15M_SELL_PRICE_LIMIT, 0.4),
+    orderSize: parseNumber(process.env.BTC15M_ORDER_SIZE, 5),
+    workingBudgetUsd: parseNumber(process.env.BTC15M_WORKING_BUDGET, 5),
+    repeatThresholdMin: parseNumber(process.env.BTC15M_REPEAT_MIN, 6),
+    forceSellThresholdMin: parseNumber(process.env.BTC15M_FORCE_SELL_MIN, 2),
+    neutralZoneUsd: parseNumber(process.env.BTC15M_NEUTRAL_ZONE_USD, 5),
+    tickIntervalSec: parseNumber(process.env.BTC15M_TICK_INTERVAL_SEC, 2),
+    stateFile: process.env.BTC15M_STATE_FILE?.trim() || "data/btc15m-trader-state.json",
+  };
+
   validateScalperSettings(scalper);
   validateBtc5mSettings(btc5m);
+  validateBtc15mSettings(btc15m);
 
   return {
     polymarketHost: process.env.POLYMARKET_HOST ?? "https://clob.polymarket.com",
@@ -122,6 +148,7 @@ export function loadSettings(): Settings {
     scalperScanIntervalSec: scalper.scannerPollIntervalSec,
     scalper,
     btc5m,
+    btc15m,
   };
 }
 
@@ -201,5 +228,37 @@ function validateBtc5mSettings(settings: Btc5mSettings): void {
     if (value <= 0) {
       throw new Error(`${name} must be greater than zero.`);
     }
+  }
+}
+
+function validateBtc15mSettings(settings: Btc15mSettings): void {
+  for (const [name, value] of [
+    ["BTC15M_BUY_PRICE_LIMIT", settings.buyPriceLimit],
+    ["BTC15M_SELL_PRICE_LIMIT", settings.sellPriceLimit],
+  ] as const) {
+    if (!(value > 0 && value < 1)) {
+      throw new Error(`${name} must be between 0 and 1.`);
+    }
+  }
+
+  if (settings.sellPriceLimit <= settings.buyPriceLimit) {
+    throw new Error("BTC15M_SELL_PRICE_LIMIT must be greater than BTC15M_BUY_PRICE_LIMIT.");
+  }
+
+  for (const [name, value] of [
+    ["BTC15M_ORDER_SIZE", settings.orderSize],
+    ["BTC15M_WORKING_BUDGET", settings.workingBudgetUsd],
+    ["BTC15M_REPEAT_MIN", settings.repeatThresholdMin],
+    ["BTC15M_FORCE_SELL_MIN", settings.forceSellThresholdMin],
+    ["BTC15M_NEUTRAL_ZONE_USD", settings.neutralZoneUsd],
+    ["BTC15M_TICK_INTERVAL_SEC", settings.tickIntervalSec],
+  ] as const) {
+    if (value <= 0) {
+      throw new Error(`${name} must be greater than zero.`);
+    }
+  }
+
+  if (settings.forceSellThresholdMin >= 15) {
+    throw new Error("BTC15M_FORCE_SELL_MIN must be less than the 15-minute window.");
   }
 }

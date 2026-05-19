@@ -36,6 +36,12 @@ import {
   stopBtc5mBot,
 } from "./btc5m-bot.js";
 import {
+  getBtc15mBotStatus,
+  startBtc15mBot,
+  stopBtc15mBot,
+  type Btc15mBotConfig,
+} from "./btc15m/index.js";
+import {
   getScalperStatus,
   reconcileScalperState,
   startScalperStrategy,
@@ -241,6 +247,22 @@ const server = createServer(async (req, res) => {
 
     if (requestUrl.pathname === "/api/btc5m/stop" && req.method === "POST") {
       const payload = stopBtc5mBot(loadSettings());
+      return json(res, 200, payload);
+    }
+
+    if (requestUrl.pathname === "/api/btc15m/status" && req.method === "GET") {
+      const payload = await getBtc15mBotStatus(loadSettings());
+      return json(res, 200, payload);
+    }
+
+    if (requestUrl.pathname === "/api/btc15m/start" && req.method === "POST") {
+      const body = await readJsonBody(req) as { config?: Partial<Btc15mBotConfig> };
+      const payload = await startBtc15mBot(loadSettings(), { configOverrides: body.config });
+      return json(res, 200, payload);
+    }
+
+    if (requestUrl.pathname === "/api/btc15m/stop" && req.method === "POST") {
+      const payload = await stopBtc15mBot(loadSettings());
       return json(res, 200, payload);
     }
 

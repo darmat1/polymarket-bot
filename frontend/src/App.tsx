@@ -103,7 +103,7 @@ type UserWebSocketAuthPayload = {
   last_error: string | null;
 };
 
-type AppTab = "weather" | "positions" | "btc5m";
+type AppTab = "weather" | "positions" | "btc5m" | "btc15m";
 
 type Btc5mBotPhase =
   | "idle"
@@ -146,6 +146,82 @@ type Btc5mBotStatus = {
   lastError: string | null;
   updatedAt: number;
   logs: Btc5mBotLogEntry[];
+};
+
+type Btc15mStatusPayload = {
+  enginePhase: "stopped" | "running" | "auto_stopped";
+  dryRun: boolean;
+  config: {
+    workingBudgetUsd: number;
+    shares: number;
+    buyPrice: number;
+    sellPrice: number;
+    repeatThresholdMin: number;
+    forceSellThresholdMin: number;
+    neutralZoneUsd: number;
+    tickIntervalSec: number;
+  };
+  market: {
+    slug: string;
+    question: string;
+    startTimeMs: number;
+    endTimeMs: number;
+    upTokenId: string;
+    downTokenId: string;
+  } | null;
+  marketStartBtcPrice: number | null;
+  currentBtcPrice: number | null;
+  cycle: {
+    cyclePhase: string;
+    buyOrder: {
+      price: number;
+      size: number;
+      status: string;
+      bettingSide: "up" | "down";
+      orderId: string | null;
+    } | null;
+    sellOrder: {
+      price: number;
+      size: number;
+      status: string;
+      orderId: string | null;
+    } | null;
+    position: {
+      bettingSide: "up" | "down";
+      tokenId: string;
+      shares: number;
+      avgEntryPrice: number;
+      costBasisUsd: number;
+    } | null;
+  };
+  completedTrades: Array<{
+    id: string;
+    marketSlug: string;
+    bettingSide: "up" | "down";
+    buyPrice: number;
+    sellPrice: number;
+    shares: number;
+    pnlUsd: number;
+    result: "win" | "loss";
+    exitReason: string;
+    closedAt: number;
+  }>;
+  analytics: {
+    totalTrades: number;
+    wins: number;
+    losses: number;
+    winRate: number;
+    totalPnlUsd: number;
+    remainingBudgetUsd: number;
+  };
+  budget: {
+    availableBudget: number;
+    lockedBudget: number;
+    initialBudget: number;
+  } | null;
+  logs: Array<{ timestamp: number; message: string; type: "info" | "warn" | "error" | "success" }>;
+  lastError: string | null;
+  updatedAt: number;
 };
 
 type EventLogEntry = {
@@ -221,6 +297,18 @@ export function App() {
   const [scalperOrdersLoading, setScalperOrdersLoading] = useState(false);
   const [btc5mStatus, setBtc5mStatus] = useState<Btc5mBotStatus | null>(null);
   const [btc5mLoading, setBtc5mLoading] = useState(false);
+  const [btc15mStatus, setBtc15mStatus] = useState<Btc15mStatusPayload | null>(null);
+  const [btc15mLoading, setBtc15mLoading] = useState(false);
+  const [btc15mFormConfig, setBtc15mFormConfig] = useState({
+    workingBudgetUsd: 5,
+    shares: 5,
+    buyPrice: 0.25,
+    sellPrice: 0.4,
+    repeatThresholdMin: 6,
+    forceSellThresholdMin: 2,
+    neutralZoneUsd: 5,
+  });
+  const btc15mFormDirtyRef = useRef(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [eventLog, setEventLog] = useState<EventLogEntry[]>([]);
   const [eventLogLoading, setEventLogLoading] = useState(false);
@@ -794,6 +882,57 @@ export function App() {
   }, [activeTab]);
 
   useEffect(() => {
+    if (activeTab !== "btc15m") {
+      return;
+    }
+
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const response = await fetch("/api/btc15m/status");
+        const payload = (await response.json()) as Btc15mStatusPayload & { error?: string };
+        if (!response.ok) {
+          throw new Error(payload.error ?? "Failed to load BTC 15m status");
+        }
+        if (!cancelled) {
+          setBtc15mStatus(payload);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          addToast("error", "BTC 15m status failed", error instanceof Error ? error.message : "Unknown error");
+        }
+      }
+    };
+
+    void load();
+    const id = setInterval(() => void load(), 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (
+      !btc15mStatus?.config ||
+      btc15mStatus.enginePhase === "running" ||
+      btc15mFormDirtyRef.current
+    ) {
+      return;
+    }
+
+    setBtc15mFormConfig({
+      workingBudgetUsd: btc15mStatus.config.workingBudgetUsd,
+      shares: btc15mStatus.config.shares,
+      buyPrice: btc15mStatus.config.buyPrice,
+      sellPrice: btc15mStatus.config.sellPrice,
+      repeatThresholdMin: btc15mStatus.config.repeatThresholdMin,
+      forceSellThresholdMin: btc15mStatus.config.forceSellThresholdMin,
+      neutralZoneUsd: btc15mStatus.config.neutralZoneUsd,
+    });
+  }, [btc15mStatus?.config, btc15mStatus?.enginePhase]);
+
+  useEffect(() => {
     if (!selectedEvent) {
       setSelectedEventSlug("");
     } else if (selectedEventSlug !== selectedEvent.slug) {
@@ -998,6 +1137,55 @@ export function App() {
     } finally {
       setBtc5mLoading(false);
       void loadBtc5mStatus();
+    }
+  }
+
+  async function loadBtc15mStatus() {
+    setBtc15mLoading(true);
+    try {
+      const response = await fetch("/api/btc15m/status");
+      const payload = (await response.json()) as Btc15mStatusPayload & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Failed to load BTC 15m status");
+      }
+      setBtc15mStatus(payload);
+    } catch (error) {
+      addToast("error", "BTC 15m status failed", error instanceof Error ? error.message : "Unknown error");
+    } finally {
+      setBtc15mLoading(false);
+    }
+  }
+
+  async function toggleBtc15mBot() {
+    if (btc15mLoading) {
+      return;
+    }
+
+    const isActive = btc15mStatus?.enginePhase === "running";
+    setBtc15mLoading(true);
+    try {
+      const endpoint = isActive ? "/api/btc15m/stop" : "/api/btc15m/start";
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: isActive ? undefined : { "content-type": "application/json" },
+        body: isActive ? undefined : JSON.stringify({ config: btc15mFormConfig }),
+      });
+      const payload = (await response.json()) as Btc15mStatusPayload & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Failed to toggle BTC 15m bot");
+      }
+      btc15mFormDirtyRef.current = false;
+      setBtc15mStatus(payload);
+      addToast(
+        "success",
+        isActive ? "BTC 15m stopped" : "BTC 15m started",
+        isActive ? "Bot stopped." : "Mean-reversion cycle is watching the current 15m market.",
+      );
+    } catch (error) {
+      addToast("error", "BTC 15m toggle failed", error instanceof Error ? error.message : "Unknown error");
+    } finally {
+      setBtc15mLoading(false);
+      void loadBtc15mStatus();
     }
   }
 
@@ -1410,6 +1598,13 @@ export function App() {
             onClick={() => handleTabSwitch("btc5m")}
           >
             BTC 5M Bot
+          </button>
+          <button
+            type="button"
+            className={`button tab-button ${activeTab === "btc15m" ? "tab-button-active" : ""}`}
+            onClick={() => handleTabSwitch("btc15m")}
+          >
+            BTC 15m
           </button>
         </nav>
       )}
@@ -2360,6 +2555,157 @@ export function App() {
             </article>
           </section>
         </main>
+      ) : activeTab === "btc15m" ? (
+        <main className="layout layout-single btc15m-tab">
+          <section className="panel btc15m-panel">
+            <div className="panel-head">
+              <div>
+                <p className="section-kicker">Bitcoin 15-minute markets</p>
+                <h2>Contrarian 25¢ → 40¢ bot</h2>
+              </div>
+              <div className="btc15m-actions">
+                <button className="button button-secondary" onClick={() => void loadBtc15mStatus()} type="button" disabled={btc15mLoading}>
+                  {btc15mLoading ? "..." : "Refresh"}
+                </button>
+                <button
+                  className={`button ${btc15mStatus?.enginePhase === "running" ? "button-secondary" : "button-primary"}`}
+                  onClick={() => void toggleBtc15mBot()}
+                  type="button"
+                  disabled={btc15mLoading}
+                >
+                  {btc15mLoading ? "..." : btc15mStatus?.enginePhase === "running" ? "Stop Bot" : "Start Bot"}
+                </button>
+              </div>
+            </div>
+
+            <div className="btc15m-summary-grid">
+              <article className="btc15m-stat-card"><span>Engine</span><strong className={btc15mStatus?.enginePhase === "running" ? "pnl-pos" : "pnl-neg"}>{btc15mStatus?.enginePhase?.toUpperCase() ?? "STOPPED"}</strong></article>
+              <article className="btc15m-stat-card"><span>Mode</span><strong>{btc15mStatus?.dryRun === false ? "LIVE" : "SIM"}</strong></article>
+              <article className="btc15m-stat-card"><span>Buy / Sell</span><strong>{formatUsdPrice(btc15mStatus?.config.buyPrice)} / {formatUsdPrice(btc15mStatus?.config.sellPrice)}</strong></article>
+              <article className="btc15m-stat-card"><span>Budget Left</span><strong>{formatUsd(btc15mStatus?.analytics.remainingBudgetUsd ?? btc15mStatus?.budget?.availableBudget)}</strong></article>
+            </div>
+
+            <article className="btc15m-card">
+              <div className="panel-head">
+                <div>
+                  <p className="section-kicker">Settings</p>
+                  <h2>Cycle controls</h2>
+                </div>
+                <span className={`event-badge ${btc15mStatus?.dryRun === false ? "event-badge-error" : "event-badge-warn"}`}>
+                  {btc15mStatus?.dryRun === false ? "LIVE" : "SIM"}
+                </span>
+              </div>
+              <div className="btc15m-settings-grid">
+                {([
+                  ["Working budget ($)", "workingBudgetUsd", 0.5],
+                  ["Shares per cycle", "shares", 1],
+                  ["Buy price ($)", "buyPrice", 0.01],
+                  ["Sell price ($)", "sellPrice", 0.01],
+                  ["Repeat threshold (min)", "repeatThresholdMin", 1],
+                  ["Force-sell threshold (min)", "forceSellThresholdMin", 1],
+                  ["Neutral zone ($)", "neutralZoneUsd", 1],
+                ] as const).map(([label, key, step]) => (
+                  <label key={key} className="btc15m-settings-field">
+                    <span>{label}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step={step}
+                      value={btc15mFormConfig[key]}
+                      disabled={btc15mStatus?.enginePhase === "running"}
+                      onChange={(event) => {
+                        btc15mFormDirtyRef.current = true;
+                        setBtc15mFormConfig((prev) => ({
+                          ...prev,
+                          [key]: Number(event.target.value),
+                        }));
+                      }}
+                    />
+                  </label>
+                ))}
+              </div>
+              {btc15mStatus?.enginePhase === "auto_stopped" ? <p className="status status-warn">Auto-stopped after budget exhaustion.</p> : null}
+              {btc15mStatus?.lastError ? <p className="status status-error">{btc15mStatus.lastError}</p> : null}
+            </article>
+
+            <article className="btc15m-card">
+              <div className="panel-head">
+                <div>
+                  <p className="section-kicker">Live monitor</p>
+                  <h2>{btc15mStatus?.market?.question ?? "Waiting for live 15m market"}</h2>
+                </div>
+                {btc15mStatus?.market?.slug ? <a className="positions-link" href={`https://polymarket.com/event/${btc15mStatus.market.slug}`} target="_blank" rel="noreferrer">Open market ↗</a> : null}
+              </div>
+              <div className="btc15m-monitor-grid">
+                <span><em>Market</em><strong>{btc15mStatus?.market?.slug ?? "—"}</strong></span>
+                <span><em>Time left</em><strong>{btc15mStatus?.market ? formatTimeRemaining(btc15mStatus.market.endTimeMs) : "—"}</strong></span>
+                <span><em>Start BTC</em><strong>{formatBtcPrice(btc15mStatus?.marketStartBtcPrice)}</strong></span>
+                <span><em>Current BTC</em><strong>{formatBtcPrice(btc15mStatus?.currentBtcPrice)}</strong></span>
+                <span><em>Delta</em><strong>{formatBtcDelta(btc15mStatus)}</strong></span>
+                <span><em>Cycle</em><strong>{btc15mStatus?.cycle.cyclePhase ?? "—"}</strong></span>
+              </div>
+              <div className="btc15m-cycle-grid">
+                <div>
+                  <h3>Buy order</h3>
+                  {btc15mStatus?.cycle.buyOrder ? (
+                    <dl><dt>Side</dt><dd>{btc15mStatus.cycle.buyOrder.bettingSide.toUpperCase()}</dd><dt>Price</dt><dd>{formatUsdPrice(btc15mStatus.cycle.buyOrder.price)}</dd><dt>Size</dt><dd>{formatPosNum(btc15mStatus.cycle.buyOrder.size)}</dd><dt>Status</dt><dd>{btc15mStatus.cycle.buyOrder.status}</dd></dl>
+                  ) : <p className="status status-muted">none</p>}
+                </div>
+                <div>
+                  <h3>Position</h3>
+                  {btc15mStatus?.cycle.position ? (
+                    <dl><dt>Side</dt><dd>{btc15mStatus.cycle.position.bettingSide.toUpperCase()}</dd><dt>Shares</dt><dd>{formatPosNum(btc15mStatus.cycle.position.shares)}</dd><dt>Avg</dt><dd>{formatUsdPrice(btc15mStatus.cycle.position.avgEntryPrice)}</dd><dt>Cost</dt><dd>{formatUsd(btc15mStatus.cycle.position.costBasisUsd)}</dd></dl>
+                  ) : <p className="status status-muted">none</p>}
+                </div>
+                <div>
+                  <h3>Sell order</h3>
+                  {btc15mStatus?.cycle.sellOrder ? (
+                    <dl><dt>Price</dt><dd>{formatUsdPrice(btc15mStatus.cycle.sellOrder.price)}</dd><dt>Size</dt><dd>{formatPosNum(btc15mStatus.cycle.sellOrder.size)}</dd><dt>Status</dt><dd>{btc15mStatus.cycle.sellOrder.status}</dd><dt>Order</dt><dd>{btc15mStatus.cycle.sellOrder.orderId ?? "—"}</dd></dl>
+                  ) : <p className="status status-muted">none</p>}
+                </div>
+              </div>
+            </article>
+
+            <article className="btc15m-card">
+              <div className="panel-head">
+                <div>
+                  <p className="section-kicker">Analytics</p>
+                  <h2>Trade history</h2>
+                </div>
+              </div>
+              <div className="btc15m-analytics-row">
+                <span>Trades: {btc15mStatus?.analytics.totalTrades ?? 0}</span>
+                <span>Wins: {btc15mStatus?.analytics.wins ?? 0}</span>
+                <span>Losses: {btc15mStatus?.analytics.losses ?? 0}</span>
+                <span>Win rate: {((btc15mStatus?.analytics.winRate ?? 0) * 100).toFixed(1)}%</span>
+                <span>PnL: {formatUsd(btc15mStatus?.analytics.totalPnlUsd)}</span>
+              </div>
+              <div className="positions-table-wrap">
+                <table className="positions-table btc15m-trade-table">
+                  <thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Buy</th><th>Sell</th><th>Qty</th><th>PnL</th><th>Result</th><th>Exit</th></tr></thead>
+                  <tbody>
+                    {(btc15mStatus?.completedTrades ?? []).slice().reverse().map((trade) => (
+                      <tr key={trade.id} className={trade.result === "win" ? "btc15m-row-win" : "btc15m-row-loss"}>
+                        <td>{new Date(trade.closedAt).toLocaleString()}</td>
+                        <td>{trade.marketSlug.replace("btc-updown-15m-", "")}</td>
+                        <td>{trade.bettingSide.toUpperCase()}</td>
+                        <td>{formatUsdPrice(trade.buyPrice)}</td>
+                        <td>{formatUsdPrice(trade.sellPrice)}</td>
+                        <td>{formatPosNum(trade.shares)}</td>
+                        <td>{formatUsd(trade.pnlUsd)}</td>
+                        <td>{trade.result}</td>
+                        <td>{trade.exitReason}</td>
+                      </tr>
+                    ))}
+                    {(btc15mStatus?.completedTrades ?? []).length === 0 ? (
+                      <tr><td colSpan={9} className="status status-muted">No trades yet.</td></tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          </section>
+        </main>
       ) : (
         <main className="layout">
           <section className="panel">
@@ -2691,6 +3037,29 @@ function formatBtc5mPrice(value: number | undefined) {
   return typeof value === "number" && Number.isFinite(value)
     ? `${Math.round(value * 100)}¢`
     : "—";
+}
+
+function formatUsd(value: number | null | undefined) {
+  return formatUsdValue(value);
+}
+
+function formatUsdPrice(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(2)}` : "—";
+}
+
+function formatBtcDelta(status: Btc15mStatusPayload | null) {
+  if (!status || status.currentBtcPrice === null || status.marketStartBtcPrice === null) {
+    return "—";
+  }
+  const delta = status.currentBtcPrice - status.marketStartBtcPrice;
+  return `${delta >= 0 ? "+" : "-"}$${Math.abs(delta).toFixed(2)}`;
+}
+
+function formatTimeRemaining(endTimeMs: number) {
+  const remaining = Math.max(0, endTimeMs - Date.now());
+  const minutes = Math.floor(remaining / 60_000);
+  const seconds = Math.floor((remaining % 60_000) / 1000);
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
 function describeBtc5mStatus(status: Btc5mBotStatus | null) {

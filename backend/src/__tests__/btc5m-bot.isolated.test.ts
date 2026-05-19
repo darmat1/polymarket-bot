@@ -53,6 +53,17 @@ const settings: Settings = {
     orderSize: 5,
     marketScanIntervalSec: 60,
   },
+  btc15m: {
+    buyPriceLimit: 0.25,
+    sellPriceLimit: 0.4,
+    orderSize: 5,
+    workingBudgetUsd: 5,
+    repeatThresholdMin: 6,
+    forceSellThresholdMin: 2,
+    neutralZoneUsd: 5,
+    tickIntervalSec: 2,
+    stateFile: "data/btc15m-trader-state.json",
+  },
 };
 
 const nextMarket: Btc5mMarketView = {

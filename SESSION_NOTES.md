@@ -6,6 +6,7 @@
 - `docker-compose up --build -d` succeeds.
 - `GET http://localhost:3001/api/account-summary` returns 200.
 - LSP diagnostics are clean.
+- 2026-05-20 BTC 15m module: backend isolated tests pass; backend check/build pass; frontend build passes with pre-existing Node/Vite warning (`Node.js 20.18.0`, Vite wants 20.19+); Docker image build passes but `docker-compose up --build -d` cannot start because container name `polymarket-bot` is already in use by an existing container. Dev-server smoke on `PORT=3002` verified `/api/btc15m/status`, `/api/btc15m/start` in SIM with high neutral zone, and `/api/btc15m/stop`.
 
 ## Implemented Files
 - `backend/src/config.ts`
