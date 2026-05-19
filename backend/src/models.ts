@@ -9,11 +9,21 @@ export interface MarketSummary {
   question: string;
   description: string;
   category: string;
+  startDateIso: string | null;
   endDateIso: string | null;
+  conditionId?: string | null;
   active: boolean;
   closed: boolean;
+  liquidity?: number | null;
+  volume?: number | null;
   outcomes: OutcomeToken[];
   raw: Record<string, unknown>;
+}
+
+export interface IMarket extends MarketSummary {
+  conditionId: string | null;
+  liquidity: number | null;
+  volume: number | null;
 }
 
 export interface WeatherStation {
@@ -51,7 +61,7 @@ export interface ForecastPoint {
 }
 
 export interface HourlyForecastPoint {
-  time: string; // ISO string
+  time: string;
   temp: number;
   unit: "F" | "C";
 }
@@ -96,7 +106,13 @@ export class TopOfBook {
     if (midpoint === null || midpoint === 0) {
       return null;
     }
-    return ((this.bestAsk! - this.bestBid!) / midpoint) * 10_000;
+
+    const { bestAsk, bestBid } = this;
+    if (bestAsk === null || bestBid === null) {
+      return null;
+    }
+
+    return ((bestAsk - bestBid) / midpoint) * 10_000;
   }
 }
 
@@ -106,4 +122,97 @@ export interface TradeDecision {
   targetPrice: number;
   edgeBps: number;
   reason: string;
+}
+
+export type ScalperOrderSide = "buy" | "sell";
+
+export type ScalperOrderStatus =
+  | "pending"
+  | "open"
+  | "partial"
+  | "filled"
+  | "cancel_requested"
+  | "cancelled"
+  | "expired"
+  | "failed";
+
+export interface ScalperMarketSnapshot {
+  marketId: string;
+  slug: string;
+  question: string;
+  outcome: string;
+  tokenId: string;
+  conditionId: string | null;
+  endDateIso: string | null;
+  bestBid: number | null;
+  bestAsk: number | null;
+  lastTradePrice: number | null;
+  availableLiquidity: number | null;
+  minLiquidity: number;
+  negRisk: boolean | null;
+  active: boolean;
+  closed: boolean;
+  scannedAt: number;
+  updatedAt: number;
+}
+
+export interface ScalperTrackedOrder {
+  localId: string;
+  orderId: string | null;
+  marketId: string;
+  marketSlug: string;
+  tokenId: string;
+  outcome: string;
+  conditionId: string | null;
+  side: ScalperOrderSide;
+  status: ScalperOrderStatus;
+  price: number;
+  size: number;
+  matchedSize: number;
+  remainingSize: number | null;
+  endDateIso: string | null;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number | null;
+  reservedBudget: number;
+  reservationId: string | null;
+  proceedsReceived: number;
+  dryRun: boolean;
+  errorMessage: string | null;
+}
+
+export interface ScalperMarketState {
+  marketId: string;
+  latestSnapshot: ScalperMarketSnapshot;
+  openOrderIds: string[];
+  completedOrderIds: string[];
+  reservedBudget: number;
+  lastScanAt: number;
+  lastUserEventAt: number | null;
+}
+
+export interface ScalperBudgetState {
+  totalBudget: number;
+  reservedBudget: number;
+  availableBudget: number;
+  reservations: Record<
+    string,
+    {
+      amount: number;
+      marketId: string;
+      tokenId: string;
+      orderId?: string;
+      reason?: string;
+      createdAt: number;
+    }
+  >;
+  updatedAt: number;
+}
+
+export interface ScalperPersistedState {
+  version: 1;
+  updatedAt: number;
+  budget: ScalperBudgetState;
+  markets: Record<string, ScalperMarketState>;
+  orders: Record<string, ScalperTrackedOrder>;
 }

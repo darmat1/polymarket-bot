@@ -5,12 +5,10 @@ import {
 } from "node:http";
 
 import {
-  evaluateMarket,
-  getBtcCandles,
   getAccountSummary,
-  getCurrentBtc5mMarketSnapshot,
   getOpenPositions,
   getRuntimeAuthDebug,
+  getScalperOpenOrders,
   getUserWebSocketAuth,
   placeLimitOrder,
   scanMarkets,
@@ -19,21 +17,30 @@ import {
   getMarketDetails,
   updateTokenAllowance,
   getHourlyForecast,
-  getRecentScannerEvents,
 } from "./app.js";
 import {
   getRuntimeAuthState,
   initializeRuntimeApiCreds,
-  forceRederiveApiCreds,
+  forceReloadApiCreds,
 } from "./runtime-auth.js";
 import { WebSocketServer } from "ws";
-import { initBotManager, activateBot, deactivateBot, getBotStatus, getAllActiveBots, getOrFetchStationHistory, getScannerLiveStatus, type BotTask } from "./bot-manager.js";
+import { initBotManager, activateBot, deactivateBot, getBotStatus, getAllActiveBots, getOrFetchStationHistory, type BotTask } from "./bot-manager.js";
 import { getEventLog, clearEventLog, logEvent } from "./event-log.js";
-import { activateBtc5mSimulation, deactivateBtc5mSimulation, flushBtc5mSimulationState, getBtc5mSimulationState, initBtc5mSim } from "./btc5m-sim.js";
-import { bindBtc5mMonitorSubscriptions, getLatestBtc5mSnapshot, initBtc5mMonitor } from "./btc5m-monitor.js";
+import { loadSettings } from "./config.js";
 import { readFile } from "node:fs/promises";
 import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  getBtc5mBotStatus,
+  startBtc5mBot,
+  stopBtc5mBot,
+} from "./btc5m-bot.js";
+import {
+  getScalperStatus,
+  reconcileScalperState,
+  startScalperStrategy,
+  stopScalperStrategy,
+} from "./scalper/scalper-strategy.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const FRONTEND_DIST = join(__dirname, "..", "..", "frontend", "dist");
@@ -105,39 +112,6 @@ const server = createServer(async (req, res) => {
       }
     }
 
-    if (requestUrl.pathname === "/api/scanner-events" && req.method === "GET") {
-      const limit = Number(requestUrl.searchParams.get("limit") ?? "10");
-      try {
-        const events = await getRecentScannerEvents(limit);
-        return json(res, 200, { events });
-      } catch (err) {
-        return json(res, 500, { error: err instanceof Error ? err.message : "Internal error" });
-      }
-    }
-
-    if (requestUrl.pathname === "/api/scanner-status" && req.method === "GET") {
-      return json(res, 200, getScannerLiveStatus());
-    }
-
-    if (requestUrl.pathname === "/api/btc-5m-current" && req.method === "GET") {
-      try {
-        const payload = getLatestBtc5mSnapshot() ?? await getCurrentBtc5mMarketSnapshot({ includeAi: true });
-        return json(res, 200, payload);
-      } catch (err) {
-        return json(res, 500, { error: err instanceof Error ? err.message : "Internal error" });
-      }
-    }
-
-    if (requestUrl.pathname === "/api/btc-candles" && req.method === "GET") {
-      const limit = Number(requestUrl.searchParams.get("limit") ?? "60");
-      try {
-        const candles = await getBtcCandles(limit);
-        return json(res, 200, { candles });
-      } catch (err) {
-        return json(res, 500, { error: err instanceof Error ? err.message : "Internal error" });
-      }
-    }
-
     if (
       requestUrl.pathname === "/api/account-summary" &&
       req.method === "GET"
@@ -192,19 +166,16 @@ const server = createServer(async (req, res) => {
       return json(res, 200, payload);
     }
 
-    if (
-      requestUrl.pathname === "/api/rederive-creds" &&
-      req.method === "POST"
-    ) {
+    if (requestUrl.pathname === "/api/reload-creds" && req.method === "POST") {
       try {
-        const creds = await forceRederiveApiCreds();
+        const creds = await forceReloadApiCreds();
         const state = getRuntimeAuthState();
         return json(res, 200, {
           ok: true,
           credsSource: state.credsSource,
           keyPreview: state.keyPreview,
           lastError: state.lastError,
-          derived: creds !== null,
+          loaded: creds !== null,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -235,25 +206,42 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { slugs: getAllActiveBots() });
     }
 
-    if (requestUrl.pathname === "/api/btc5m-sim/status" && req.method === "GET") {
-      return json(res, 200, getBtc5mSimulationState());
+    if (requestUrl.pathname === "/api/scalper/status" && req.method === "GET") {
+      await reconcileScalperState(loadSettings());
+      return json(res, 200, getScalperStatus());
     }
 
-    if (requestUrl.pathname === "/api/btc5m-sim/activate" && req.method === "POST") {
-      const body = await readJsonBody(req) as { bankrollUsd?: unknown };
-      const bankrollUsd = Number(body.bankrollUsd);
-      if (!Number.isFinite(bankrollUsd) || bankrollUsd < 1) {
-        return json(res, 400, { error: "bankrollUsd must be at least 1" });
-      }
-      activateBtc5mSimulation(bankrollUsd);
-      await flushBtc5mSimulationState();
-      return json(res, 200, { ok: true, state: getBtc5mSimulationState() });
+    if (requestUrl.pathname === "/api/scalper/open-orders" && req.method === "GET") {
+      await reconcileScalperState(loadSettings());
+      const payload = await getScalperOpenOrders();
+      return json(res, 200, payload);
     }
 
-    if (requestUrl.pathname === "/api/btc5m-sim/deactivate" && req.method === "POST") {
-      deactivateBtc5mSimulation();
-      await flushBtc5mSimulationState();
-      return json(res, 200, { ok: true, state: getBtc5mSimulationState() });
+    if (requestUrl.pathname === "/api/scalper/start" && req.method === "POST") {
+      const settings = loadSettings();
+      await startScalperStrategy(settings);
+      return json(res, 200, { ok: true, active: true });
+    }
+
+    if (requestUrl.pathname === "/api/scalper/stop" && req.method === "POST") {
+      stopScalperStrategy();
+      await reconcileScalperState(loadSettings());
+      return json(res, 200, { ok: true, active: false });
+    }
+
+    if (requestUrl.pathname === "/api/btc5m/status" && req.method === "GET") {
+      const payload = await getBtc5mBotStatus(loadSettings());
+      return json(res, 200, payload);
+    }
+
+    if (requestUrl.pathname === "/api/btc5m/start" && req.method === "POST") {
+      const payload = await startBtc5mBot(loadSettings());
+      return json(res, 200, payload);
+    }
+
+    if (requestUrl.pathname === "/api/btc5m/stop" && req.method === "POST") {
+      const payload = stopBtc5mBot(loadSettings());
+      return json(res, 200, payload);
     }
 
     if (requestUrl.pathname === "/api/event-log" && req.method === "GET") {
@@ -303,27 +291,6 @@ const server = createServer(async (req, res) => {
       }
     }
 
-    if (requestUrl.pathname === "/api/evaluate" && req.method === "POST") {
-      const body = await readJsonBody(req);
-      const fairProbabilityRaw = body.fairProbability;
-      const fairProbability =
-        typeof fairProbabilityRaw === "number"
-          ? fairProbabilityRaw
-          : typeof fairProbabilityRaw === "string" &&
-              fairProbabilityRaw.trim() !== ""
-            ? Number(fairProbabilityRaw)
-            : undefined;
-      const payload = await evaluateMarket({
-        marketSlug: String(body.marketSlug ?? ""),
-        outcome:
-          typeof body.outcome === "string" && body.outcome !== ""
-            ? body.outcome
-            : undefined,
-        fairProbability,
-      });
-      return json(res, 200, payload);
-    }
-
     // Static file serving from frontend/dist
     const isGet = req.method === "GET" || req.method === "HEAD";
     if (isGet && !requestUrl.pathname.startsWith("/api")) {
@@ -359,30 +326,23 @@ const server = createServer(async (req, res) => {
 });
 
 async function start(): Promise<void> {
+  const settings = loadSettings();
   await initializeRuntimeApiCreds();
   const authState = getRuntimeAuthState();
 
   const wss = new WebSocketServer({ server });
   initBotManager(wss);
-  initBtc5mSim(wss);
-  bindBtc5mMonitorSubscriptions(wss);
-  initBtc5mMonitor(wss);
 
-  if (authState.credsSource === "derived") {
-    console.log(
-      "Derived runtime Polymarket L2 creds and cached them in memory.",
-    );
-  } else if (authState.credsSource === "env-fallback") {
-    console.warn(
-      `Runtime Polymarket L2 derive failed; using env credential fallback${authState.lastError ? `: ${authState.lastError}` : "."}`,
-    );
-  } else if (authState.signerAddress) {
+  if (settings.enableScalper) {
+    await startScalperStrategy(settings);
+    console.log("Scalper runtime enabled.");
+  }
+
+  if (authState.credsSource === "env") {
+    console.log("Loaded runtime Polymarket L2 creds from env.");
+  } else {
     console.warn(
       `Runtime Polymarket L2 creds unavailable${authState.lastError ? `: ${authState.lastError}` : "."}`,
-    );
-  } else {
-    console.log(
-      "Skipping runtime Polymarket L2 creds derivation: no private key configured.",
     );
   }
 

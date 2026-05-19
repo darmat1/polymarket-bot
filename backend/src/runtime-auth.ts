@@ -6,8 +6,9 @@ import { TradingClient } from "./trading.js";
 
 let runtimeApiCreds: ApiKeyCreds | null = null;
 let runtimeApiCredsPromise: Promise<ApiKeyCreds | null> | null = null;
+let runtimeTradingClient: TradingClient | null = null;
 let lastRuntimeApiCredsError: string | null = null;
-let runtimeApiCredsSource: "derived" | "env-fallback" | "unavailable" = "unavailable";
+let runtimeApiCredsSource: "env" | "unavailable" = "unavailable";
 
 export async function initializeRuntimeApiCreds(): Promise<ApiKeyCreds | null> {
   if (runtimeApiCreds) {
@@ -15,7 +16,7 @@ export async function initializeRuntimeApiCreds(): Promise<ApiKeyCreds | null> {
   }
 
   if (!runtimeApiCredsPromise) {
-    runtimeApiCredsPromise = deriveRuntimeApiCreds().finally(() => {
+    runtimeApiCredsPromise = loadRuntimeApiCredsFromEnv().finally(() => {
       if (!runtimeApiCreds) {
         runtimeApiCredsPromise = null;
       }
@@ -25,16 +26,28 @@ export async function initializeRuntimeApiCreds(): Promise<ApiKeyCreds | null> {
   return runtimeApiCredsPromise;
 }
 
-export async function getRuntimeTradingClient(): Promise<TradingClient> {
+export async function getRuntimePolymarketService(): Promise<TradingClient> {
+  if (runtimeTradingClient) {
+    return runtimeTradingClient;
+  }
+
   const settings = loadSettings();
   const baseClient = new TradingClient(settings);
   const runtimeCreds = await initializeRuntimeApiCreds();
 
-  if (!runtimeCreds) {
-    return baseClient;
-  }
+  runtimeTradingClient = runtimeCreds
+    ? baseClient.withApiCreds(runtimeCreds)
+    : baseClient;
 
-  return baseClient.withApiCreds(runtimeCreds);
+  return runtimeTradingClient;
+}
+
+export async function getRuntimeTradingClient(): Promise<TradingClient> {
+  return getRuntimePolymarketService();
+}
+
+export async function getRuntimeApiCreds(): Promise<ApiKeyCreds | null> {
+  return initializeRuntimeApiCreds();
 }
 
 export function getRuntimeAuthState(): {
@@ -42,13 +55,15 @@ export function getRuntimeAuthState(): {
   funderAddress: string | null;
   signatureType: number;
   credsLoaded: boolean;
-  credsSource: "derived" | "env-fallback" | "unavailable";
+  credsSource: "env" | "unavailable";
   keyPreview: string | null;
   passphrasePreview: string | null;
   lastError: string | null;
 } {
   const settings = loadSettings();
-  const signerAddress = settings.privateKey ? new ethers.Wallet(normalizePrivateKey(settings.privateKey)).address : null;
+  const signerAddress = settings.privateKey
+    ? new ethers.Wallet(normalizePrivateKey(settings.privateKey)).address
+    : null;
 
   return {
     signerAddress,
@@ -56,85 +71,44 @@ export function getRuntimeAuthState(): {
     signatureType: settings.signatureType,
     credsLoaded: runtimeApiCreds !== null,
     credsSource: runtimeApiCredsSource,
-    keyPreview: runtimeApiCreds?.key ? `${runtimeApiCreds.key.slice(0, 8)}...` : null,
-    passphrasePreview: runtimeApiCreds?.passphrase ? `${runtimeApiCreds.passphrase.slice(0, 8)}...` : null,
+    keyPreview: runtimeApiCreds?.key
+      ? `${runtimeApiCreds.key.slice(0, 8)}...`
+      : null,
+    passphrasePreview: runtimeApiCreds?.passphrase
+      ? `${runtimeApiCreds.passphrase.slice(0, 8)}...`
+      : null,
     lastError: lastRuntimeApiCredsError,
   };
 }
 
-async function deriveRuntimeApiCreds(): Promise<ApiKeyCreds | null> {
+async function loadRuntimeApiCredsFromEnv(): Promise<ApiKeyCreds | null> {
   const settings = loadSettings();
-  if (!settings.privateKey) {
+  if (!hasL2Creds(settings)) {
+    lastRuntimeApiCredsError =
+      "L2 credentials (POLYMARKET_API_KEY / SECRET / PASSPHRASE) are missing from env.";
     runtimeApiCredsSource = "unavailable";
     return null;
   }
 
-  try {
-    const client = new TradingClient(settings);
-    const creds = sanitizeApiCreds(await client.createOrDeriveApiCredsRaw());
-    if (!creds) {
-      throw new Error("Derived API credential payload was empty or malformed.");
-    }
-    runtimeApiCreds = creds;
-    runtimeApiCredsSource = "derived";
-    lastRuntimeApiCredsError = null;
-    return creds;
-  } catch (error) {
-    lastRuntimeApiCredsError = error instanceof Error ? error.message : String(error);
-
-    if (hasL2Creds(settings)) {
-      runtimeApiCreds = {
-        key: settings.apiKey!,
-        secret: settings.apiSecret!,
-        passphrase: settings.apiPassphrase!,
-      };
-      runtimeApiCredsSource = "env-fallback";
-      return runtimeApiCreds;
-    }
-
-    runtimeApiCredsSource = "unavailable";
-    return null;
-  }
+  runtimeApiCreds = {
+    key: settings.apiKey!,
+    secret: settings.apiSecret!,
+    passphrase: settings.apiPassphrase!,
+  };
+  runtimeApiCredsSource = "env";
+  lastRuntimeApiCredsError = null;
+  return runtimeApiCreds;
 }
 
-/**
- * Force clears cached L2 credentials and re-derives them from scratch.
- * Use this when the current credentials are stale/invalid (401 errors).
- */
-export async function forceRederiveApiCreds(): Promise<ApiKeyCreds | null> {
-  // Clear all cached state
+export async function forceReloadApiCreds(): Promise<ApiKeyCreds | null> {
   runtimeApiCreds = null;
   runtimeApiCredsPromise = null;
+  runtimeTradingClient = null;
   lastRuntimeApiCredsError = null;
   runtimeApiCredsSource = "unavailable";
-  // Re-run derivation
   return initializeRuntimeApiCreds();
 }
 
 function normalizePrivateKey(value: string): `0x${string}` {
   return (value.startsWith("0x") ? value : `0x${value}`) as `0x${string}`;
-}
-
-function sanitizeApiCreds(value: unknown): ApiKeyCreds | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const maybeCreds = value as Partial<ApiKeyCreds>;
-  if (
-    typeof maybeCreds.key === "string" &&
-    maybeCreds.key !== "" &&
-    typeof maybeCreds.secret === "string" &&
-    maybeCreds.secret !== "" &&
-    typeof maybeCreds.passphrase === "string" &&
-    maybeCreds.passphrase !== ""
-  ) {
-    return {
-      key: maybeCreds.key,
-      secret: maybeCreds.secret,
-      passphrase: maybeCreds.passphrase,
-    };
-  }
-
-  return null;
 }

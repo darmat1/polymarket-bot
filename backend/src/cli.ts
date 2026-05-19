@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { type TickSize } from "@polymarket/clob-client";
 
-import { deriveApiCreds, evaluateMarket, placeLimitOrder, scanMarkets } from "./app.js";
+import { placeLimitOrder, scanMarkets } from "./app.js";
 
 function buildProgram(): Command {
   const program = new Command();
@@ -26,27 +26,6 @@ function buildProgram(): Command {
           console.log(`  - ${outcome.label}: ${outcome.tokenId}`);
         }
       }
-    });
-
-  program
-    .command("derive-api-creds")
-    .action(async () => {
-      const creds = await deriveApiCreds();
-      console.log(JSON.stringify(creds, null, 2));
-    });
-
-  program
-    .command("evaluate")
-    .requiredOption("--market-slug <slug>", "Market slug")
-    .option("--outcome <label>", "Outcome label")
-    .requiredOption("--fair-probability <number>", "Fair probability")
-    .action(async (options) => {
-      const payload = await evaluateMarket({
-        marketSlug: options.marketSlug,
-        outcome: options.outcome,
-        fairProbability: Number(options.fairProbability),
-      });
-      console.log(JSON.stringify(payload, null, 2));
     });
 
   program

@@ -1,5 +1,16 @@
 import { MarketSummary, OutcomeToken, SearchEventSummary } from "./models.js";
 
+function parseOptionalNumber(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 export class GammaClient {
   constructor(
     private readonly host: string,
@@ -61,6 +72,16 @@ export class GammaClient {
       .slice(0, limit);
   }
 
+  async searchBitcoinUpDownMarkets(limit = 50): Promise<MarketSummary[]> {
+    const events = await this.searchEvents("Bitcoin Up or Down", limit);
+    return events
+      .flatMap((event) => event.markets)
+      .filter((market) => {
+        const text = `${eventTitleLike(market)} ${market.slug} ${market.question}`.toLowerCase();
+        return text.includes("bitcoin up or down") || market.slug.startsWith("btc-updown-");
+      });
+  }
+
   private async fetchJson<T>(url: URL): Promise<T> {
     const response = await fetch(url, {
       signal: AbortSignal.timeout(this.timeoutMs),
@@ -97,9 +118,18 @@ export function parseMarket(item: Record<string, unknown>): MarketSummary | null
     question: String(item.question ?? ""),
     description: String(item.description ?? ""),
     category: String(item.category ?? ""),
+    startDateIso: item.startDate ? String(item.startDate) : item.start_date_iso ? String(item.start_date_iso) : null,
     endDateIso: item.endDate ? String(item.endDate) : item.end_date_iso ? String(item.end_date_iso) : null,
+    conditionId:
+      typeof item.conditionId === "string"
+        ? item.conditionId
+        : typeof item.condition_id === "string"
+          ? item.condition_id
+          : null,
     active: Boolean(item.active),
     closed: Boolean(item.closed),
+    liquidity: parseOptionalNumber(item.liquidity ?? item.liquidityNum),
+    volume: parseOptionalNumber(item.volume ?? item.volumeNum),
     outcomes: paired,
     raw: item,
   };
@@ -115,7 +145,7 @@ export function parseSearchEvent(item: Record<string, unknown>): SearchEventSumm
   const nestedMarkets = Array.isArray(item.markets) ? item.markets : [];
   const markets = nestedMarkets
     .filter((market): market is Record<string, unknown> => typeof market === "object" && market !== null)
-    .map(parseMarket)
+    .map((market) => parseSearchMarket(market, item))
     .filter((market): market is MarketSummary => market !== null);
 
   const tags = Array.isArray(item.tags)
@@ -137,6 +167,22 @@ export function parseSearchEvent(item: Record<string, unknown>): SearchEventSumm
     markets,
     raw: item,
   };
+}
+
+function parseSearchMarket(
+  market: Record<string, unknown>,
+  parentEvent: Record<string, unknown>,
+): MarketSummary | null {
+  const parsed = parseMarket({
+    ...parentEvent,
+    ...market,
+    startDate: market.startDate ?? parentEvent.startDate,
+    endDate: market.endDate ?? parentEvent.endDate,
+    start_date_iso: market.start_date_iso ?? parentEvent.start_date_iso,
+    end_date_iso: market.end_date_iso ?? parentEvent.end_date_iso,
+  });
+
+  return parsed;
 }
 
 export function marketMatchesQuery(market: MarketSummary, query: string): boolean {
@@ -174,4 +220,8 @@ function normalizeValueList(value: unknown): string[] {
   }
 
   return [];
+}
+
+function eventTitleLike(market: MarketSummary): string {
+  return String(market.raw.title ?? market.raw.groupItemTitle ?? "");
 }

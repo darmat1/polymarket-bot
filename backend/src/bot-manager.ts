@@ -22,12 +22,6 @@ const activeTasks = new Map<string, BotTask>();
 let wss: WebSocketServer | null = null;
 let pollInterval: NodeJS.Timeout | null = null;
 
-const scannerLiveStatus = {
-  listenerConnected: false,
-  lastListenerHeartbeatAt: 0,
-  lastScannerEventAt: 0,
-};
-
 const weatherCache = new Map<string, any[]>();
 const MAX_CACHE_SIZE = 100;
 
@@ -80,25 +74,7 @@ export function initBotManager(serverWss: WebSocketServer) {
   wss.on("connection", (ws) => {
     ws.on("message", (data) => {
       try {
-        const msg = JSON.parse(data.toString());
-        if (msg.type === "scanner_listener_status") {
-          scannerLiveStatus.listenerConnected = Boolean(msg.connected);
-          scannerLiveStatus.lastListenerHeartbeatAt =
-            typeof msg.timestamp === "number" ? msg.timestamp : Date.now();
-          return;
-        }
-        if (msg.type === "scanner_event") {
-          scannerLiveStatus.lastScannerEventAt =
-            typeof msg.timestamp === "number" ? msg.timestamp : Date.now();
-
-          // Broadcast to all clients
-          const payload = JSON.stringify(msg);
-          wss?.clients.forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-              client.send(payload);
-            }
-          });
-        }
+        JSON.parse(data.toString());
       } catch (e) {
         // Not JSON or other error
       }
@@ -134,14 +110,6 @@ export function deactivateBot(marketSlug: string) {
 
 export function getBotStatus(marketSlug: string) {
   return activeTasks.get(marketSlug) || { active: false };
-}
-
-export function getScannerLiveStatus() {
-  return {
-    listenerConnected: scannerLiveStatus.listenerConnected,
-    lastListenerHeartbeatAt: scannerLiveStatus.lastListenerHeartbeatAt,
-    lastScannerEventAt: scannerLiveStatus.lastScannerEventAt,
-  };
 }
 
 export function getAllActiveBots() {

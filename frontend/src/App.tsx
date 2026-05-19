@@ -92,7 +92,7 @@ type OpenPositionsPayload = {
 
 type UserWebSocketAuthPayload = {
   available: boolean;
-  source: "derived" | "env-fallback" | "unavailable";
+  source: "env" | "unavailable";
   auth: {
     apiKey: string;
     secret: string;
@@ -103,7 +103,50 @@ type UserWebSocketAuthPayload = {
   last_error: string | null;
 };
 
-type AppTab = "weather" | "crypto" | "positions" | "scanner" | "btc5m";
+type AppTab = "weather" | "positions" | "btc5m";
+
+type Btc5mBotPhase =
+  | "idle"
+  | "looking_for_market"
+  | "placing_buy"
+  | "buy_open"
+  | "placing_sell"
+  | "sell_open"
+  | "completed_waiting_next"
+  | "error";
+
+type Btc5mBotLogEntry = {
+  timestamp: number;
+  message: string;
+  type: "info" | "success" | "warn" | "error";
+};
+
+type Btc5mBotMarket = {
+  marketId: string;
+  slug: string;
+  question: string;
+  startDateIso: string | null;
+  endDateIso: string | null;
+  upTokenId: string;
+  downTokenId: string | null;
+};
+
+type Btc5mBotStatus = {
+  active: boolean;
+  phase: Btc5mBotPhase;
+  dryRun: boolean;
+  orderSize: number;
+  buyPriceLimit: number;
+  sellPriceLimit: number;
+  currentMarket: Btc5mBotMarket | null;
+  nextMarket: Btc5mBotMarket | null;
+  buyOrderId: string | null;
+  sellOrderId: string | null;
+  lastCompletedMarketSlug: string | null;
+  lastError: string | null;
+  updatedAt: number;
+  logs: Btc5mBotLogEntry[];
+};
 
 type EventLogEntry = {
   id: number;
@@ -114,238 +157,27 @@ type EventLogEntry = {
   message: string;
 };
 
-type ScannerEvent = {
-  conditionId: string;
-  oracle: string;
-  questionId: string;
-  outcomeSlotCount: string;
-  txHash: string;
-  blockNumber: number;
-  timestamp: number;
-  title?: string;
-  slug?: string;
-  source?: "blockchain" | "gamma-recent";
-};
-
-type ScannerStatus = {
-  listenerConnected: boolean;
-  lastListenerHeartbeatAt: number;
-  lastScannerEventAt: number;
-};
-
-type BtcCandle = {
-  openTime: number;
-  closeTime: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-};
-
-type Btc5mSnapshotPayload = {
-  market: {
-    slug: string;
-    question: string;
-    startTime: number | null;
-    endTime: number | null;
-    status: "live" | "upcoming" | "recent";
-    selectionReason: "actual-live" | "nearest-upcoming" | "latest-recent";
-    selectionLabel: "Actual Live" | "Nearest Upcoming" | "Latest Recent";
-    yesOutcome: OutcomeToken | null;
-    noOutcome: OutcomeToken | null;
-  };
-  pricing: {
-    marketStartPrice: number | null;
-    marketEndPrice: number | null;
-    currentBtcPrice: number | null;
-    marketPriceChangePct: number | null;
-  };
-  prediction: {
-    source: "groq" | "heuristic" | "unavailable";
-    direction: "up" | "down" | "neutral";
-    confidence: number | null;
-    summary: string | null;
-    reasoning: string[];
-    generatedAt: number | null;
-    aiStatus: "available" | "unavailable";
-    aiError: string | null;
-    heuristic: {
-      direction: "up" | "down" | "neutral";
-      confidence: number | null;
-      summary: string | null;
-    };
-    groq: {
-      direction: "up" | "down" | "neutral";
-      confidence: number | null;
-      summary: string | null;
-    } | null;
-  };
-  book: {
-    yes: {
-      bestBid: number | null;
-      bestAsk: number | null;
-      midpoint: number | null;
-      spreadBps: number | null;
-    } | null;
-    no: {
-      bestBid: number | null;
-      bestAsk: number | null;
-      midpoint: number | null;
-      spreadBps: number | null;
-    } | null;
-  };
-  quotes: {
-    up: number | null;
-    down: number | null;
-  };
-};
-
-type Btc5mSimulationState = {
+type ScalperStatusPayload = {
   active: boolean;
-  bankrollUsd: number;
-  availableUsd: number;
-  minStakeUsd: number;
-  realizedPnlUsd: number;
-  grossRealizedPnlUsd: number;
-  totalStakedUsd: number;
-  wins: number;
-  losses: number;
-  trades: number;
-  winRate: number;
-  sessionEquityUsd: number;
-  unrealizedPnlUsd: number;
-  grossUnrealizedPnlUsd: number;
-  lastUpdateAt: number | null;
-  lastMarketSlug: string | null;
-  strategyId: "momentum_book_v1";
-  openPosition: {
-    strategyId: "momentum_book_v1";
-    side: "up" | "down";
-    marketSlug: string;
-    assetId: string | null;
-    stakeUsd: number;
-    entryFeeUsd: number;
-    totalEntryCostUsd: number;
-    shares: number;
-    entryPrice: number;
-    openedAt: number;
-    currentPrice: number | null;
-    grossExitProceedsUsd: number | null;
-    netExitProceedsUsd: number | null;
-    grossPnlUsd: number | null;
-    unrealizedPnlUsd: number | null;
-    toWinUsd: number;
-    enteredAtTimeToExpiryMs: number | null;
-    spreadBpsAtEntry: number | null;
-    spreadBucket: "lt_150" | "150_300" | "300_500" | "gte_500" | "unknown";
-    timeBucket: "early" | "mid" | "late";
-    targetProfitUsd: number;
-    maxLossUsd: number;
-    entrySignals: {
-      btcMove1mPct: number | null;
-      btcMove3mPct: number | null;
-      btcMove5mPct: number | null;
-      bookMoveBps: number | null;
-      spreadBps: number | null;
-      timeToExpiryMs: number | null;
-      predictionDirection: "up" | "down" | "neutral";
-      predictionConfidence: number | null;
-      bookMidpoint: number | null;
-      liveBestAsk: number | null;
-      liveBestBid: number | null;
-    };
-  } | null;
-  closedTrades: Array<{
-    strategyId: "momentum_book_v1";
-    side: "up" | "down";
-    marketSlug: string;
-    stakeUsd: number;
-    entryFeeUsd: number;
-    totalEntryCostUsd: number;
-    shares: number;
-    entryPrice: number;
-    exitPrice: number;
-    grossProceedsUsd: number;
-    proceedsUsd: number;
-    grossPnlUsd: number;
-    pnlUsd: number;
-    openedAt: number;
-    closedAt: number;
-    holdTimeMs: number;
-    result: "win" | "loss";
-    note: string;
-    exitReason: "take_profit" | "stop_loss" | "reversal" | "time_stop" | "settlement" | "forced_flatten";
-    spreadBpsAtEntry: number | null;
-    spreadBpsAtExit: number | null;
-    spreadBucket: "lt_150" | "150_300" | "300_500" | "gte_500" | "unknown";
-    timeToExpiryMsAtEntry: number | null;
-    timeToExpiryMsAtExit: number | null;
-    timeBucket: "early" | "mid" | "late";
-    entrySignals: {
-      btcMove1mPct: number | null;
-      btcMove3mPct: number | null;
-      btcMove5mPct: number | null;
-      bookMoveBps: number | null;
-      spreadBps: number | null;
-      timeToExpiryMs: number | null;
-      predictionDirection: "up" | "down" | "neutral";
-      predictionConfidence: number | null;
-      bookMidpoint: number | null;
-      liveBestAsk: number | null;
-      liveBestBid: number | null;
-    };
-    exitSignals: {
-      btcMove1mPct: number | null;
-      btcMove3mPct: number | null;
-      btcMove5mPct: number | null;
-      bookMoveBps: number | null;
-      spreadBps: number | null;
-      timeToExpiryMs: number | null;
-    };
-  }>;
-  analytics: {
-    avgHoldTimeMs: number;
-    maxDrawdownUsd: number;
-    peakEquityUsd: number;
-    pnlByStrategy: Record<"momentum_book_v1", {
-      trades: number;
-      wins: number;
-      losses: number;
-      grossPnlUsd: number;
-      netPnlUsd: number;
-      totalHoldTimeMs: number;
-    }>;
-    pnlByDirection: Record<"up" | "down", {
-      trades: number;
-      wins: number;
-      losses: number;
-      grossPnlUsd: number;
-      netPnlUsd: number;
-      totalHoldTimeMs: number;
-    }>;
-    pnlBySpreadBucket: Record<"lt_150" | "150_300" | "300_500" | "gte_500" | "unknown", {
-      trades: number;
-      wins: number;
-      losses: number;
-      grossPnlUsd: number;
-      netPnlUsd: number;
-      totalHoldTimeMs: number;
-    }>;
-    pnlByTimeBucket: Record<"early" | "mid" | "late", {
-      trades: number;
-      wins: number;
-      losses: number;
-      grossPnlUsd: number;
-      netPnlUsd: number;
-      totalHoldTimeMs: number;
-    }>;
-  };
-  logs: Array<{
-    timestamp: number;
-    message: string;
-    type: "info" | "warn" | "error" | "success";
-  }>;
+};
+
+type ScalperOpenOrder = {
+  orderId: string;
+  marketSlug: string | null;
+  marketUrl: string | null;
+  outcome: string | null;
+  tokenId: string;
+  side: string;
+  price: string;
+  originalSize: string;
+  matchedSize: string;
+  status: string;
+  createdAt: number;
+};
+
+type ScalperOpenOrdersPayload = {
+  active: boolean;
+  orders: ScalperOpenOrder[];
 };
 
 type Toast = {
@@ -367,31 +199,14 @@ type PendingSellState = {
   updatedAt: number;
 };
 
-function syncSharedBtc5mSubscription(socket: WebSocket | null, tab: AppTab) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
-    return;
-  }
-
-  socket.send(
-    JSON.stringify({
-      type: tab === "btc5m" ? "btc5m_subscribe" : "btc5m_unsubscribe",
-    }),
-  );
-}
-
 export function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("positions");
   const [search, setSearch] = useState("");
-  const [fairProbability, setFairProbability] = useState("");
   const [events, setEvents] = useState<SearchEventSummary[]>([]);
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [eventsError, setEventsError] = useState<string | null>(null);
   const [selectedEventSlug, setSelectedEventSlug] = useState<string>("");
   const [selectedSlug, setSelectedSlug] = useState<string>("");
-  const [selectedOutcome, setSelectedOutcome] = useState<string>("");
-  const [evaluation, setEvaluation] = useState<EvaluationPayload | null>(null);
-  const [evaluating, setEvaluating] = useState(false);
-  const [evaluationError, setEvaluationError] = useState<string | null>(null);
   const [accountSummary, setAccountSummary] =
     useState<AccountSummaryPayload | null>(null);
   const [accountError, setAccountError] = useState<string | null>(null);
@@ -400,8 +215,12 @@ export function App() {
   const [loadingPositions, setLoadingPositions] = useState(false);
   const [positionsError, setPositionsError] = useState<string | null>(null);
   const [activeBotSlugs, setActiveBotSlugs] = useState<string[]>([]);
-  const [rederiving, setRederiving] = useState(false);
-  const [rederiveStatus, setRederiveStatus] = useState<string | null>(null);
+  const [scalperActive, setScalperActive] = useState(false);
+  const [scalperLoading, setScalperLoading] = useState(false);
+  const [scalperOrders, setScalperOrders] = useState<ScalperOpenOrder[]>([]);
+  const [scalperOrdersLoading, setScalperOrdersLoading] = useState(false);
+  const [btc5mStatus, setBtc5mStatus] = useState<Btc5mBotStatus | null>(null);
+  const [btc5mLoading, setBtc5mLoading] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [eventLog, setEventLog] = useState<EventLogEntry[]>([]);
   const [eventLogLoading, setEventLogLoading] = useState(false);
@@ -423,16 +242,6 @@ export function App() {
   const [marketDetailsError, setMarketDetailsError] = useState<string | null>(
     null,
   );
-  const [scannerEvents, setScannerEvents] = useState<ScannerEvent[]>([]);
-  const [scannerStatus, setScannerStatus] = useState<ScannerStatus | null>(null);
-  const [btc5mSnapshot, setBtc5mSnapshot] = useState<Btc5mSnapshotPayload | null>(null);
-  const [btcCandles, setBtcCandles] = useState<BtcCandle[]>([]);
-  const [btc5mNow, setBtc5mNow] = useState(() => Date.now());
-  const [btc5mLoading, setBtc5mLoading] = useState(false);
-  const [btc5mError, setBtc5mError] = useState<string | null>(null);
-  const [btc5mSimBankroll, setBtc5mSimBankroll] = useState("1");
-  const [btc5mSimState, setBtc5mSimState] = useState<Btc5mSimulationState | null>(null);
-  const [btc5mSimLoading, setBtc5mSimLoading] = useState(false);
   const appWsRef = useRef<WebSocket | null>(null);
   const portfolioSyncWsRef = useRef<WebSocket | null>(null);
   const portfolioSyncPingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -522,67 +331,6 @@ export function App() {
       });
   }, [sortedPositions]);
 
-  const btc5mTrend = useMemo(() => {
-    if (btcCandles.length < 2) {
-      return null;
-    }
-
-    const first = btcCandles[0]?.open ?? null;
-    const last = btcCandles[btcCandles.length - 1]?.close ?? null;
-    if (first === null || last === null || first === 0) {
-      return null;
-    }
-
-    return {
-      direction: last >= first ? "up" : "down",
-      changePct: ((last - first) / first) * 100,
-    };
-  }, [btcCandles]);
-
-  const btcChartPoints = useMemo(() => {
-    if (btcCandles.length === 0) {
-      return "";
-    }
-
-    const min = Math.min(...btcCandles.map((candle) => candle.low));
-    const max = Math.max(...btcCandles.map((candle) => candle.high));
-    const range = Math.max(max - min, 1);
-
-    return btcCandles
-      .map((candle, index) => {
-        const x = btcCandles.length === 1 ? 0 : (index / (btcCandles.length - 1)) * 100;
-        const y = 100 - ((candle.close - min) / range) * 100;
-        return `${x},${y}`;
-      })
-      .join(" ");
-  }, [btcCandles]);
-
-  const btcStartLine = useMemo(() => {
-    const startPrice = btc5mSnapshot?.pricing.marketStartPrice;
-    if (btcCandles.length === 0 || typeof startPrice !== "number" || !Number.isFinite(startPrice)) {
-      return null;
-    }
-
-    const min = Math.min(...btcCandles.map((candle) => candle.low));
-    const max = Math.max(...btcCandles.map((candle) => candle.high));
-    const range = Math.max(max - min, 1);
-    const y = 100 - ((startPrice - min) / range) * 100;
-
-    return {
-      y: Math.max(0, Math.min(100, y)),
-      label: `Start ${formatCompactBtcPrice(startPrice)}`,
-    };
-  }, [btc5mSnapshot, btcCandles]);
-
-  const btc5mTimeRemaining = useMemo(() => {
-    const endTime = btc5mSnapshot?.market.endTime;
-    if (typeof endTime !== "number" || !Number.isFinite(endTime)) {
-      return null;
-    }
-
-    return Math.max(0, endTime - btc5mNow);
-  }, [btc5mSnapshot, btc5mNow]);
-
   const toggleSort = (field: string) => {
     if (posSortField === field) {
       setPosSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
@@ -640,19 +388,11 @@ export function App() {
   const tabTitle =
     activeTab === "weather"
       ? "Weather"
-      : activeTab === "crypto"
-        ? "Crypto"
-        : activeTab === "btc5m"
-          ? "BTC 5m"
-        : "Positions";
+      : "Positions";
   const searchPlaceholder =
     activeTab === "weather"
       ? "nyc high temp"
-      : activeTab === "crypto"
-        ? "btc up"
-        : activeTab === "btc5m"
-          ? "current btc 5m"
-        : "";
+      : "";
   const statusText =
     activeTab === "positions"
       ? loadingPositions
@@ -660,14 +400,6 @@ export function App() {
         : positionsError
           ? positionsError
           : `${positionsPayload?.positions.length ?? 0} open position(s)`
-      : activeTab === "btc5m"
-        ? btc5mLoading
-          ? "Loading BTC 5m panel..."
-          : btc5mError
-            ? btc5mError
-            : btc5mSnapshot
-              ? `Tracking ${btc5mSnapshot.market.slug}`
-              : "No BTC 5m market loaded"
       : loadingEvents
         ? "Loading events..."
         : eventsError
@@ -805,10 +537,6 @@ export function App() {
       ws = new WebSocket(wsUrl);
       appWsRef.current = ws;
 
-      ws.onopen = () => {
-        syncSharedBtc5mSubscription(ws, activeTabRef.current);
-      };
-
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
@@ -852,36 +580,6 @@ export function App() {
             );
             void loadEventLog();
           }
-          if (msg.type === "scanner_event") {
-            setScannerEvents((prev) => [msg as ScannerEvent, ...prev].slice(0, 50));
-            setScannerStatus((prev) =>
-              prev
-                ? {
-                    ...prev,
-                    lastScannerEventAt: typeof msg.timestamp === "number" ? msg.timestamp : Date.now(),
-                  }
-                : {
-                    listenerConnected: true,
-                    lastListenerHeartbeatAt: 0,
-                    lastScannerEventAt: typeof msg.timestamp === "number" ? msg.timestamp : Date.now(),
-                  },
-            );
-            addToast("info", "New Market Detected", `Condition: ${msg.conditionId.slice(0, 10)}...`);
-          }
-          if (msg.type === "btc5m_sim_state" && msg.state) {
-            setBtc5mSimState(msg.state as Btc5mSimulationState);
-          }
-          if (msg.type === "btc5m_sim_log" && msg.state) {
-            setBtc5mSimState(msg.state as Btc5mSimulationState);
-          }
-          if (msg.type === "btc5m_snapshot" && msg.snapshot) {
-            setBtc5mSnapshot(msg.snapshot as Btc5mSnapshotPayload);
-            if (Array.isArray(msg.candles)) {
-              setBtcCandles(msg.candles as BtcCandle[]);
-            }
-            setBtc5mError(null);
-          }
-
         } catch (err) {
           console.error("WS message error", err);
         }
@@ -903,9 +601,6 @@ export function App() {
 
     return () => {
       if (ws) {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "btc5m_unsubscribe" }));
-        }
         appWsRef.current = null;
         ws.onclose = null;
         ws.close();
@@ -913,10 +608,6 @@ export function App() {
       clearTimeout(reconnectTimeout);
     };
   }, []);
-
-  useEffect(() => {
-    syncSharedBtc5mSubscription(appWsRef.current, activeTab);
-  }, [activeTab]);
 
   useEffect(() => {
     // Auto-refresh positions every 30 seconds when on the home page (no market viewed)
@@ -1093,40 +784,13 @@ export function App() {
   useEffect(() => {
     if (activeTab === "positions") {
       void loadPositions();
-    } else if (activeTab === "btc5m") {
-      if (!btc5mSnapshot || btcCandles.length === 0) {
-        void loadBtc5mPanel();
-      }
-      void loadBtc5mSimState();
-    } else if (activeTab === "scanner") {
-      void loadScannerEvents();
-      void loadScannerStatus();
     }
-  }, [activeTab, btc5mSnapshot, btcCandles.length]);
-
-  useEffect(() => {
-    if (activeTab !== "btc5m") {
-      return;
-    }
-
-    const interval = setInterval(() => {
-      void loadBtc5mSimState();
-    }, 15_000);
-
-    return () => clearInterval(interval);
   }, [activeTab]);
 
   useEffect(() => {
-    if (activeTab !== "btc5m") {
-      return;
+    if (activeTab === "btc5m") {
+      void loadBtc5mStatus();
     }
-
-    setBtc5mNow(Date.now());
-    const interval = setInterval(() => {
-      setBtc5mNow(Date.now());
-    }, 1_000);
-
-    return () => clearInterval(interval);
   }, [activeTab]);
 
   useEffect(() => {
@@ -1140,21 +804,13 @@ export function App() {
   useEffect(() => {
     if (!selectedMarket) {
       setSelectedSlug("");
-      setSelectedOutcome("");
       return;
     }
 
     if (selectedSlug !== selectedMarket.slug) {
       setSelectedSlug(selectedMarket.slug);
     }
-
-    const outcomeStillExists = selectedMarket.outcomes.some(
-      (outcome) => outcome.label === selectedOutcome,
-    );
-    if (!outcomeStillExists) {
-      setSelectedOutcome(selectedMarket.outcomes[0]?.label ?? "");
-    }
-  }, [selectedMarket, selectedOutcome, selectedSlug]);
+  }, [selectedMarket, selectedSlug]);
 
   async function loadEvents(nextSearch: string) {
     setLoadingEvents(true);
@@ -1177,18 +833,11 @@ export function App() {
       }
 
       const rawEvents = payload.events ?? [];
-      const filteredEvents = rawEvents.filter((event) => {
-        if (activeTab === "weather") {
-          return isWeatherEvent(event);
-        }
-        return isCryptoEvent(event);
-      });
+      const filteredEvents = rawEvents.filter((event) => isWeatherEvent(event));
 
       setEvents(filteredEvents);
       setSelectedEventSlug("");
       setSelectedSlug("");
-      setSelectedOutcome("");
-      setEvaluation(null);
     } catch (error) {
       setEventsError(
         error instanceof Error ? error.message : "Failed to load events",
@@ -1238,6 +887,7 @@ export function App() {
   async function loadPositions() {
     setIsRefreshing(true);
     setLoadingPositions(true);
+    setScalperOrdersLoading(true);
     setPositionsError(null);
     try {
       const response = await fetch("/api/positions");
@@ -1266,155 +916,88 @@ export function App() {
       } catch (e) {
         console.error("Failed to fetch active bots", e);
       }
+
+      try {
+        const res = await fetch("/api/scalper/status");
+        const data = (await res.json()) as ScalperStatusPayload;
+        setScalperActive(Boolean(data.active));
+      } catch (e) {
+        console.error("Failed to fetch scalper status", e);
+      }
+
+      try {
+        const res = await fetch("/api/scalper/open-orders");
+        const data = (await res.json()) as ScalperOpenOrdersPayload;
+        setScalperOrders(data.orders || []);
+      } catch (e) {
+        console.error("Failed to fetch scalper open orders", e);
+        setScalperOrders([]);
+      } finally {
+        setScalperOrdersLoading(false);
+      }
     }
   }
 
-  async function loadScannerEvents() {
+  async function toggleScalper() {
+    setScalperLoading(true);
     try {
-      const response = await fetch("/api/scanner-events?limit=20");
-      const payload = (await response.json()) as {
-        error?: string;
-        events?: ScannerEvent[];
-      };
+      const endpoint = scalperActive ? "/api/scalper/stop" : "/api/scalper/start";
+      const response = await fetch(endpoint, { method: "POST" });
+      const payload = (await response.json()) as { ok?: boolean; active?: boolean; error?: string };
       if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to load scanner events");
+        throw new Error(payload.error ?? "Failed to toggle scalper");
       }
-      setScannerEvents(payload.events ?? []);
-    } catch (error) {
-      console.error(
-        "Failed to load scanner events",
-        error instanceof Error ? error.message : error,
+      setScalperActive(Boolean(payload.active));
+      void loadPositions();
+      addToast(
+        "success",
+        scalperActive ? "Scalper stopped" : "Scalper started",
+        scalperActive ? "Scalper strategy stopped." : "Scalper strategy started.",
       );
+    } catch (error) {
+      addToast("error", "Scalper toggle failed", error instanceof Error ? error.message : "Unknown error");
+    } finally {
+      setScalperLoading(false);
     }
   }
 
-  async function loadScannerStatus() {
+  async function loadBtc5mStatus() {
+    setBtc5mLoading(true);
     try {
-      const response = await fetch("/api/scanner-status");
-      const payload = (await response.json()) as ScannerStatus & {
-        error?: string;
-      };
+      const response = await fetch("/api/btc5m/status");
+      const payload = (await response.json()) as Btc5mBotStatus & { error?: string };
       if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to load scanner status");
+        throw new Error(payload.error ?? "Failed to load BTC 5m bot status");
       }
-      setScannerStatus(payload);
+      setBtc5mStatus(payload);
     } catch (error) {
-      console.error(
-        "Failed to load scanner status",
-        error instanceof Error ? error.message : error,
-      );
-      setScannerStatus(null);
-    }
-  }
-
-  async function loadBtc5mPanel() {
-    try {
-      setBtc5mLoading(true);
-      setBtc5mError(null);
-
-      const [snapshotResponse, candlesResponse] = await Promise.all([
-        fetch("/api/btc-5m-current"),
-        fetch("/api/btc-candles?limit=60"),
-      ]);
-
-      const snapshotPayload = (await snapshotResponse.json()) as Btc5mSnapshotPayload & {
-        error?: string;
-      };
-      const candlesPayload = (await candlesResponse.json()) as {
-        candles?: BtcCandle[];
-        error?: string;
-      };
-
-      if (!snapshotResponse.ok) {
-        throw new Error(snapshotPayload.error ?? "Failed to load BTC 5m market");
-      }
-      if (!candlesResponse.ok) {
-        throw new Error(candlesPayload.error ?? "Failed to load BTC candles");
-      }
-
-      setBtc5mSnapshot(snapshotPayload);
-      setBtcCandles(candlesPayload.candles ?? []);
-    } catch (error) {
-      setBtc5mError(
-        error instanceof Error ? error.message : "Failed to load BTC 5m panel",
-      );
-      setBtc5mSnapshot(null);
-      setBtcCandles([]);
+      addToast("error", "BTC 5m status failed", error instanceof Error ? error.message : "Unknown error");
     } finally {
       setBtc5mLoading(false);
     }
   }
 
-  async function loadBtc5mSimState() {
+  async function toggleBtc5mBot() {
+    const isActive = Boolean(btc5mStatus?.active);
+    setBtc5mLoading(true);
     try {
-      const response = await fetch("/api/btc5m-sim/status");
-      const payload = (await response.json()) as Btc5mSimulationState & { error?: string };
+      const endpoint = isActive ? "/api/btc5m/stop" : "/api/btc5m/start";
+      const response = await fetch(endpoint, { method: "POST" });
+      const payload = (await response.json()) as Btc5mBotStatus & { error?: string };
       if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to load BTC sim state");
+        throw new Error(payload.error ?? "Failed to toggle BTC 5m bot");
       }
-      setBtc5mSimState(payload);
-    } catch (error) {
-      console.error("Failed to load BTC sim state", error instanceof Error ? error.message : error);
-    }
-  }
-
-  async function toggleBtc5mSimulation(nextActive: boolean) {
-    setBtc5mSimLoading(true);
-    try {
-      const response = await fetch(nextActive ? "/api/btc5m-sim/activate" : "/api/btc5m-sim/deactivate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: nextActive ? JSON.stringify({ bankrollUsd: Number(btc5mSimBankroll) }) : undefined,
-      });
-      const payload = (await response.json()) as { error?: string; state?: Btc5mSimulationState };
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to update BTC sim state");
-      }
-      if (payload.state) {
-        setBtc5mSimState(payload.state);
-      }
-    } catch (error) {
-      setBtc5mError(error instanceof Error ? error.message : "Failed to update BTC simulation");
-    } finally {
-      setBtc5mSimLoading(false);
-    }
-  }
-
-  async function handleEvaluate() {
-    if (!selectedMarket || !selectedOutcome) {
-      return;
-    }
-
-    setEvaluating(true);
-    setEvaluationError(null);
-
-    try {
-      const response = await fetch("/api/evaluate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          marketSlug: selectedMarket.slug,
-          outcome: selectedOutcome,
-          fairProbability:
-            fairProbability.trim() === "" ? null : Number(fairProbability),
-        }),
-      });
-
-      const payload = (await response.json()) as EvaluationPayload & {
-        error?: string;
-      };
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to evaluate market");
-      }
-
-      setEvaluation(payload);
-    } catch (error) {
-      setEvaluationError(
-        error instanceof Error ? error.message : "Failed to evaluate market",
+      setBtc5mStatus(payload);
+      addToast(
+        "success",
+        isActive ? "BTC 5m bot stopped" : "BTC 5m bot started",
+        isActive ? "Bot stopped." : "Bot will buy UP at 60¢ and sell all UP shares at 70¢.",
       );
-      setEvaluation(null);
+    } catch (error) {
+      addToast("error", "BTC 5m toggle failed", error instanceof Error ? error.message : "Unknown error");
     } finally {
-      setEvaluating(false);
+      setBtc5mLoading(false);
+      void loadBtc5mStatus();
     }
   }
 
@@ -1504,40 +1087,8 @@ export function App() {
     setEvents([]);
     setSelectedEventSlug("");
     setSelectedSlug("");
-    setSelectedOutcome("");
-    setEvaluation(null);
-    setEvaluationError(null);
     setViewingMarketSlug(null);
     setMarketDetails(null);
-  }
-
-  async function handleRederiveCreds() {
-    setRederiving(true);
-    setRederiveStatus(null);
-    try {
-      const res = await fetch("/api/rederive-creds", { method: "POST" });
-      const data = await res.json();
-      if (data.ok && data.derived) {
-        setRederiveStatus(`✓ ${data.credsSource} — ${data.keyPreview}`);
-      } else {
-        setRederiveStatus(`✗ ${data.lastError ?? data.error ?? "Failed"}`);
-      }
-    } catch (err) {
-      setRederiveStatus("✗ Network error");
-    } finally {
-      setRederiving(false);
-      if (portfolioSyncWsRef.current) {
-        portfolioSyncWsRef.current.onclose = null;
-        portfolioSyncWsRef.current.close();
-        portfolioSyncWsRef.current = null;
-      }
-      cleanupPortfolioSyncHeartbeat();
-      if (portfolioSyncReconnectTimeoutRef.current) {
-        clearTimeout(portfolioSyncReconnectTimeoutRef.current);
-        portfolioSyncReconnectTimeoutRef.current = null;
-      }
-      void connectPortfolioSyncWs();
-    }
   }
 
   function cleanupPortfolioSyncHeartbeat() {
@@ -1793,29 +1344,42 @@ export function App() {
         ))}
       </div>
       <header className="topbar">
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <span className="topbar-label">Portfolio</span>
-          <strong className="topbar-value">
-            {formatMoneyValue(accountSummary?.portfolio_value)}
-          </strong>
-          <span className="topbar-label">Available</span>
-          <strong className="topbar-value">
-            {formatMoneyValue(accountSummary?.available_to_trade)}
-          </strong>
-          <span className="topbar-label">Wallet USDC</span>
-          <strong className="topbar-value">
-            {formatUsdcValue(accountSummary?.usdc_balance)}
-          </strong>
+        <div className="topbar-metrics">
+          <div className="topbar-metric">
+            <span className="topbar-label">Portfolio</span>
+            <strong className="topbar-value">
+              {formatMoneyValue(accountSummary?.portfolio_value)}
+            </strong>
+          </div>
+          <div className="topbar-metric">
+            <span className="topbar-label">Available</span>
+            <strong className="topbar-value">
+              {formatMoneyValue(accountSummary?.available_to_trade)}
+            </strong>
+          </div>
+          <div className="topbar-metric">
+            <span className="topbar-label">Wallet USDC</span>
+            <strong className="topbar-value">
+              {formatUsdcValue(accountSummary?.usdc_balance)}
+            </strong>
+          </div>
         </div>
 
-        <div
-          style={{
-            marginLeft: "auto",
-            display: "flex",
-            alignItems: "center",
-            gap: "15px",
-          }}
-        >
+        <div className="topbar-side">
+          <div className="scalper-controls">
+            <span className={`status-badge ${scalperActive ? "on" : "off"}`}>
+              <span className={`indicator-dot ${scalperActive ? "pulse" : ""}`} />
+              SCALPER {scalperActive ? "ON" : "OFF"}
+            </span>
+            <button
+              type="button"
+              className={`button button-small ${scalperActive ? "button-secondary" : "button-primary"}`}
+              onClick={() => void toggleScalper()}
+              disabled={scalperLoading}
+            >
+              {scalperLoading ? "..." : scalperActive ? "Stop Scalper" : "Start Scalper"}
+            </button>
+          </div>
           <span className="topbar-meta">
             {accountSummary?.address
               ? shortenAddress(accountSummary.address)
@@ -1828,423 +1392,29 @@ export function App() {
           >
             {accountSummary?.dry_run ? "dry-run" : "live"}
           </span>
-          <button
-            type="button"
-            className="button button-secondary"
-            style={{ fontSize: "0.72rem", padding: "4px 10px", opacity: rederiving ? 0.6 : 1 }}
-            onClick={() => void handleRederiveCreds()}
-            disabled={rederiving}
-            title="Re-derive Polymarket L2 API credentials from private key"
-          >
-            {rederiving ? "Re-deriving..." : "Re-derive Keys"}
-          </button>
-          {rederiveStatus && (
-            <span style={{
-              fontSize: "0.72rem",
-              color: rederiveStatus.startsWith("✓") ? "var(--mint)" : "var(--rose)",
-              maxWidth: "200px",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}>
-              {rederiveStatus}
-            </span>
-          )}
         </div>
       </header>
 
       {!viewingMarketSlug && (
         <nav className="app-nav">
-          <button className={`button ${activeTab === "positions" ? "button-primary" : "button-secondary"}`} onClick={() => handleTabSwitch("positions")}>Positions</button>
-          <button className={`button ${activeTab === "btc5m" ? "button-primary" : "button-secondary"}`} onClick={() => handleTabSwitch("btc5m")}>BTC 5m</button>
-          {(import.meta as any).env?.VITE_TEST === "1" && (
-            <button className={`button ${activeTab === "scanner" as any ? "button-primary" : "button-secondary"}`} onClick={() => handleTabSwitch("scanner" as any)}>Scanner</button>
-          )}
+          <button
+            type="button"
+            className={`button tab-button ${activeTab === "positions" ? "tab-button-active" : ""}`}
+            onClick={() => handleTabSwitch("positions")}
+          >
+            Positions
+          </button>
+          <button
+            type="button"
+            className={`button tab-button ${activeTab === "btc5m" ? "tab-button-active" : ""}`}
+            onClick={() => handleTabSwitch("btc5m")}
+          >
+            BTC 5M Bot
+          </button>
         </nav>
       )}
 
-      {activeTab === "btc5m" ? (
-        <main className="layout layout-single">
-          <section className="panel">
-            <div className="panel-head">
-              <div>
-                <p className="section-kicker">BTC Up/Down</p>
-                <h2>Current 5 Minute Market</h2>
-              </div>
-              <button
-                className="button button-secondary"
-                type="button"
-                onClick={() => void loadBtc5mPanel()}
-                disabled={btc5mLoading}
-              >
-                {btc5mLoading ? "Refreshing..." : "Refresh"}
-              </button>
-            </div>
-
-            {btc5mError ? <p className="status">{btc5mError}</p> : null}
-
-            {!btc5mSnapshot ? (
-              <div className="empty-state">
-                <strong>No BTC 5m market loaded</strong>
-                <p>Open the panel during live trading hours to resolve the current `btc-updown-5m-*` market.</p>
-              </div>
-            ) : (
-              <div className="btc5m-shell">
-                <section className="btc5m-hero btc5m-span-2">
-                  <div>
-                    <div className="btc5m-market-title">{btc5mSnapshot.market.question}</div>
-                    <div className="btc5m-market-meta">
-                      <span className={`status-badge ${btc5mSnapshot.market.status === "live" ? "on" : "off"}`}>
-                        <span className={`indicator-dot ${btc5mSnapshot.market.status === "live" ? "pulse" : ""}`} />
-                        {btc5mSnapshot.market.status}
-                      </span>
-                      <span>{btc5mSnapshot.market.selectionLabel}</span>
-                      <span>{btc5mSnapshot.market.slug}</span>
-                      <span>
-                        Ends {btc5mSnapshot.market.endTime ? new Date(btc5mSnapshot.market.endTime).toLocaleTimeString() : "n/a"}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="btc5m-pricing">
-                    <article>
-                      <span>Start BTC</span>
-                      <strong>{formatBtcPrice(btc5mSnapshot.pricing.marketStartPrice)}</strong>
-                    </article>
-                    <article>
-                      <span>Current BTC</span>
-                      <strong>{formatBtcPrice(btc5mSnapshot.pricing.currentBtcPrice)}</strong>
-                    </article>
-                    <article>
-                      <span>Move</span>
-                      <strong className={
-                        (btc5mSnapshot.pricing.marketPriceChangePct ?? 0) >= 0 ? "pnl-pos" : "pnl-neg"
-                      }>
-                        {formatPercentSigned(btc5mSnapshot.pricing.marketPriceChangePct)}
-                      </strong>
-                    </article>
-                  </div>
-                </section>
-
-                <section className="btc5m-grid btc5m-span-2">
-                  <section className="btc5m-chart-card">
-                    <div className="btc5m-chart-head">
-                      <span>Underlying BTC 1m trend</span>
-                      <span className={btc5mTrend?.direction === "up" ? "pnl-pos" : btc5mTrend?.direction === "down" ? "pnl-neg" : "status-muted"}>
-                        {btc5mTimeRemaining !== null ? `${formatCountdownMs(btc5mTimeRemaining)} left` : btc5mTrend ? `${btc5mTrend.direction} ${formatPercentSigned(btc5mTrend.changePct)}` : "not enough data"}
-                      </span>
-                    </div>
-                    <div className="btc5m-chart-wrap">
-                      {btcChartPoints ? (
-                        <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="btc5m-chart">
-                          {btcStartLine ? (
-                            <>
-                              <line x1="0" y1={btcStartLine.y} x2="100" y2={btcStartLine.y} className="btc5m-chart-start-line" />
-                              <text x="3" y={Math.max(6, btcStartLine.y - 1.5)} textAnchor="start" className="btc5m-chart-start-label">
-                                {btcStartLine.label}
-                              </text>
-                            </>
-                          ) : null}
-                          <polyline points={btcChartPoints} className="btc5m-chart-line" />
-                        </svg>
-                      ) : (
-                        <div className="empty-state" style={{ padding: "18px" }}>
-                          <p>No candle data yet.</p>
-                        </div>
-                      )}
-                    </div>
-                  </section>
-
-                  <section className="btc5m-card btc5m-prediction-card">
-                    <div className="btc5m-chart-head">
-                      <span>Signal comparison</span>
-                      <span className={
-                        btc5mSnapshot.prediction.direction === "up"
-                          ? "pnl-pos"
-                          : btc5mSnapshot.prediction.direction === "down"
-                            ? "pnl-neg"
-                            : "status-muted"
-                      }>
-                        {btc5mSnapshot.prediction.direction.toUpperCase()} {formatConfidence(btc5mSnapshot.prediction.confidence)}
-                      </span>
-                    </div>
-                    <div className="btc5m-rule-list" style={{ marginTop: 0 }}>
-                      <div>
-                        Heuristic prediction: {btc5mSnapshot.prediction.heuristic.direction.toUpperCase()} {formatConfidence(btc5mSnapshot.prediction.heuristic.confidence)}
-                      </div>
-                      <div>
-                        AI prediction: {btc5mSnapshot.prediction.groq ? `${btc5mSnapshot.prediction.groq.direction.toUpperCase()} ${formatConfidence(btc5mSnapshot.prediction.groq.confidence)}` : btc5mSnapshot.prediction.aiError ? `unavailable (${btc5mSnapshot.prediction.aiError})` : "unavailable"}
-                      </div>
-                      <div>
-                        Summary: {btc5mSnapshot.prediction.summary ?? "No prediction summary available."}
-                      </div>
-                      {btc5mSnapshot.prediction.reasoning.length > 0 ? (
-                        <div>
-                          {btc5mSnapshot.prediction.reasoning.join(" | ")}
-                        </div>
-                      ) : (
-                        <div>No reasoning available.</div>
-                      )}
-                    </div>
-                  </section>
-                </section>
-
-                <section className="btc5m-card">
-                  <div className="btc5m-chart-head">
-                    <span>Simulation bankroll</span>
-                    <span className={btc5mSimState?.active ? "pnl-pos" : "status-muted"}>
-                      {btc5mSimState?.active ? "RUNNING" : "STOPPED"}
-                    </span>
-                  </div>
-                  <div className="btc5m-sim-controls">
-                    <label>
-                      <span>Virtual dollars for this market</span>
-                      <input
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={btc5mSimBankroll}
-                        onChange={(event) => setBtc5mSimBankroll(event.target.value)}
-                        disabled={btc5mSimState?.active || btc5mSimLoading}
-                      />
-                    </label>
-                    <button
-                      className={`button ${btc5mSimState?.active ? "button-secondary" : "button-primary"}`}
-                      type="button"
-                      disabled={btc5mSimLoading}
-                      onClick={() => void toggleBtc5mSimulation(!(btc5mSimState?.active ?? false))}
-                    >
-                      {btc5mSimLoading ? "Working..." : btc5mSimState?.active ? "Stop Simulation" : "Start Simulation"}
-                    </button>
-                  </div>
-                  <div className="btc5m-rule-list">
-                    <div>Minimum stake: $1.00</div>
-                    <div>Strategy: {btc5mSimState?.strategyId ?? "momentum_book_v1"}</div>
-                    <div>Entry rule: BTC momentum + rising book + spread under 300 bps</div>
-                    <div>Exit rule: TP, stop, reversal, time stop, settlement, forced flatten</div>
-                    <div>Trend: {btc5mTrend ? `${btc5mTrend.direction} ${formatPercentSigned(btc5mTrend.changePct)}` : "waiting for candles"}</div>
-                    <div>Up ask / spread: {formatMarketPrice(btc5mSnapshot.book.yes?.bestAsk ?? btc5mSnapshot.quotes.up)} / {formatBpsValue(btc5mSnapshot.book.yes?.spreadBps ?? null)}</div>
-                    <div>Down ask / spread: {formatMarketPrice(btc5mSnapshot.book.no?.bestAsk ?? btc5mSnapshot.quotes.down)} / {formatBpsValue(btc5mSnapshot.book.no?.spreadBps ?? null)}</div>
-                    <div>Available: {formatUsdValue(btc5mSimState?.availableUsd ?? null)}</div>
-                    <div>Net realized PnL: {formatUsdSigned(btc5mSimState?.realizedPnlUsd ?? null)}</div>
-                    <div>Gross realized PnL: {formatUsdSigned(btc5mSimState?.grossRealizedPnlUsd ?? null)}</div>
-                    <div>Net unrealized PnL: {formatUsdSigned(btc5mSimState?.unrealizedPnlUsd ?? null)}</div>
-                    <div>Gross unrealized PnL: {formatUsdSigned(btc5mSimState?.grossUnrealizedPnlUsd ?? null)}</div>
-                    <div>Session equity: {formatUsdValue(btc5mSimState?.sessionEquityUsd ?? null)}</div>
-                    <div>Trades: {btc5mSimState?.trades ?? 0} | Wins: {btc5mSimState?.wins ?? 0} | Losses: {btc5mSimState?.losses ?? 0} | Win rate: {formatPercentSigned(btc5mSimState?.winRate ?? null)}</div>
-                    <div>Avg hold: {formatDurationMs(btc5mSimState?.analytics?.avgHoldTimeMs ?? null)} | Max drawdown: {formatUsdValue(btc5mSimState?.analytics?.maxDrawdownUsd ?? null)}</div>
-                  </div>
-                </section>
-
-                <section className="btc5m-card">
-                  <div className="btc5m-card-title">Simulated position</div>
-                  {!btc5mSimState?.openPosition ? (
-                    <p className="status status-muted btc5m-note">No simulated position is open right now.</p>
-                  ) : (
-                    <>
-                      <div className="btc5m-sim-position-head">
-                        <strong>{btc5mSimState.openPosition.side === "up" ? "Up" : "Down"} to win</strong>
-                      </div>
-                      <div className="btc5m-rule-list">
-                        <div>Stake: {formatUsdValue(btc5mSimState.openPosition.stakeUsd)}</div>
-                        <div>Total entry cost: {formatUsdValue(btc5mSimState.openPosition.totalEntryCostUsd)}</div>
-                        <div>Entry fee: {formatUsdValue(btc5mSimState.openPosition.entryFeeUsd)}</div>
-                        <div>To win: {formatUsdValue(btc5mSimState.openPosition.toWinUsd)}</div>
-                        <div>Avg. Price: {formatMarketPrice(btc5mSimState.openPosition.entryPrice)}</div>
-                        <div>Live price: {formatMarketPrice(btc5mSimState.openPosition.currentPrice)}</div>
-                        <div>Shares: {formatPosNum(btc5mSimState.openPosition.shares)}</div>
-                        <div>Gross exit value: {formatUsdValue(btc5mSimState.openPosition.grossExitProceedsUsd)}</div>
-                        <div>Net exit value: {formatUsdValue(btc5mSimState.openPosition.netExitProceedsUsd)}</div>
-                        <div>Gross unrealized: {formatUsdSigned(btc5mSimState.openPosition.grossPnlUsd)}</div>
-                        <div>Net unrealized: {formatUsdSigned(btc5mSimState.openPosition.unrealizedPnlUsd)}</div>
-                        <div>Hold time: {formatDurationMs(Date.now() - btc5mSimState.openPosition.openedAt)}</div>
-                        <div>Target / max loss: {formatUsdValue(btc5mSimState.openPosition.targetProfitUsd)} / {formatUsdValue(btc5mSimState.openPosition.maxLossUsd)}</div>
-                        <div>Spread at entry: {formatBpsValue(btc5mSimState.openPosition.spreadBpsAtEntry)}</div>
-                        <div>Time to expiry at entry: {formatDurationMs(btc5mSimState.openPosition.enteredAtTimeToExpiryMs)}</div>
-                        <div>BTC 1m / 3m / 5m: {formatPercentSigned(btc5mSimState.openPosition.entrySignals.btcMove1mPct)} / {formatPercentSigned(btc5mSimState.openPosition.entrySignals.btcMove3mPct)} / {formatPercentSigned(btc5mSimState.openPosition.entrySignals.btcMove5mPct)}</div>
-                        <div>Book move / spread: {formatBpsValue(btc5mSimState.openPosition.entrySignals.bookMoveBps)} / {formatBpsValue(btc5mSimState.openPosition.entrySignals.spreadBps)}</div>
-                      </div>
-                      <p className="status status-muted btc5m-note">
-                        The simulator continuously reprices the live exit, then exits on net TP, stop-loss, BTC reversal, timeout, late flatten, or settlement.
-                      </p>
-                    </>
-                  )}
-                </section>
-
-                <section className="btc5m-card">
-                  <div className="btc5m-chart-head">
-                    <span>Session summary</span>
-                    <span className={(btc5mSimState?.sessionEquityUsd ?? 0) >= (btc5mSimState?.bankrollUsd ?? 0) ? "pnl-pos" : "pnl-neg"}>
-                      {formatUsdSigned((btc5mSimState?.sessionEquityUsd ?? 0) - (btc5mSimState?.bankrollUsd ?? 0))}
-                    </span>
-                  </div>
-                  <div className="btc5m-rule-list">
-                    <div>Started with: {formatUsdValue(btc5mSimState?.bankrollUsd ?? null)}</div>
-                    <div>Current equity: {formatUsdValue(btc5mSimState?.sessionEquityUsd ?? null)}</div>
-                    <div>Total staked: {formatUsdValue(btc5mSimState?.totalStakedUsd ?? null)}</div>
-                    <div>Last market: {btc5mSimState?.lastMarketSlug ?? "n/a"}</div>
-                    <div>Peak equity: {formatUsdValue(btc5mSimState?.analytics?.peakEquityUsd ?? null)}</div>
-                    <div>Up net PnL: {formatUsdSigned(btc5mSimState?.analytics?.pnlByDirection?.up?.netPnlUsd ?? null)} | Down net PnL: {formatUsdSigned(btc5mSimState?.analytics?.pnlByDirection?.down?.netPnlUsd ?? null)}</div>
-                    <div>Spread &lt;150 bps: {formatUsdSigned(btc5mSimState?.analytics?.pnlBySpreadBucket?.lt_150?.netPnlUsd ?? null)} | 150-300: {formatUsdSigned(btc5mSimState?.analytics?.pnlBySpreadBucket?.["150_300"]?.netPnlUsd ?? null)}</div>
-                    <div>Early / Mid / Late: {formatUsdSigned(btc5mSimState?.analytics?.pnlByTimeBucket?.early?.netPnlUsd ?? null)} / {formatUsdSigned(btc5mSimState?.analytics?.pnlByTimeBucket?.mid?.netPnlUsd ?? null)} / {formatUsdSigned(btc5mSimState?.analytics?.pnlByTimeBucket?.late?.netPnlUsd ?? null)}</div>
-                  </div>
-                </section>
-
-                <section className="btc5m-card">
-                  <div className="btc5m-chart-head">
-                    <span>Closed simulated trades</span>
-                    <span className="status-muted">{btc5mSimState?.closedTrades.length ?? 0} trades</span>
-                  </div>
-                  <div className="btc5m-sim-log">
-                    {(btc5mSimState?.closedTrades ?? []).length === 0 ? (
-                      <div className="status status-muted">No closed simulated trades yet.</div>
-                    ) : (
-                      btc5mSimState!.closedTrades.map((trade, index) => (
-                        <div key={`${trade.closedAt}-${index}`} className={`btc5m-sim-log-entry ${trade.result === "win" ? "success" : "warn"}`}>
-                          <span>[{new Date(trade.closedAt).toLocaleTimeString()}] {trade.marketSlug}</span>
-                          <span>
-                            {trade.side.toUpperCase()} | {trade.exitReason} | gross {formatUsdValue(trade.grossProceedsUsd)} | net {formatUsdValue(trade.proceedsUsd)} | {formatUsdSigned(trade.pnlUsd)} | hold {formatDurationMs(trade.holdTimeMs)}
-                          </span>
-                          <span>
-                            entry {formatMarketPrice(trade.entryPrice)} to exit {formatMarketPrice(trade.exitPrice)} | spread {formatBpsValue(trade.spreadBpsAtEntry)} to {formatBpsValue(trade.spreadBpsAtExit)} | btc {formatPercentSigned(trade.entrySignals.btcMove1mPct)} to {formatPercentSigned(trade.exitSignals.btcMove1mPct)}
-                          </span>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </section>
-
-                <section className="btc5m-card btc5m-span-2">
-                  <div className="btc5m-chart-head">
-                    <span>Simulation log</span>
-                    <span className="status-muted">{btc5mSimState?.logs.length ?? 0} entries</span>
-                  </div>
-                  <div className="btc5m-sim-log">
-                    {(btc5mSimState?.logs ?? []).length === 0 ? (
-                      <div className="status status-muted">No simulation activity yet.</div>
-                    ) : (
-                      btc5mSimState!.logs.map((log, index) => (
-                        <div key={`${log.timestamp}-${index}`} className={`btc5m-sim-log-entry ${log.type}`}>
-                          <span>[{new Date(log.timestamp).toLocaleTimeString()}]</span>
-                          <span>{log.message}</span>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </section>
-              </div>
-            )}
-          </section>
-        </main>
-      ) : activeTab === "scanner" as any ? (
-        <main className="layout layout-single">
-          <section className="panel">
-            <div className="card">
-              <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-                  <span className="badge badge-success">NEW FEATURE</span>
-                  <h2>Blockchain Scanner</h2>
-                </div>
-                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px", fontSize: "13px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px", color: scannerStatus?.listenerConnected ? "#10b981" : "#f59e0b" }}>
-                      <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: scannerStatus?.listenerConnected ? "#10b981" : "#f59e0b", display: "inline-block" }}></span>
-                      {scannerStatus?.listenerConnected ? "Listener Connected" : "Listener Status Unknown"}
-                    </div>
-                    <div style={{ color: "var(--text-muted)", fontSize: "12px" }}>
-                      Last heartbeat: {scannerStatus?.lastListenerHeartbeatAt ? new Date(scannerStatus.lastListenerHeartbeatAt).toLocaleTimeString() : "n/a"}
-                    </div>
-                    <div style={{ color: "var(--text-muted)", fontSize: "12px" }}>
-                      Last live market: {scannerStatus?.lastScannerEventAt ? new Date(scannerStatus.lastScannerEventAt).toLocaleTimeString() : "none yet"}
-                    </div>
-                  </div>
-                  <button 
-                    className="button button-secondary" 
-                    style={{ padding: "4px 10px", fontSize: "12px" }}
-                    onClick={() => {
-                      const mockEvent = {
-                        type: "scanner_event",
-                        conditionId: "0x" + Math.random().toString(16).slice(2, 66).padEnd(64, '0'),
-                        oracle: "0x4D97DCd97eC945f40cF65F87097CAe4B54fafa76",
-                        questionId: "0x" + Math.random().toString(16).slice(2, 66).padEnd(64, '0'),
-                        outcomeSlotCount: "2",
-                        txHash: "0x" + Math.random().toString(16).slice(2, 66).padEnd(64, '0'),
-                        blockNumber: 654321,
-                        timestamp: Date.now()
-                      };
-                      setScannerEvents(prev => [mockEvent as any, ...prev].slice(0, 50));
-                      addToast("success", "Test Event Generated", "Local mock event added to list.");
-                    }}
-                  >
-                    Test UI
-                  </button>
-                </div>
-              </div>
-              <div className="card-body">
-                <p style={{ marginBottom: "20px", color: "var(--text-muted)" }}>
-                  Real-time monitoring of the Polymarket CTF contract on Polygon. 
-                  Detecting new markets at the moment of creation.
-                </p>
-
-                {scannerEvents.length === 0 ? (
-                  <div style={{ textAlign: "center", padding: "40px", border: "1px dashed var(--border-color)", borderRadius: "12px" }}>
-                    <div style={{ fontSize: "24px", marginBottom: "10px" }}>📡</div>
-                    <div style={{ color: "var(--text-muted)" }}>
-                      No recent market creation events found yet. The list fills from recent blockchain history and live listener updates.
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                    {scannerEvents.map((ev, idx) => (
-                      <div key={idx} className="card" style={{ padding: "16px", border: "1px solid var(--border-color)", background: "rgba(255,255,255,0.02)" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
-                          <span style={{ fontWeight: "bold", color: "var(--primary-color)" }}>
-                            {ev.source === "gamma-recent" ? "Recent Market" : "🔥 New Market Detected"}
-                          </span>
-                          <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>{new Date(ev.timestamp).toLocaleTimeString()}</span>
-                        </div>
-                        {ev.title ? (
-                          <div style={{ marginBottom: "10px" }}>
-                            <div style={{ fontWeight: 600 }}>{ev.title}</div>
-                            {ev.slug ? (
-                              <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "4px" }}>{ev.slug}</div>
-                            ) : null}
-                          </div>
-                        ) : null}
-                        <div style={{ fontSize: "14px", display: "grid", gridTemplateColumns: "120px 1fr", gap: "8px" }}>
-                          <span style={{ color: "var(--text-muted)" }}>Condition ID:</span>
-                          <code style={{ background: "rgba(0,0,0,0.2)", padding: "2px 4px", borderRadius: "4px" }}>{ev.conditionId}</code>
-                          
-                          <span style={{ color: "var(--text-muted)" }}>Question ID:</span>
-                          <code style={{ background: "rgba(0,0,0,0.2)", padding: "2px 4px", borderRadius: "4px" }}>{ev.questionId}</code>
-
-                          <span style={{ color: "var(--text-muted)" }}>Tx Hash:</span>
-                          {ev.txHash ? (
-                            <a 
-                              href={`https://polygonscan.com/tx/${ev.txHash}`} 
-                              target="_blank" 
-                              rel="noreferrer" 
-                              style={{ color: "#3b82f6", textDecoration: "none" }}
-                            >
-                              {ev.txHash.slice(0, 20)}...
-                            </a>
-                          ) : (
-                            <span style={{ color: "var(--text-muted)" }}>Not available from fallback history</span>
-                          )}
-                        </div>
-                        <div style={{ marginTop: "12px", display: "flex", gap: "8px" }}>
-                          <span className="badge badge-info">Slots: {ev.outcomeSlotCount}</span>
-                          <span className="badge badge-secondary">Block: {ev.blockNumber || "n/a"}</span>
-                          <span className="badge badge-secondary">{ev.source === "gamma-recent" ? "Gamma History" : "Live Chain"}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </section>
-        </main>
-      ) : activeTab === "positions" ? (
+      {activeTab === "positions" ? (
         <main className="layout layout-single">
           {viewingMarketSlug ? (
             <section className="panel positions-panel">
@@ -2583,15 +1753,25 @@ export function App() {
                               </tr>
                             </thead>
                             <tbody>
-                              {stationHistory
-                                .filter((obs: any) => {
-                                  const targetDayStr = marketDetails.extractedData.day;
+                              {(() => {
+                                const targetDayStr = marketDetails.extractedData.day;
+                                const tz = marketDetails.extractedData.timezone || "UTC";
+                                const filteredHistory = stationHistory.filter((obs: any) => {
                                   if (!targetDayStr) return true;
-                                  const tz = marketDetails.extractedData.timezone || "UTC";
-                                  const obsDayStr = new Date(obs.obsTime * 1000).toLocaleDateString("en-CA", { timeZone: tz });
-                                  return obsDayStr === targetDayStr;
-                                })
-                                .map((obs: any, index: number) => (
+                                  return formatDateInTimeZone(obs.obsTime * 1000, tz) === targetDayStr;
+                                });
+
+                                if (filteredHistory.length === 0) {
+                                  return (
+                                    <tr>
+                                      <td colSpan={2} style={{ textAlign: "center", padding: "20px", color: "#ff6b81" }}>
+                                        No station observations match {targetDayStr} in {tz}. This market is for another day and station data will appear when that date begins locally.
+                                      </td>
+                                    </tr>
+                                  );
+                                }
+
+                                return filteredHistory.map((obs: any, index: number) => (
                                   <tr key={index}>
                                     <td style={{ fontSize: "0.75rem" }}>
                                       {new Date(obs.obsTime * 1000).toLocaleTimeString("en-GB", { 
@@ -2606,7 +1786,8 @@ export function App() {
                                         : obs.temp}
                                     </td>
                                   </tr>
-                                ))}
+                                ));
+                              })()}
                             </tbody>
                           </table>
                         </div>
@@ -2706,13 +1887,76 @@ export function App() {
               </p>
               <p className="status status-muted">
                 {positionsPayload?.user
-                  ? `Wallet: ${shortenAddress(positionsPayload.user)} (${
+                  ? `Wallet: ${shortenAddress(positionsPayload.user)} (${ 
                       positionsPayload.wallet_source === "funder"
                         ? "POLYMARKET_FUNDER_ADDRESS"
                         : "signer EOA"
                     })`
                   : "Set POLYMARKET_PRIVATE_KEY or POLYMARKET_FUNDER_ADDRESS in backend .env to load positions."}
               </p>
+              <article className="scalper-open-orders-card">
+                <div className="panel-head">
+                  <div>
+                    <p className="section-kicker">Scalper</p>
+                    <h2>Real Open Orders</h2>
+                  </div>
+                  <button
+                    className="button button-secondary"
+                    type="button"
+                    onClick={() => void loadPositions()}
+                    disabled={scalperOrdersLoading}
+                  >
+                    {scalperOrdersLoading ? "..." : "Refresh Orders"}
+                  </button>
+                </div>
+                {scalperOrders.length === 0 ? (
+                  <p className="status status-muted">
+                    No real open orders found on Polymarket CLOB.
+                  </p>
+                ) : (
+                  <div className="positions-table-wrap">
+                    <table className="positions-table">
+                      <thead>
+                        <tr>
+                          <th>Market</th>
+                          <th>Outcome</th>
+                          <th>Side</th>
+                          <th>Price</th>
+                          <th>Size</th>
+                          <th>Matched</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {scalperOrders.map((order) => (
+                          <tr key={order.orderId}>
+                            <td>
+                              {order.marketUrl ? (
+                                <a
+                                  className="positions-link"
+                                  href={order.marketUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  {order.marketSlug ?? order.orderId}
+                                </a>
+                              ) : (
+                                order.marketSlug ?? order.orderId
+                              )}
+                            </td>
+                            <td>{order.outcome ?? "—"}</td>
+                            <td>{order.side}</td>
+                            <td>{order.price}</td>
+                            <td>{order.originalSize}</td>
+                            <td>{order.matchedSize}</td>
+                            <td>{order.status}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </article>
               {positionsError ? (
                 <p className="status">{positionsError}</p>
               ) : null}
@@ -3027,6 +2271,95 @@ export function App() {
             )}
           </section>
         </main>
+      ) : activeTab === "btc5m" ? (
+        <main className="layout layout-single">
+          <section className="panel btc5m-panel">
+            <div className="panel-head">
+              <div>
+                <p className="section-kicker">Bitcoin 5-minute markets</p>
+                <h2>UP 60¢ → 70¢ bot</h2>
+              </div>
+              <div className="btc5m-actions">
+                <button className="button button-secondary" onClick={() => void loadBtc5mStatus()} type="button" disabled={btc5mLoading}>{btc5mLoading ? "..." : "Refresh"}</button>
+                <button className={`button ${btc5mStatus?.active ? "button-secondary" : "button-primary"}`} onClick={() => void toggleBtc5mBot()} type="button" disabled={btc5mLoading}>{btc5mLoading ? "..." : btc5mStatus?.active ? "Stop Bot" : "Start Bot"}</button>
+              </div>
+            </div>
+
+            <div className="btc5m-summary-grid">
+              <article className="btc5m-stat-card"><span>Status</span><strong className={btc5mStatus?.active ? "pnl-pos" : "pnl-neg"}>{btc5mStatus?.active ? "ACTIVE" : "STOPPED"}</strong></article>
+              <article className="btc5m-stat-card"><span>Mode</span><strong>{btc5mStatus?.dryRun ? "dry-run" : "live"}</strong></article>
+              <article className="btc5m-stat-card"><span>Buy / Sell</span><strong>{formatBtc5mPrice(btc5mStatus?.buyPriceLimit)} / {formatBtc5mPrice(btc5mStatus?.sellPriceLimit)}</strong></article>
+              <article className="btc5m-stat-card"><span>Order Size</span><strong>{formatPosNum(btc5mStatus?.orderSize)}</strong></article>
+            </div>
+
+            <p className="status">{describeBtc5mStatus(btc5mStatus)}</p>
+
+            <article className="btc5m-current-market-card">
+              <div className="panel-head">
+                <div>
+                  <p className="section-kicker">Current market</p>
+                  <h2>{btc5mStatus?.currentMarket?.question ?? "No active market found yet"}</h2>
+                </div>
+                {btc5mStatus?.currentMarket?.slug ? <a className="positions-link" href={`https://polymarket.com/event/${btc5mStatus.currentMarket.slug}`} target="_blank" rel="noreferrer">Open market ↗</a> : null}
+              </div>
+              <div className="btc5m-market-meta">
+                <span>Slug: {btc5mStatus?.currentMarket?.slug ?? "—"}</span>
+                <span>UP token: {btc5mStatus?.currentMarket?.upTokenId ?? "—"}</span>
+                <span>Ends: {btc5mStatus?.currentMarket?.endDateIso ? formatPosDate(btc5mStatus.currentMarket.endDateIso) : "—"}</span>
+                <span>Buy order: {btc5mStatus?.buyOrderId ?? "—"}</span>
+                <span>Sell order: {btc5mStatus?.sellOrderId ?? "—"}</span>
+                <span>Last completed: {btc5mStatus?.lastCompletedMarketSlug ?? "—"}</span>
+              </div>
+            </article>
+
+            <article className="btc5m-current-market-card">
+              <div className="panel-head">
+                <div>
+                  <p className="section-kicker">Next market</p>
+                  <h2>{btc5mStatus?.nextMarket?.question ?? "No next 5-minute market queued yet"}</h2>
+                </div>
+                {btc5mStatus?.nextMarket?.slug ? <a className="positions-link" href={`https://polymarket.com/event/${btc5mStatus.nextMarket.slug}`} target="_blank" rel="noreferrer">Open next ↗</a> : null}
+              </div>
+              <div className="btc5m-market-meta">
+                <span>Slug: {btc5mStatus?.nextMarket?.slug ?? "—"}</span>
+                <span>Starts: {btc5mStatus?.nextMarket?.startDateIso ? formatPosDate(btc5mStatus.nextMarket.startDateIso) : "—"}</span>
+                <span>Ends: {btc5mStatus?.nextMarket?.endDateIso ? formatPosDate(btc5mStatus.nextMarket.endDateIso) : "—"}</span>
+                <span>Planned buy: {formatBtc5mPrice(btc5mStatus?.buyPriceLimit)} on UP</span>
+                <span>Shares: {formatPosNum(btc5mStatus?.orderSize)}</span>
+                <span>Min entry respected: 5 shares</span>
+              </div>
+            </article>
+
+            {btc5mStatus?.lastError ? <div className="empty-state"><strong>Last error</strong><p>{btc5mStatus.lastError}</p></div> : null}
+
+            <article className="btc5m-log-card">
+              <div className="panel-head">
+                <div>
+                  <p className="section-kicker">Bot log</p>
+                  <h2>Execution timeline</h2>
+                </div>
+              </div>
+              {!btc5mStatus?.logs?.length ? (
+                <p className="status status-muted">No BTC 5m bot events yet.</p>
+              ) : (
+                <div className="positions-table-wrap">
+                  <table className="positions-table">
+                    <thead><tr><th>Time</th><th>Type</th><th>Message</th></tr></thead>
+                    <tbody>
+                      {btc5mStatus.logs.map((entry, index) => (
+                        <tr key={`${entry.timestamp}-${index}`}>
+                          <td style={{ whiteSpace: "nowrap" }}>{new Date(entry.timestamp).toLocaleString()}</td>
+                          <td><span className={`event-badge event-badge-${entry.type}`}>{entry.type.toUpperCase()}</span></td>
+                          <td>{entry.message}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </article>
+          </section>
+        </main>
       ) : (
         <main className="layout">
           <section className="panel">
@@ -3037,11 +2370,7 @@ export function App() {
               </div>
                 <button
                   className="button button-secondary"
-                  onClick={() =>
-                    void (activeTab === "scanner"
-                      ? loadScannerEvents()
-                      : loadEvents(search))
-                  }
+                  onClick={() => void loadEvents(search)}
                   type="button"
                 >
                   Refresh
@@ -3086,9 +2415,6 @@ export function App() {
                           market.active !== false && market.closed !== true,
                       );
                       setSelectedSlug(firstActiveMarket?.slug ?? "");
-                      setSelectedOutcome(
-                        firstActiveMarket?.outcomes[0]?.label ?? "",
-                      );
                     }}
                   >
                     <span className="market-slug">{event.slug}</span>
@@ -3122,208 +2448,26 @@ export function App() {
           </section>
 
           <section className="panel">
-            {activeTab === "crypto" ? (
-              <>
-                <div className="panel-head">
-                  <div>
-                    <p className="section-kicker">Signal Check</p>
-                    <h2>Crypto Evaluation</h2>
-                  </div>
-                </div>
-
-                <div className="form-stack">
-                  <label>
-                    <span>Selected event slug</span>
-                    <input
-                      type="text"
-                      readOnly
-                      value={selectedEvent?.slug ?? ""}
-                    />
-                  </label>
-
-                  <label>
-                    <span>Market</span>
-                    <select
-                      value={selectedSlug}
-                      onChange={(event) => {
-                        const nextSlug = event.target.value;
-                        setSelectedSlug(nextSlug);
-                        const nextMarket = availableMarkets.find(
-                          (market) => market.slug === nextSlug,
-                        );
-                        setSelectedOutcome(
-                          nextMarket?.outcomes[0]?.label ?? "",
-                        );
-                      }}
-                    >
-                      {availableMarkets.map((market) => (
-                        <option key={market.marketId} value={market.slug}>
-                          {market.question}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  {selectedMarket?.description ? (
-                    <article className="market-description">
-                      <span>Market description</span>
-                      <p>{selectedMarket.description}</p>
-                    </article>
-                  ) : null}
-
-                  <label>
-                    <span>Outcome</span>
-                    <select
-                      value={selectedOutcome}
-                      onChange={(event) =>
-                        setSelectedOutcome(event.target.value)
-                      }
-                    >
-                      {(selectedMarket?.outcomes ?? []).map((outcome) => (
-                        <option key={outcome.tokenId} value={outcome.label}>
-                          {outcome.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label>
-                    <span>Fair probability override</span>
-                    <input
-                      type="number"
-                      min={0}
-                      max={1}
-                      step={0.01}
-                      placeholder="Optional manual fair probability"
-                      value={fairProbability}
-                      onChange={(event) =>
-                        setFairProbability(event.target.value)
-                      }
-                    />
-                  </label>
-
-                  <button
-                    className="button button-primary"
-                    type="button"
-                    disabled={!selectedMarket || evaluating}
-                    onClick={() => void handleEvaluate()}
-                  >
-                    {evaluating ? "Evaluating..." : "Evaluate edge"}
-                  </button>
-                </div>
-
-                <p className="status status-muted">
-                  {evaluationError
-                    ? evaluationError
-                    : selectedMarket
-                      ? "Ready to evaluate the selected crypto market."
-                      : selectedEvent
-                        ? "Choose a market from the selected event."
-                        : "Search and choose a crypto event to start."}
-                </p>
-
-                {evaluation ? (
-                  <section className="result-card">
-                    <div className="result-topline">
-                      <span
-                        className={`decision-badge ${evaluation.decision.should_trade ? "trade" : "pass"}`}
-                      >
-                        {evaluation.decision.should_trade ? "TRADE" : "PASS"}
-                      </span>
-                      <span className="decision-reason">
-                        {evaluation.decision.reason}
-                      </span>
-                    </div>
-
-                    <h3>{evaluation.market}</h3>
-
-                    <div className="metrics">
-                      <article>
-                        <span>Fair probability</span>
-                        <strong>
-                          {formatMaybeNumber(evaluation.fair_probability)}
-                        </strong>
-                      </article>
-                      <article>
-                        <span>Model probability</span>
-                        <strong>
-                          {formatMaybeNumber(evaluation.model_probability)}
-                        </strong>
-                      </article>
-                      <article>
-                        <span>Best bid</span>
-                        <strong>
-                          {formatMaybeNumber(evaluation.best_bid)}
-                        </strong>
-                      </article>
-                      <article>
-                        <span>Best ask</span>
-                        <strong>
-                          {formatMaybeNumber(evaluation.best_ask)}
-                        </strong>
-                      </article>
-                      <article>
-                        <span>Spread bps</span>
-                        <strong>
-                          {formatMaybeNumber(evaluation.spread_bps)}
-                        </strong>
-                      </article>
-                      <article>
-                        <span>Edge bps</span>
-                        <strong>
-                          {formatMaybeNumber(evaluation.decision.edge_bps)}
-                        </strong>
-                      </article>
-                    </div>
-
-                    {evaluation.weather_analysis ? (
-                      <article className="market-description">
-                        <span>Weather model</span>
-                        <p>
-                          {evaluation.weather_analysis.city} via{" "}
-                          {evaluation.weather_analysis.station} on{" "}
-                          {evaluation.weather_analysis.target_date}. Bucket:{" "}
-                          {evaluation.weather_analysis.bucket}. Forecast high:{" "}
-                          {evaluation.weather_analysis.blended_forecast_high.toFixed(
-                            2,
-                          )}
-                          °. Sources:{" "}
-                          {evaluation.weather_analysis.sources.join(", ")}.
-                          Sigma: {evaluation.weather_analysis.sigma}.
-                        </p>
-                      </article>
-                    ) : null}
-
-                    <pre className="result-json">
-                      {JSON.stringify(evaluation, null, 2)}
-                    </pre>
-                  </section>
+            <div className="panel-head">
+              <div>
+                <p className="section-kicker">Weather Focus</p>
+                <h2>Weather Markets</h2>
+              </div>
+            </div>
+            <p className="status status-muted">
+              {selectedMarket
+                ? "Weather events are loaded. Select a market to inspect available details."
+                : "Select a weather event to inspect available markets."}
+            </p>
+            {selectedMarket ? (
+              <article className="market-description">
+                <span>Selected market</span>
+                <p>{selectedMarket.question}</p>
+                {selectedMarket.description ? (
+                  <p>{selectedMarket.description}</p>
                 ) : null}
-              </>
-            ) : (
-              <>
-                <div className="panel-head">
-                  <div>
-                    <p className="section-kicker">Weather Focus</p>
-                    <h2>Weather Markets</h2>
-                  </div>
-                </div>
-                <p className="status status-muted">
-                  {selectedMarket
-                    ? "Weather events are loaded. Switch to Crypto tab to run bot evaluation."
-                    : "Select a weather event to inspect available markets."}
-                </p>
-                {selectedMarket ? (
-                  <article className="market-description">
-                    <span>Selected market</span>
-                    <p>{selectedMarket.question}</p>
-                    {selectedMarket.description ? (
-                      <p>{selectedMarket.description}</p>
-                    ) : null}
-                  </article>
-                ) : null}
-              </>
-            )}
+              </article>
+            ) : null}
           </section>
         </main>
       )}
@@ -3418,6 +2562,12 @@ function formatUsdSigned(value: number | null | undefined) {
     : "$0.00";
 }
 
+function formatSignedUsd(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`
+    : "$0.00";
+}
+
 function formatBpsValue(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value)
     ? `${Math.round(value)} bps`
@@ -3504,15 +2654,71 @@ function formatPosDate(iso: string) {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
 
+function formatDateInTimeZone(value: number | string | Date, timeZone: string) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = formatter.formatToParts(new Date(value));
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+
+  if (!year || !month || !day) {
+    return null;
+  }
+
+  return `${year}-${month}-${day}`;
+}
+
 function getEmptyStateText(search: string, activeTab: AppTab) {
+  if (activeTab === "btc5m") {
+    return "BTC 5m bot waits for the next active Bitcoin Up/Down 5-minute market.";
+  }
   if (activeTab === "positions") {
-    return "Use Weather or Crypto tabs to search events.";
+    return "Use the Weather view to search events.";
   }
   if (search) {
     return `Nothing matched "${search}". Try a broader keyword or clear the search field.`;
   }
 
   return `Type a query to fetch matching ${activeTab} Polymarket events.`;
+}
+
+function formatBtc5mPrice(value: number | undefined) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `${Math.round(value * 100)}¢`
+    : "—";
+}
+
+function describeBtc5mStatus(status: Btc5mBotStatus | null) {
+  if (!status) {
+    return "BTC 5m bot status unavailable.";
+  }
+
+  switch (status.phase) {
+    case "looking_for_market":
+      return status.nextMarket
+        ? "Next market selected. BUY on UP at 60¢ is queued for 5 shares; waiting for market activation and fill."
+        : "Waiting for the next Bitcoin 5-minute market.";
+    case "placing_buy":
+      return "Placing limit BUY on UP at 60¢.";
+    case "buy_open":
+      return "BUY order is live. Watching for fill.";
+    case "placing_sell":
+      return "BUY filled. Placing SELL for all UP shares at 70¢.";
+    case "sell_open":
+      return "SELL order is live. Waiting for full exit.";
+    case "completed_waiting_next":
+      return "Trade cycle finished. Waiting for the next 5-minute Bitcoin market.";
+    case "error":
+      return status.lastError ? `Error: ${status.lastError}` : "BTC 5m bot hit an error.";
+    case "idle":
+    default:
+      return status.active ? "BTC 5m bot is idle." : "BTC 5m bot is stopped.";
+  }
 }
 
 function isWeatherEvent(event: SearchEventSummary) {
@@ -3531,22 +2737,6 @@ function isWeatherEvent(event: SearchEventSummary) {
   ];
 
   return includesAnyKeyword(event, weatherKeywords);
-}
-
-function isCryptoEvent(event: SearchEventSummary) {
-  const cryptoKeywords = [
-    "btc",
-    "bitcoin",
-    "eth",
-    "ethereum",
-    "sol",
-    "xrp",
-    "doge",
-    "crypto",
-    "up",
-    "down",
-  ];
-  return includesAnyKeyword(event, cryptoKeywords);
 }
 
 function includesAnyKeyword(event: SearchEventSummary, keywords: string[]) {

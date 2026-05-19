@@ -2,10 +2,11 @@ import { config as loadDotenv } from "dotenv";
 
 loadDotenv();
 
-function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) {
-    return defaultValue;
+    return fallback;
   }
+
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
@@ -18,7 +19,27 @@ function parseNumber(value: string | undefined, fallback: number): number {
   if (Number.isNaN(parsed)) {
     throw new Error(`Invalid numeric environment value: ${value}`);
   }
+
   return parsed;
+}
+
+export interface ScalperSettings {
+  buyPriceLimit: number;
+  sellPriceLimit: number;
+  orderSize: number;
+  maxBotBudget: number;
+  minLiquidity: number;
+  cancelBuyBeforeSec: number;
+  cancelSellBeforeSec: number;
+  scannerPollIntervalSec: number;
+  stateFile: string;
+}
+
+export interface Btc5mSettings {
+  buyPriceLimit: number;
+  sellPriceLimit: number;
+  orderSize: number;
+  marketScanIntervalSec: number;
 }
 
 export interface Settings {
@@ -36,16 +57,52 @@ export interface Settings {
   minEdgeBps: number;
   dryRun: boolean;
   groqApiKey?: string;
+  enableScalper: boolean;
+  buyPriceLimit: number;
+  sellPriceLimit: number;
+  orderSize: number;
+  maxBotBudget: number;
+  minLiquidity: number;
+  cancelBuyBeforeSec: number;
+  cancelSellBeforeSec: number;
+  scalperScanIntervalSec: number;
+  scalper: ScalperSettings;
+  btc5m: Btc5mSettings;
 }
 
 export function loadSettings(): Settings {
+  const scalper: ScalperSettings = {
+    buyPriceLimit: parseNumber(process.env.BUY_PRICE_LIMIT, 0.2),
+    sellPriceLimit: parseNumber(process.env.SELL_PRICE_LIMIT, 0.3),
+    orderSize: parseNumber(process.env.ORDER_SIZE, 5),
+    maxBotBudget: parseNumber(process.env.MAX_BOT_BUDGET, 3),
+    minLiquidity: parseNumber(process.env.MIN_LIQUIDITY, 0),
+    cancelBuyBeforeSec: parseNumber(process.env.CANCEL_BUY_BEFORE_SEC, 30),
+    cancelSellBeforeSec: parseNumber(process.env.CANCEL_SELL_BEFORE_SEC, 15),
+    scannerPollIntervalSec: parseNumber(process.env.SCALPER_SCANNER_POLL_INTERVAL_SEC, 5),
+    stateFile: process.env.SCALPER_STATE_FILE?.trim() || "data/scalper-state.json",
+  };
+
+  const btc5m: Btc5mSettings = {
+    buyPriceLimit: parseNumber(process.env.BTC5M_BUY_PRICE_LIMIT, 0.6),
+    sellPriceLimit: parseNumber(process.env.BTC5M_SELL_PRICE_LIMIT, 0.7),
+    orderSize: parseNumber(process.env.BTC5M_ORDER_SIZE, 5),
+    marketScanIntervalSec: parseNumber(process.env.BTC5M_MARKET_SCAN_INTERVAL_SEC, 5),
+  };
+
+  validateScalperSettings(scalper);
+  validateBtc5mSettings(btc5m);
+
   return {
     polymarketHost: process.env.POLYMARKET_HOST ?? "https://clob.polymarket.com",
     gammaHost: process.env.POLYMARKET_GAMMA_HOST ?? "https://gamma-api.polymarket.com",
     chainId: parseNumber(process.env.POLYMARKET_CHAIN_ID, 137),
     privateKey: process.env.POLYMARKET_PRIVATE_KEY,
     funderAddress: process.env.POLYMARKET_FUNDER_ADDRESS,
-    signatureType: parseSignatureType(process.env.POLYMARKET_SIGNATURE_TYPE, process.env.POLYMARKET_FUNDER_ADDRESS),
+    signatureType: parseSignatureType(
+      process.env.POLYMARKET_SIGNATURE_TYPE,
+      process.env.POLYMARKET_FUNDER_ADDRESS,
+    ),
     apiKey: process.env.POLYMARKET_API_KEY,
     apiSecret: process.env.POLYMARKET_API_SECRET,
     apiPassphrase: process.env.POLYMARKET_API_PASSPHRASE,
@@ -54,6 +111,17 @@ export function loadSettings(): Settings {
     minEdgeBps: parseNumber(process.env.BOT_MIN_EDGE_BPS, 500),
     dryRun: parseBoolean(process.env.BOT_DRY_RUN, true),
     groqApiKey: process.env.GROQ_API_KEY,
+    enableScalper: parseBoolean(process.env.BOT_ENABLE_SCALPER, false),
+    buyPriceLimit: scalper.buyPriceLimit,
+    sellPriceLimit: scalper.sellPriceLimit,
+    orderSize: scalper.orderSize,
+    maxBotBudget: scalper.maxBotBudget,
+    minLiquidity: scalper.minLiquidity,
+    cancelBuyBeforeSec: scalper.cancelBuyBeforeSec,
+    cancelSellBeforeSec: scalper.cancelSellBeforeSec,
+    scalperScanIntervalSec: scalper.scannerPollIntervalSec,
+    scalper,
+    btc5m,
   };
 }
 
@@ -61,7 +129,10 @@ export function hasL2Creds(settings: Settings): boolean {
   return Boolean(settings.apiKey && settings.apiSecret && settings.apiPassphrase);
 }
 
-function parseSignatureType(value: string | undefined, funderAddress: string | undefined): 0 | 1 | 2 | 3 {
+function parseSignatureType(
+  value: string | undefined,
+  funderAddress: string | undefined,
+): 0 | 1 | 2 | 3 {
   if (value === undefined || value.trim() === "") {
     return funderAddress ? 2 : 0;
   }
@@ -72,4 +143,63 @@ function parseSignatureType(value: string | undefined, funderAddress: string | u
   }
 
   throw new Error(`Invalid POLYMARKET_SIGNATURE_TYPE: ${value}`);
+}
+
+function validateScalperSettings(settings: ScalperSettings): void {
+  for (const [name, value] of [
+    ["BUY_PRICE_LIMIT", settings.buyPriceLimit],
+    ["SELL_PRICE_LIMIT", settings.sellPriceLimit],
+  ] as const) {
+    if (!(value > 0 && value < 1)) {
+      throw new Error(`${name} must be between 0 and 1.`);
+    }
+  }
+
+  if (settings.sellPriceLimit <= settings.buyPriceLimit) {
+    throw new Error("SELL_PRICE_LIMIT must be greater than BUY_PRICE_LIMIT.");
+  }
+
+  for (const [name, value] of [
+    ["ORDER_SIZE", settings.orderSize],
+    ["MAX_BOT_BUDGET", settings.maxBotBudget],
+    ["SCALPER_SCANNER_POLL_INTERVAL_SEC", settings.scannerPollIntervalSec],
+  ] as const) {
+    if (value <= 0) {
+      throw new Error(`${name} must be greater than zero.`);
+    }
+  }
+
+  for (const [name, value] of [
+    ["MIN_LIQUIDITY", settings.minLiquidity],
+    ["CANCEL_BUY_BEFORE_SEC", settings.cancelBuyBeforeSec],
+    ["CANCEL_SELL_BEFORE_SEC", settings.cancelSellBeforeSec],
+  ] as const) {
+    if (value < 0) {
+      throw new Error(`${name} must be zero or greater.`);
+    }
+  }
+}
+
+function validateBtc5mSettings(settings: Btc5mSettings): void {
+  for (const [name, value] of [
+    ["BTC5M_BUY_PRICE_LIMIT", settings.buyPriceLimit],
+    ["BTC5M_SELL_PRICE_LIMIT", settings.sellPriceLimit],
+  ] as const) {
+    if (!(value > 0 && value < 1)) {
+      throw new Error(`${name} must be between 0 and 1.`);
+    }
+  }
+
+  if (settings.sellPriceLimit <= settings.buyPriceLimit) {
+    throw new Error("BTC5M_SELL_PRICE_LIMIT must be greater than BTC5M_BUY_PRICE_LIMIT.");
+  }
+
+  for (const [name, value] of [
+    ["BTC5M_ORDER_SIZE", settings.orderSize],
+    ["BTC5M_MARKET_SCAN_INTERVAL_SEC", settings.marketScanIntervalSec],
+  ] as const) {
+    if (value <= 0) {
+      throw new Error(`${name} must be greater than zero.`);
+    }
+  }
 }
