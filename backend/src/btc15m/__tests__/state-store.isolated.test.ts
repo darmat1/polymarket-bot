@@ -15,10 +15,9 @@ const defaultConfig: Btc15mBotConfig = {
   workingBudgetUsd: 5,
   shares: 5,
   buyPrice: 0.25,
-  targetSellPrice: 0.8,
-  fallbackSellPrice: 0.4,
-  profitCheckDelayMin: 3,
-  budgetResetIntervalHours: 3,
+  trailStep: 0.05,
+  trailDist: 0.02,
+  trailUpdateIntervalSec: 3,
   repeatThresholdMin: 6,
   forceSellThresholdMin: 2,
   neutralZoneUsd: 5,
@@ -50,7 +49,6 @@ async function main() {
       question: "BTC up/down 15m",
       startTimeMs: 1_779_220_800_000,
       endTimeMs: 1_779_221_700_000,
-      priceToBeat: 100_000,
       upTokenId: "tok-up",
       downTokenId: "tok-down",
     };
@@ -66,6 +64,7 @@ async function main() {
         avgEntryPrice: 0.25,
         costBasisUsd: 1.25,
       },
+      highWaterMark: 0.25,
     };
     await store.updateRuntimeState({
       enginePhase: "running",
@@ -79,7 +78,6 @@ async function main() {
     const runtime = await store.readState();
     assert.equal(runtime.enginePhase, "stopped");
     assert.equal(runtime.market?.slug, market.slug);
-    assert.equal(runtime.market?.priceToBeat, market.priceToBeat);
     assert.equal(runtime.cycle.position?.tokenId, "tok-down");
     assert.equal(runtime.logs.length, 1);
 
@@ -97,11 +95,6 @@ async function main() {
       closedAt: 2,
     };
     await store.appendCompletedTrade(trade);
-    await store.appendCompletedTrade({
-      ...trade,
-      id: "t1-duplicate",
-      closedAt: trade.closedAt + 1,
-    });
     const afterTrade = await store.readState();
     assert.equal(afterTrade.completedTrades.length, 1);
     assert.equal(afterTrade.completedTrades[0].id, "t1");

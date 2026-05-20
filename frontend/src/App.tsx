@@ -155,10 +155,9 @@ type Btc15mStatusPayload = {
     workingBudgetUsd: number;
     shares: number;
     buyPrice: number;
-    targetSellPrice: number;
-    fallbackSellPrice: number;
-    profitCheckDelayMin: number;
-    budgetResetIntervalHours: number;
+    trailStep: number;
+    trailDist: number;
+    trailUpdateIntervalSec: number;
     repeatThresholdMin: number;
     forceSellThresholdMin: number;
     neutralZoneUsd: number;
@@ -221,8 +220,6 @@ type Btc15mStatusPayload = {
     availableBudget: number;
     lockedBudget: number;
     initialBudget: number;
-    lastProfitResetAt?: number | null;
-    skimmedProfitUsd?: number;
   } | null;
   logs: Array<{ timestamp: number; message: string; type: "info" | "warn" | "error" | "success" }>;
   lastError: string | null;
@@ -308,15 +305,13 @@ export function App() {
     workingBudgetUsd: 5,
     shares: 5,
     buyPrice: 0.25,
-    targetSellPrice: 0.8,
-    fallbackSellPrice: 0.4,
-    profitCheckDelayMin: 3,
-    budgetResetIntervalHours: 3,
+    trailStep: 0.05,
+    trailDist: 0.02,
+    trailUpdateIntervalSec: 3,
     repeatThresholdMin: 6,
     forceSellThresholdMin: 2,
     neutralZoneUsd: 5,
   });
-  const btc15mFormDirtyRef = useRef(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [eventLog, setEventLog] = useState<EventLogEntry[]>([]);
   const [eventLogLoading, setEventLogLoading] = useState(false);
@@ -921,11 +916,7 @@ export function App() {
   }, [activeTab]);
 
   useEffect(() => {
-    if (
-      !btc15mStatus?.config ||
-      btc15mStatus.enginePhase === "running" ||
-      btc15mFormDirtyRef.current
-    ) {
+    if (!btc15mStatus?.config || btc15mStatus.enginePhase === "running") {
       return;
     }
 
@@ -933,10 +924,9 @@ export function App() {
       workingBudgetUsd: btc15mStatus.config.workingBudgetUsd,
       shares: btc15mStatus.config.shares,
       buyPrice: btc15mStatus.config.buyPrice,
-      targetSellPrice: btc15mStatus.config.targetSellPrice,
-      fallbackSellPrice: btc15mStatus.config.fallbackSellPrice,
-      profitCheckDelayMin: btc15mStatus.config.profitCheckDelayMin,
-      budgetResetIntervalHours: btc15mStatus.config.budgetResetIntervalHours,
+      trailStep: btc15mStatus.config.trailStep,
+      trailDist: btc15mStatus.config.trailDist,
+      trailUpdateIntervalSec: btc15mStatus.config.trailUpdateIntervalSec,
       repeatThresholdMin: btc15mStatus.config.repeatThresholdMin,
       forceSellThresholdMin: btc15mStatus.config.forceSellThresholdMin,
       neutralZoneUsd: btc15mStatus.config.neutralZoneUsd,
@@ -1185,7 +1175,6 @@ export function App() {
       if (!response.ok) {
         throw new Error(payload.error ?? "Failed to toggle BTC 15m bot");
       }
-      btc15mFormDirtyRef.current = false;
       setBtc15mStatus(payload);
       addToast(
         "success",
@@ -1565,6 +1554,20 @@ export function App() {
         </div>
 
         <div className="topbar-side">
+          <div className="scalper-controls">
+            <span className={`status-badge ${scalperActive ? "on" : "off"}`}>
+              <span className={`indicator-dot ${scalperActive ? "pulse" : ""}`} />
+              SCALPER {scalperActive ? "ON" : "OFF"}
+            </span>
+            <button
+              type="button"
+              className={`button button-small ${scalperActive ? "button-secondary" : "button-primary"}`}
+              onClick={() => void toggleScalper()}
+              disabled={scalperLoading}
+            >
+              {scalperLoading ? "..." : scalperActive ? "Stop Scalper" : "Start Scalper"}
+            </button>
+          </div>
           <span className="topbar-meta">
             {accountSummary?.address
               ? shortenAddress(accountSummary.address)
@@ -2558,7 +2561,7 @@ export function App() {
             <div className="panel-head">
               <div>
                 <p className="section-kicker">Bitcoin 15-minute markets</p>
-                <h2>Contrarian 25¢ → 80¢ / 40¢ bot</h2>
+                <h2>Contrarian 25¢ → 40¢ bot</h2>
               </div>
               <div className="btc15m-actions">
                 <button className="button button-secondary" onClick={() => void loadBtc15mStatus()} type="button" disabled={btc15mLoading}>
@@ -2578,9 +2581,8 @@ export function App() {
             <div className="btc15m-summary-grid">
               <article className="btc15m-stat-card"><span>Engine</span><strong className={btc15mStatus?.enginePhase === "running" ? "pnl-pos" : "pnl-neg"}>{btc15mStatus?.enginePhase?.toUpperCase() ?? "STOPPED"}</strong></article>
               <article className="btc15m-stat-card"><span>Mode</span><strong>{btc15mStatus?.dryRun === false ? "LIVE" : "SIM"}</strong></article>
-              <article className="btc15m-stat-card"><span>Buy / Target / Floor</span><strong>{formatUsdPrice(btc15mStatus?.config.buyPrice)} / {formatUsdPrice(btc15mStatus?.config.targetSellPrice)} / {formatUsdPrice(btc15mStatus?.config.fallbackSellPrice)}</strong></article>
+              <article className="btc15m-stat-card"><span>Trail step / dist</span><strong>${btc15mStatus?.config.trailStep.toFixed(2)} / ${btc15mStatus?.config.trailDist.toFixed(2)}</strong></article>
               <article className="btc15m-stat-card"><span>Budget Left</span><strong>{formatUsd(btc15mStatus?.analytics.remainingBudgetUsd ?? btc15mStatus?.budget?.availableBudget)}</strong></article>
-              <article className="btc15m-stat-card"><span>Skimmed Profit</span><strong>{formatUsd(btc15mStatus?.budget?.skimmedProfitUsd ?? 0)}</strong></article>
             </div>
 
             <article className="btc15m-card">
@@ -2598,10 +2600,9 @@ export function App() {
                   ["Working budget ($)", "workingBudgetUsd", 0.5],
                   ["Shares per cycle", "shares", 1],
                   ["Buy price ($)", "buyPrice", 0.01],
-                  ["Target sell price ($)", "targetSellPrice", 0.01],
-                  ["Fallback sell price ($)", "fallbackSellPrice", 0.01],
-                  ["Profit check delay (min)", "profitCheckDelayMin", 1],
-                  ["Budget reset interval (hours)", "budgetResetIntervalHours", 1],
+                  ["Trail step ($)", "trailStep", 0.01],
+                  ["Trail distance ($)", "trailDist", 0.01],
+                  ["Trail update (sec)", "trailUpdateIntervalSec", 1],
                   ["Repeat threshold (min)", "repeatThresholdMin", 1],
                   ["Force-sell threshold (min)", "forceSellThresholdMin", 1],
                   ["Neutral zone ($)", "neutralZoneUsd", 1],
@@ -2614,13 +2615,10 @@ export function App() {
                       step={step}
                       value={btc15mFormConfig[key]}
                       disabled={btc15mStatus?.enginePhase === "running"}
-                      onChange={(event) => {
-                        btc15mFormDirtyRef.current = true;
-                        setBtc15mFormConfig((prev) => ({
-                          ...prev,
-                          [key]: Number(event.target.value),
-                        }));
-                      }}
+                      onChange={(event) => setBtc15mFormConfig((prev) => ({
+                        ...prev,
+                        [key]: Number(event.target.value),
+                      }))}
                     />
                   </label>
                 ))}

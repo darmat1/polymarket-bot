@@ -1,24 +1,17 @@
-import { ClobPublicClient } from "../clob.js";
 import { PolymarketMarketWs, type PolymarketMarketWsEvent } from "../polymarket-market-ws.js";
 import { PolymarketService } from "../polymarket-service.js";
 import { ScalperUserWs } from "../scalper-user-ws.js";
 import { createBudgetManager } from "../scalper/budget-manager.js";
 import type { Settings } from "../config.js";
 
-import { PolymarketChainlinkBtcPriceSource } from "./chainlink-price-source.js";
-import { PolymarketCryptoPriceClient } from "./crypto-price-client.js";
 import { resolveCurrentMarket } from "./market-resolver.js";
 import { createBtc15mStateStore } from "./state-store.js";
 import { Btc15mBot, type Btc15mRuntime } from "./strategy.js";
-import { emptyCycle } from "./state-store.js";
 import type {
   Btc15mBotConfig,
   Btc15mBotStatus,
   Btc15mCompletedTrade,
-  Btc15mCycleState,
-  Btc15mLogEntry,
   Btc15mPersistentState,
-  Btc15mSide,
 } from "./types.js";
 
 export type {
@@ -33,7 +26,6 @@ export interface StartBtc15mBotOptions {
 
 let activeBot: Btc15mBot | null = null;
 let marketWs: PolymarketMarketWs | null = null;
-let chainlinkPriceSource: PolymarketChainlinkBtcPriceSource | null = null;
 const bookListeners = new Map<string, Set<(bestBid: number | null, bestAsk: number | null) => void>>();
 
 export async function startBtc15mBot(
@@ -41,17 +33,7 @@ export async function startBtc15mBot(
   options: StartBtc15mBotOptions = {},
 ): Promise<Btc15mBotStatus> {
   if (activeBot) {
-    const activeStatus = activeBot.getStatus();
-    if (shouldRestartActiveBotOnStart(activeStatus.enginePhase)) {
-      await activeBot.stop();
-      activeBot = null;
-      if (bookListeners.size === 0) {
-        chainlinkPriceSource?.close();
-        chainlinkPriceSource = null;
-      }
-    } else {
-      return activeStatus;
-    }
+    return activeBot.getStatus();
   }
 
   const baseConfig = configFromSettings(settings);
@@ -61,12 +43,17 @@ export async function startBtc15mBot(
     defaultConfig: baseConfig,
   });
   await store.updateConfig(config);
-  await reconcileStoppedPersistedBudget(store, config.workingBudgetUsd);
+  const persisted = await store.readState();
+  if (persisted.budget.initialBudget !== config.workingBudgetUsd) {
+    await store.updateBudget((budget) => {
+      budget.initialBudget = config.workingBudgetUsd;
+      budget.availableBudget = config.workingBudgetUsd;
+      budget.lockedBudget = 0;
+      budget.lastBalanceCheck = null;
+    });
+  }
 
   const service = PolymarketService.getInstance(settings);
-  const clob = new ClobPublicClient(settings.polymarketHost);
-  const priceSource = ensureChainlinkPriceSource();
-  const cryptoPriceClient = new PolymarketCryptoPriceClient();
   await service.initialize();
   const budgetManager = createBudgetManager({
     store,
@@ -79,8 +66,7 @@ export async function startBtc15mBot(
   const runtime: Btc15mRuntime = {
     now: () => Date.now(),
     resolveMarket: () => resolveCurrentMarket(settings.gammaHost),
-    fetchBtcPrice: (atMs) => priceSource.getPrice(atMs),
-    fetchMarketStartPrice: (market) => cryptoPriceClient.getBtc15mPriceToBeat(market),
+    fetchBtcPrice,
     placeLimitOrder: (args) => service.placeLimitOrder({ ...args, tickSize: "0.01" }),
     cancelOrder: (orderId) => service.cancelOrder(orderId),
     onMarketBookSubscribe: subscribeMarketBook,
@@ -107,28 +93,10 @@ export async function startBtc15mBot(
         await budgetManager.addFunds(amount, reason);
       },
       snapshot: () => budgetManager.getSnapshot(),
-      resetAvailableBudget: async (maxAvailable, resetAt, reason) => {
-        let skimmedProfitUsd = 0;
-        const snapshot = await store.updateBudget((budget) => {
-          budget.lastProfitResetAt = resetAt;
-          const target = roundBudget(maxAvailable);
-          if (budget.lockedBudget <= 0 && budget.availableBudget > target) {
-            skimmedProfitUsd = roundBudget(budget.availableBudget - target);
-            budget.availableBudget = target;
-            budget.skimmedProfitUsd = roundBudget((budget.skimmedProfitUsd ?? 0) + skimmedProfitUsd);
-          }
-        });
-        console.log(
-          `[BUDGET] Available: ${snapshot.availableBudget.toFixed(2)} | Locked: ${snapshot.lockedBudget.toFixed(2)} | Equity: ${snapshot.equity.toFixed(2)} | ${reason ?? "btc15m-budget-reset"}`,
-        );
-        return { snapshot, skimmedProfitUsd };
-      },
     },
     persistTrade: (trade) => store.appendCompletedTrade(trade),
     persistConfig: (cfg) => store.updateConfig(cfg),
     persistRuntimeState: (state) => store.updateRuntimeState(state),
-    getLivePosition: (market) => getLivePosition(service, market),
-    getTopOfBook: (tokenId) => clob.getTopOfBook(tokenId),
   };
 
   const latestPersisted = await store.readState();
@@ -144,24 +112,16 @@ export async function startBtc15mBot(
   return bot.getStatus();
 }
 
-export async function stopBtc15mBot(settings?: Settings): Promise<Btc15mBotStatus> {
+export function stopBtc15mBot(settings?: Settings): Btc15mBotStatus {
   if (activeBot) {
-    await activeBot.stop();
+    activeBot.stop();
     const status = activeBot.getStatus();
     activeBot = null;
-    if (bookListeners.size === 0) {
-      chainlinkPriceSource?.close();
-      chainlinkPriceSource = null;
-    }
-    if (settings) {
-      return getBtc15mBotStatus(settings);
-    }
     return status;
   }
 
   if (settings) {
-    await cleanupPersistedOpenOrders(settings);
-    return getBtc15mBotStatus(settings);
+    return createIdleStatus(settings, configFromSettings(settings), [], null);
   }
 
   return {
@@ -171,10 +131,9 @@ export async function stopBtc15mBot(settings?: Settings): Promise<Btc15mBotStatu
       workingBudgetUsd: 5,
       shares: 5,
       buyPrice: 0.25,
-      targetSellPrice: 0.8,
-      fallbackSellPrice: 0.4,
-      profitCheckDelayMin: 3,
-      budgetResetIntervalHours: 3,
+      trailStep: 0.05,
+      trailDist: 0.02,
+      trailUpdateIntervalSec: 3,
       repeatThresholdMin: 6,
       forceSellThresholdMin: 2,
       neutralZoneUsd: 5,
@@ -189,6 +148,7 @@ export async function stopBtc15mBot(settings?: Settings): Promise<Btc15mBotStatu
       buyOrder: null,
       sellOrder: null,
       position: null,
+      highWaterMark: null,
     },
     completedTrades: [],
     analytics: {
@@ -206,62 +166,6 @@ export async function stopBtc15mBot(settings?: Settings): Promise<Btc15mBotStatu
   };
 }
 
-function ensureChainlinkPriceSource(): PolymarketChainlinkBtcPriceSource {
-  if (!chainlinkPriceSource) {
-    chainlinkPriceSource = new PolymarketChainlinkBtcPriceSource();
-  }
-  return chainlinkPriceSource;
-}
-
-async function cleanupPersistedOpenOrders(settings: Settings): Promise<void> {
-  const baseConfig = configFromSettings(settings);
-  const store = createBtc15mStateStore({
-    filePath: settings.btc15m.stateFile,
-    defaultConfig: baseConfig,
-  });
-  const persisted = await store.readState();
-  const { buyOrder, sellOrder } = persisted.cycle;
-  if (!buyOrder && !sellOrder) {
-    return;
-  }
-
-  const service = PolymarketService.getInstance(settings);
-  await service.initialize();
-  for (const order of [buyOrder, sellOrder]) {
-    if (!order?.orderId) {
-      continue;
-    }
-    try {
-      await service.cancelOrder(order.orderId);
-    } catch {
-      // Best effort: order may already be filled/cancelled or invisible in UI.
-    }
-  }
-
-  if (buyOrder?.reservedBudget && buyOrder.reservedBudget > 0) {
-    await store.updateBudget((budget) => {
-      const release = Math.min(budget.lockedBudget, buyOrder.reservedBudget);
-      budget.lockedBudget = Math.max(0, budget.lockedBudget - release);
-      budget.availableBudget += release;
-    });
-  }
-
-  const log: Btc15mLogEntry = {
-    timestamp: Date.now(),
-    message: "Cleared persisted BTC 15m open-order state while bot was stopped.",
-    type: "warn",
-  };
-  await store.updateRuntimeState({
-    enginePhase: "stopped",
-    market: null,
-    marketStartBtcPrice: null,
-    currentBtcPrice: null,
-    cycle: emptyCycle(),
-    logs: [log, ...persisted.logs].slice(0, 60),
-    lastError: null,
-  });
-}
-
 export async function getBtc15mBotStatus(settings: Settings): Promise<Btc15mBotStatus> {
   if (activeBot) {
     return activeBot.getStatus();
@@ -271,150 +175,15 @@ export async function getBtc15mBotStatus(settings: Settings): Promise<Btc15mBotS
     filePath: settings.btc15m.stateFile,
     defaultConfig: configFromSettings(settings),
   });
-  const persisted = await reconcileStoppedPersistedState(settings, store);
+  const persisted = await store.readState();
   const status = createIdleStatus(settings, persisted.config, persisted.completedTrades, persisted);
-  const hasActiveCycle = Boolean(persisted.cycle.buyOrder || persisted.cycle.sellOrder || persisted.cycle.position);
-  status.market = hasActiveCycle ? persisted.market : null;
-  status.marketStartBtcPrice = hasActiveCycle ? persisted.marketStartBtcPrice : null;
-  status.currentBtcPrice = hasActiveCycle ? persisted.currentBtcPrice : null;
-  status.cycle = hasActiveCycle ? persisted.cycle : emptyCycle();
+  status.market = persisted.market;
+  status.marketStartBtcPrice = persisted.marketStartBtcPrice;
+  status.currentBtcPrice = persisted.currentBtcPrice;
+  status.cycle = persisted.cycle;
   status.logs = persisted.logs;
   status.lastError = persisted.lastError;
   return status;
-}
-
-async function reconcileStoppedPersistedState(
-  settings: Settings,
-  store: ReturnType<typeof createBtc15mStateStore>,
-): Promise<Btc15mPersistentState> {
-  const persisted = await reconcileStoppedPersistedOpenOrders(settings, store);
-  return reconcileStoppedPersistedBudget(store, persisted.config.workingBudgetUsd, persisted);
-}
-
-async function reconcileStoppedPersistedOpenOrders(
-  settings: Settings,
-  store: ReturnType<typeof createBtc15mStateStore>,
-): Promise<Btc15mPersistentState> {
-  const persisted = await store.readState();
-  const { buyOrder, sellOrder, position } = persisted.cycle;
-  const savedOrderIds = [buyOrder?.orderId, sellOrder?.orderId].filter((orderId): orderId is string => Boolean(orderId));
-  if (savedOrderIds.length === 0 && !position) {
-    return persisted;
-  }
-
-  if (!settings.dryRun) {
-    try {
-      const service = PolymarketService.getInstance(settings);
-      await service.initialize();
-      if (position && persisted.market) {
-        const livePosition = await getLivePosition(service, persisted.market);
-        if (!livePosition || livePosition.shares <= 0.000001) {
-          if (buyOrder?.reservedBudget && buyOrder.reservedBudget > 0) {
-            await store.updateBudget((budget) => {
-              const release = Math.min(budget.lockedBudget, buyOrder.reservedBudget);
-              budget.lockedBudget = Math.max(0, budget.lockedBudget - release);
-              budget.availableBudget += release;
-            });
-          }
-
-          const log: Btc15mLogEntry = {
-            timestamp: Date.now(),
-            message: "Cleared stale BTC 15m position state because no matching live position exists.",
-            type: "warn",
-          };
-          await store.updateRuntimeState({
-            enginePhase: "stopped",
-            market: null,
-            marketStartBtcPrice: null,
-            currentBtcPrice: null,
-            cycle: emptyCycle(),
-            logs: [log, ...persisted.logs].slice(0, 60),
-            lastError: null,
-          });
-          return store.readState();
-        }
-      }
-
-      if (savedOrderIds.length === 0) {
-        return persisted;
-      }
-
-      const liveOrders = await service.getOpenOrders();
-      const liveOrderIds = new Set(liveOrders.map((order) => order.id));
-      if (savedOrderIds.some((orderId) => liveOrderIds.has(orderId))) {
-        return persisted;
-      }
-    } catch {
-      return persisted;
-    }
-  }
-
-  if (buyOrder?.reservedBudget && buyOrder.reservedBudget > 0) {
-    await store.updateBudget((budget) => {
-      const release = Math.min(budget.lockedBudget, buyOrder.reservedBudget);
-      budget.lockedBudget = Math.max(0, budget.lockedBudget - release);
-      budget.availableBudget += release;
-    });
-  }
-
-  const log: Btc15mLogEntry = {
-    timestamp: Date.now(),
-    message: "Cleared stale BTC 15m order state because no matching live open order exists.",
-    type: "warn",
-  };
-  await store.updateRuntimeState({
-    enginePhase: "stopped",
-    market: null,
-    marketStartBtcPrice: null,
-    currentBtcPrice: null,
-    cycle: emptyCycle(),
-    logs: [log, ...persisted.logs].slice(0, 60),
-    lastError: null,
-  });
-  return store.readState();
-}
-
-async function reconcileStoppedPersistedBudget(
-  store: ReturnType<typeof createBtc15mStateStore>,
-  workingBudgetUsd: number,
-  persistedState?: Btc15mPersistentState,
-): Promise<Btc15mPersistentState> {
-  const persisted = persistedState ?? await store.readState();
-  if (!shouldResetIdleBudgetOnStartup(persisted, workingBudgetUsd)) {
-    return persisted;
-  }
-
-  const resetAt = Date.now();
-  await store.updateBudget((budget) => {
-    budget.initialBudget = roundBudget(workingBudgetUsd);
-    budget.availableBudget = roundBudget(workingBudgetUsd);
-    budget.lockedBudget = 0;
-    budget.updatedAt = resetAt;
-    budget.lastProfitResetAt = resetAt;
-    budget.lastBalanceCheck = null;
-  });
-  return store.readState();
-}
-
-export function shouldResetIdleBudgetOnStartup(
-  persisted: Pick<Btc15mPersistentState, "cycle" | "budget">,
-  workingBudgetUsd: number,
-): boolean {
-  const target = roundBudget(workingBudgetUsd);
-  if (hasActiveCycle(persisted.cycle)) {
-    return false;
-  }
-  return persisted.budget.initialBudget !== target ||
-    persisted.budget.availableBudget !== target ||
-    persisted.budget.lockedBudget !== 0;
-}
-
-export function shouldRestartActiveBotOnStart(phase: Btc15mBotStatus["enginePhase"]): boolean {
-  return phase === "auto_stopped";
-}
-
-function hasActiveCycle(cycle: Btc15mCycleState): boolean {
-  return Boolean(cycle.buyOrder || cycle.sellOrder || cycle.position);
 }
 
 export function configFromSettings(settings: Settings): Btc15mBotConfig {
@@ -422,10 +191,9 @@ export function configFromSettings(settings: Settings): Btc15mBotConfig {
     workingBudgetUsd: settings.btc15m.workingBudgetUsd,
     shares: settings.btc15m.orderSize,
     buyPrice: settings.btc15m.buyPriceLimit,
-    targetSellPrice: settings.btc15m.targetSellPriceLimit,
-    fallbackSellPrice: settings.btc15m.fallbackSellPriceLimit,
-    profitCheckDelayMin: settings.btc15m.profitCheckDelayMin,
-    budgetResetIntervalHours: settings.btc15m.budgetResetIntervalHours,
+    trailStep: settings.btc15m.trailStep,
+    trailDist: settings.btc15m.trailDist,
+    trailUpdateIntervalSec: settings.btc15m.trailUpdateIntervalSec,
     repeatThresholdMin: settings.btc15m.repeatThresholdMin,
     forceSellThresholdMin: settings.btc15m.forceSellThresholdMin,
     neutralZoneUsd: settings.btc15m.neutralZoneUsd,
@@ -448,8 +216,6 @@ function createIdleStatus(
         equity: persisted.budget.availableBudget + persisted.budget.lockedBudget,
         updatedAt: persisted.budget.updatedAt,
         balanceCheck: persisted.budget.lastBalanceCheck,
-        lastProfitResetAt: persisted.budget.lastProfitResetAt,
-        skimmedProfitUsd: persisted.budget.skimmedProfitUsd,
       }
     : null;
 
@@ -466,6 +232,7 @@ function createIdleStatus(
       buyOrder: null,
       sellOrder: null,
       position: null,
+      highWaterMark: null,
     },
     completedTrades: trades,
     analytics: {
@@ -490,10 +257,6 @@ function sanitizeConfigOverrides(overrides: Partial<Btc15mBotConfig> | undefined
   return Object.fromEntries(
     Object.entries(overrides).filter(([, value]) => typeof value === "number" && Number.isFinite(value) && value > 0),
   ) as Partial<Btc15mBotConfig>;
-}
-
-function roundBudget(value: number): number {
-  return Math.round(value * 100) / 100;
 }
 
 function subscribeMarketBook(
@@ -539,20 +302,34 @@ function handleMarketWsEvent(event: PolymarketMarketWsEvent): void {
   }
 }
 
-async function getLivePosition(
-  service: PolymarketService,
-  market: { upTokenId: string; downTokenId: string },
-): Promise<{ bettingSide: Btc15mSide; tokenId: string; shares: number } | null> {
-  const [upShares, downShares] = await Promise.all([
-    service.getConditionalBalance(market.upTokenId),
-    service.getConditionalBalance(market.downTokenId),
-  ]);
+async function fetchBtcPrice(atMs: number): Promise<number | null> {
+  if (Date.now() - atMs < 60_000) {
+    const url = new URL("https://api.binance.com/api/v3/ticker/price");
+    url.searchParams.set("symbol", "BTCUSDT");
+    const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) {
+      throw new Error(`Binance ticker failed: ${response.status} ${response.statusText}`);
+    }
+    const payload = (await response.json()) as { price?: unknown };
+    return parseFiniteNumber(payload.price);
+  }
 
-  if (upShares > 0.000001) {
-    return { bettingSide: "up", tokenId: market.upTokenId, shares: upShares };
+  const startTime = Math.floor(atMs / 60_000) * 60_000;
+  const url = new URL("https://api.binance.com/api/v3/klines");
+  url.searchParams.set("symbol", "BTCUSDT");
+  url.searchParams.set("interval", "1m");
+  url.searchParams.set("startTime", String(startTime));
+  url.searchParams.set("limit", "1");
+  const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+  if (!response.ok) {
+    throw new Error(`Binance klines failed: ${response.status} ${response.statusText}`);
   }
-  if (downShares > 0.000001) {
-    return { bettingSide: "down", tokenId: market.downTokenId, shares: downShares };
-  }
-  return null;
+  const payload = (await response.json()) as unknown;
+  const row = Array.isArray(payload) ? payload[0] : null;
+  return Array.isArray(row) ? parseFiniteNumber(row[4]) : null;
+}
+
+function parseFiniteNumber(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : null;
 }

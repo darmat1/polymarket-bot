@@ -63,7 +63,7 @@ export class Btc15mStateStore {
   async appendCompletedTrade(trade: Btc15mCompletedTrade): Promise<void> {
     await this.enqueue(async () => {
       const state = await this.loadState();
-      state.completedTrades = dedupeCompletedTrades([...state.completedTrades, trade]).slice(-MAX_TRADES);
+      state.completedTrades = [...state.completedTrades, trade].slice(-MAX_TRADES);
       state.updatedAt = Date.now();
       await this.persistState(state);
     });
@@ -140,7 +140,7 @@ export class Btc15mStateStore {
       version: 1,
       updatedAt: numberOr(input.updatedAt, fallback.updatedAt),
       config: normalizeConfig(input.config, fallback.config),
-      completedTrades: dedupeCompletedTrades(Array.isArray(input.completedTrades) ? input.completedTrades : []),
+      completedTrades: Array.isArray(input.completedTrades) ? input.completedTrades : [],
       budget: normalizeBudgetInput(input.budget, fallback.budget, this.defaultConfig.workingBudgetUsd),
       enginePhase: input.enginePhase === "running" || input.enginePhase === "auto_stopped"
         ? input.enginePhase
@@ -172,8 +172,6 @@ export class Btc15mStateStore {
         lockedBudget: 0,
         updatedAt: now,
         lastBalanceCheck: null,
-        lastProfitResetAt: now,
-        skimmedProfitUsd: 0,
       },
       enginePhase: "stopped",
       market: null,
@@ -197,6 +195,7 @@ export function emptyCycle(): Btc15mCycleState {
     buyOrder: null,
     sellOrder: null,
     position: null,
+    highWaterMark: null,
   };
 }
 
@@ -204,15 +203,13 @@ function normalizeConfig(
   input: Partial<Btc15mBotConfig> | undefined,
   fallback: Btc15mBotConfig,
 ): Btc15mBotConfig {
-  const legacy = input as (Partial<Btc15mBotConfig> & { sellPrice?: unknown }) | undefined;
   return {
     workingBudgetUsd: numberOr(input?.workingBudgetUsd, fallback.workingBudgetUsd),
     shares: numberOr(input?.shares, fallback.shares),
     buyPrice: numberOr(input?.buyPrice, fallback.buyPrice),
-    targetSellPrice: numberOr(input?.targetSellPrice, fallback.targetSellPrice),
-    fallbackSellPrice: numberOr(input?.fallbackSellPrice ?? legacy?.sellPrice, fallback.fallbackSellPrice),
-    profitCheckDelayMin: numberOr(input?.profitCheckDelayMin, fallback.profitCheckDelayMin),
-    budgetResetIntervalHours: numberOr(input?.budgetResetIntervalHours, fallback.budgetResetIntervalHours),
+    trailStep: numberOr(input?.trailStep, fallback.trailStep),
+    trailDist: numberOr(input?.trailDist, fallback.trailDist),
+    trailUpdateIntervalSec: numberOr(input?.trailUpdateIntervalSec, fallback.trailUpdateIntervalSec),
     repeatThresholdMin: numberOr(input?.repeatThresholdMin, fallback.repeatThresholdMin),
     forceSellThresholdMin: numberOr(input?.forceSellThresholdMin, fallback.forceSellThresholdMin),
     neutralZoneUsd: numberOr(input?.neutralZoneUsd, fallback.neutralZoneUsd),
@@ -231,8 +228,6 @@ function normalizeBudgetInput(
     lockedBudget: numberOr(input?.lockedBudget, fallback.lockedBudget),
     updatedAt: numberOr(input?.updatedAt, fallback.updatedAt),
     lastBalanceCheck: normalizeBalanceCheck(input?.lastBalanceCheck),
-    lastProfitResetAt: nullableNumber(input?.lastProfitResetAt) ?? numberOr(input?.updatedAt, fallback.lastProfitResetAt ?? Date.now()),
-    skimmedProfitUsd: numberOr(input?.skimmedProfitUsd, fallback.skimmedProfitUsd),
   };
   normalizeBudget(budget, maxBudget);
   return budget;
@@ -253,8 +248,6 @@ function toBudgetSnapshot(budget: Btc15mPersistedBudgetState): BudgetSnapshot {
     equity: roundBudget(budget.availableBudget + budget.lockedBudget),
     updatedAt: budget.updatedAt,
     balanceCheck: budget.lastBalanceCheck,
-    lastProfitResetAt: budget.lastProfitResetAt,
-    skimmedProfitUsd: budget.skimmedProfitUsd,
   };
 }
 
@@ -278,7 +271,6 @@ function normalizeMarket(value: unknown): Btc15mPersistentState["market"] {
     question: market.question,
     startTimeMs: market.startTimeMs,
     endTimeMs: market.endTimeMs,
-    priceToBeat: nullableNumber(market.priceToBeat),
     upTokenId: market.upTokenId,
     downTokenId: market.downTokenId,
   };
@@ -297,6 +289,7 @@ function normalizeCycle(value: unknown): Btc15mCycleState {
     buyOrder: cycle.buyOrder ?? null,
     sellOrder: cycle.sellOrder ?? null,
     position: cycle.position ?? null,
+    highWaterMark: nullableNumber(cycle.highWaterMark),
   };
 }
 
@@ -324,33 +317,6 @@ function normalizeBalanceCheck(value: unknown): BudgetBalanceCheck | null {
 
 function nullableNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function dedupeCompletedTrades(trades: Btc15mCompletedTrade[]): Btc15mCompletedTrade[] {
-  const byCycle = new Map<string, Btc15mCompletedTrade>();
-  for (const trade of trades) {
-    const key = completedTradeKey(trade);
-    const existing = byCycle.get(key);
-    if (!existing) {
-      byCycle.set(key, trade);
-      continue;
-    }
-    if (trade.shares > existing.shares || (trade.shares === existing.shares && trade.closedAt < existing.closedAt)) {
-      byCycle.set(key, trade);
-    }
-  }
-  return Array.from(byCycle.values()).sort((left, right) => left.closedAt - right.closedAt);
-}
-
-function completedTradeKey(trade: Btc15mCompletedTrade): string {
-  return [
-    trade.marketSlug,
-    trade.bettingSide,
-    trade.buyPrice,
-    trade.sellPrice,
-    trade.exitReason,
-    trade.startedAt,
-  ].join("|");
 }
 
 function numberOr(value: unknown, fallback: number): number {

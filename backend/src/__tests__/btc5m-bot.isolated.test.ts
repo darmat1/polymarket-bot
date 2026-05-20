@@ -55,10 +55,9 @@ const settings: Settings = {
   },
   btc15m: {
     buyPriceLimit: 0.25,
-    targetSellPriceLimit: 0.8,
-    fallbackSellPriceLimit: 0.4,
-    profitCheckDelayMin: 3,
-    budgetResetIntervalHours: 3,
+    trailStep: 0.05,
+    trailDist: 0.02,
+    trailUpdateIntervalSec: 3,
     orderSize: 5,
     workingBudgetUsd: 5,
     repeatThresholdMin: 6,
@@ -66,6 +65,15 @@ const settings: Settings = {
     neutralZoneUsd: 5,
     tickIntervalSec: 2,
     stateFile: "data/btc15m-trader-state.json",
+  },
+  btc15mHedge: {
+    workingBudgetUsd: 5,
+    orderSize: 5,
+    targetCombinedPrice: null,
+    entryCutoffMin: 3,
+    forceUnwindThresholdMin: 2,
+    tickIntervalSec: 2,
+    stateFile: "data/btc15m-hedge-state.json",
   },
 };
 

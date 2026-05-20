@@ -21,7 +21,6 @@ export interface Btc15mMarketView {
   question: string;
   startTimeMs: number;
   endTimeMs: number;
-  priceToBeat: number | null;
   upTokenId: string;
   downTokenId: string;
 }
@@ -85,10 +84,9 @@ export interface Btc15mBotConfig {
   workingBudgetUsd: number;
   shares: number;
   buyPrice: number;
-  targetSellPrice: number;
-  fallbackSellPrice: number;
-  profitCheckDelayMin: number;
-  budgetResetIntervalHours: number;
+  trailStep: number;            // min bestBid rise above highWaterMark to trigger sell update (default 0.05)
+  trailDist: number;            // limit sell placed at highWaterMark - trailDist (default 0.02)
+  trailUpdateIntervalSec: number; // LIVE mode throttle in seconds (default 3)
   repeatThresholdMin: number;
   forceSellThresholdMin: number;
   neutralZoneUsd: number;
@@ -107,6 +105,7 @@ export interface Btc15mCycleState {
   buyOrder: Btc15mTrackedOrder | null;
   sellOrder: Btc15mTrackedOrder | null;
   position: Btc15mPosition | null;
+  highWaterMark: number | null; // highest price seen since buy filled; null until buy fills
 }
 
 export interface Btc15mBotStatus {
@@ -131,8 +130,6 @@ export interface Btc15mPersistedBudgetState {
   lockedBudget: number;
   updatedAt: number;
   lastBalanceCheck: BudgetBalanceCheck | null;
-  lastProfitResetAt: number | null;
-  skimmedProfitUsd: number;
 }
 
 export interface Btc15mRuntimeStateUpdate {

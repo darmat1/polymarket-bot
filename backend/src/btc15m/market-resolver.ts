@@ -41,7 +41,7 @@ export function parseMarketView(
 ): Btc15mMarketView | null {
   const slug = typeof raw.slug === "string" && raw.slug.trim() ? raw.slug : fallbackSlug;
   const question = typeof raw.question === "string" && raw.question.trim() ? raw.question : slug;
-  const startTimeMs = parseDateMs(raw.eventStartTime ?? raw.startTime ?? firstEventStartTime(raw) ?? raw.start_time);
+  const startTimeMs = parseDateMs(raw.startDate ?? raw.startDateIso ?? raw.start_time);
   const endTimeMs = parseDateMs(raw.endDate ?? raw.endDateIso ?? raw.end_time);
   if (!Number.isFinite(startTimeMs) || !Number.isFinite(endTimeMs)) {
     return null;
@@ -57,43 +57,9 @@ export function parseMarketView(
     question,
     startTimeMs,
     endTimeMs,
-    priceToBeat: findPriceToBeat(raw),
     upTokenId: tokens.up,
     downTokenId: tokens.down,
   };
-}
-
-function findPriceToBeat(raw: Record<string, unknown>): number | null {
-  const direct = readPriceToBeat(raw);
-  if (direct !== null) {
-    return direct;
-  }
-
-  const events = Array.isArray(raw.events) ? raw.events : [];
-  for (const event of events) {
-    if (typeof event !== "object" || event === null) {
-      continue;
-    }
-    const parsed = readPriceToBeat(event as Record<string, unknown>);
-    if (parsed !== null) {
-      return parsed;
-    }
-  }
-
-  return null;
-}
-
-function readPriceToBeat(record: Record<string, unknown>): number | null {
-  const metadata = typeof record.eventMetadata === "object" && record.eventMetadata !== null
-    ? record.eventMetadata as Record<string, unknown>
-    : null;
-  return parseFinitePositiveNumber(record.priceToBeat ?? metadata?.priceToBeat);
-}
-
-function firstEventStartTime(raw: Record<string, unknown>): unknown {
-  const events = Array.isArray(raw.events) ? raw.events : [];
-  const first = events.find((event): event is Record<string, unknown> => typeof event === "object" && event !== null);
-  return first?.startTime ?? first?.eventStartTime ?? first?.startDate;
 }
 
 function parseOutcomeTokens(raw: Record<string, unknown>): { up: string; down: string } | null {
@@ -155,9 +121,4 @@ function parseDateMs(value: unknown): number {
     return Number.isFinite(parsed) ? parsed : Number.NaN;
   }
   return Number.NaN;
-}
-
-function parseFinitePositiveNumber(value: unknown): number | null {
-  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }

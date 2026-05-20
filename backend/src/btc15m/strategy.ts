@@ -11,7 +11,6 @@ import type {
   Btc15mCycleState,
   Btc15mLogEntry,
   Btc15mMarketView,
-  Btc15mPosition,
   Btc15mRuntimeStateUpdate,
   Btc15mSide,
   Btc15mTrackedOrder,
@@ -22,18 +21,7 @@ export interface Btc15mBudgetPort {
   release(amount: number, reason?: string): Promise<void>;
   consume(amount: number, reason?: string): Promise<void>;
   addFunds(amount: number, reason?: string): Promise<void>;
-  resetAvailableBudget(
-    maxAvailable: number,
-    resetAt: number,
-    reason?: string,
-  ): Promise<{ snapshot: BudgetSnapshot; skimmedProfitUsd: number }>;
   snapshot(): Promise<BudgetSnapshot>;
-}
-
-export interface Btc15mLivePosition {
-  bettingSide: Btc15mSide;
-  tokenId: string;
-  shares: number;
 }
 
 export interface PlaceOrderArgs {
@@ -47,7 +35,6 @@ export interface Btc15mRuntime {
   now: () => number;
   resolveMarket: () => Promise<Btc15mMarketView | null>;
   fetchBtcPrice: (atMs: number) => Promise<number | null>;
-  fetchMarketStartPrice: (market: Btc15mMarketView) => Promise<number | null>;
   placeLimitOrder: (args: PlaceOrderArgs) => Promise<unknown>;
   cancelOrder: (orderId: string) => Promise<unknown>;
   onMarketBookSubscribe: (
@@ -61,8 +48,6 @@ export interface Btc15mRuntime {
   persistTrade: (trade: Btc15mCompletedTrade) => Promise<void>;
   persistConfig: (config: Btc15mBotConfig) => Promise<void>;
   persistRuntimeState?: (state: Btc15mRuntimeStateUpdate) => Promise<void>;
-  getLivePosition?: (market: Btc15mMarketView) => Promise<Btc15mLivePosition | null>;
-  getTopOfBook?: (tokenId: string) => Promise<{ bestBid: number | null; bestAsk: number | null }>;
   setIntervalFn?: typeof setInterval;
   clearIntervalFn?: typeof clearInterval;
 }
@@ -81,8 +66,6 @@ export interface Btc15mBotOptions {
 }
 
 const MAX_LOG_ENTRIES = 60;
-const MIN_CLOB_PRICE = 0.01;
-const MAX_CLOB_PRICE = 0.99;
 
 export class Btc15mBot {
   private readonly runtime: Btc15mRuntime;
@@ -93,6 +76,7 @@ export class Btc15mBot {
   private pendingActions: Promise<void>[] = [];
   private readonly bookSnapshots = new Map<string, { bestBid: number | null; bestAsk: number | null }>();
   private readonly subscribedTokens = new Set<string>();
+  private lastTrailUpdateMs = 0;
   private state: Btc15mBotStatus;
 
   constructor(options: Btc15mBotOptions) {
@@ -140,16 +124,10 @@ export class Btc15mBot {
     }
   }
 
-  async stop(): Promise<void> {
+  stop(): void {
     if (this.tickTimer) {
       (this.runtime.clearIntervalFn ?? clearInterval)(this.tickTimer);
       this.tickTimer = null;
-    }
-    await this.cancelOpenOrders("stop");
-    if (!this.state.cycle.buyOrder && !this.state.cycle.sellOrder && !this.state.cycle.position) {
-      this.state.cycle = emptyCycle();
-    } else if (this.state.cycle.position && !this.state.cycle.sellOrder) {
-      this.state.cycle.cyclePhase = "holding";
     }
     for (const tokenId of this.subscribedTokens) {
       this.runtime.onMarketBookUnsubscribe(tokenId);
@@ -161,9 +139,8 @@ export class Btc15mBot {
     }
     this.state.enginePhase = "stopped";
     this.pushLog("BTC 15m bot stopped.", "info");
-    await this.refreshBudget();
     this.touch();
-    await this.persistRuntimeState();
+    void this.persistRuntimeState();
   }
 
   async flushPendingActions(): Promise<void> {
@@ -181,10 +158,6 @@ export class Btc15mBot {
     this.tickInProgress = true;
     try {
       const now = this.runtime.now();
-      if (this.state.market && now >= this.state.market.endTimeMs) {
-        await this.resolveExpiredMarketPosition();
-      }
-
       const resolvedMarket = await this.runtime.resolveMarket();
       if (!resolvedMarket) {
         this.state.market = null;
@@ -195,12 +168,7 @@ export class Btc15mBot {
         return;
       }
 
-      const shouldSwitchMarket = !this.state.market || this.state.market.slug !== resolvedMarket.slug || now >= this.state.market.endTimeMs;
-      if (!this.dryRun && shouldSwitchMarket && (!this.state.market || now < this.state.market.endTimeMs)) {
-        await this.reconcileClosedLivePosition();
-      }
-
-      if (shouldSwitchMarket) {
+      if (!this.state.market || this.state.market.slug !== resolvedMarket.slug || now >= this.state.market.endTimeMs) {
         await this.switchMarket(resolvedMarket);
       }
 
@@ -209,22 +177,11 @@ export class Btc15mBot {
         return;
       }
 
-      if (this.state.marketStartBtcPrice === null) {
-        this.state.marketStartBtcPrice = await this.fetchMarketStartPrice(market);
-      }
       this.state.currentBtcPrice = await this.runtime.fetchBtcPrice(now);
       await this.refreshBudget();
-      await this.maybeResetBudget(now);
 
       if (this.state.cycle.cyclePhase === "waiting_market") {
         this.state.cycle.cyclePhase = "waiting_direction";
-      }
-
-      if (!this.dryRun) {
-        const reconciledClosedPosition = await this.reconcileClosedLivePosition();
-        if (!reconciledClosedPosition) {
-          await this.reconcileLivePosition(now);
-        }
       }
 
       if (this.state.cycle.cyclePhase === "buy_pending") {
@@ -243,12 +200,6 @@ export class Btc15mBot {
       }
 
       if (this.state.cycle.cyclePhase === "waiting_direction") {
-        if (this.isEntryCutoffReached(now)) {
-          this.state.cycle.cyclePhase = "market_idle";
-          this.touch();
-          await this.persistRuntimeState();
-          return;
-        }
         await this.maybePlaceBuy();
       }
 
@@ -266,19 +217,12 @@ export class Btc15mBot {
   private async switchMarket(market: Btc15mMarketView): Promise<void> {
     await this.cancelOpenOrders("market-switch");
     this.state.market = market;
-    this.state.marketStartBtcPrice = await this.fetchMarketStartPrice(market);
+    this.state.marketStartBtcPrice = await this.runtime.fetchBtcPrice(market.startTimeMs);
     this.state.currentBtcPrice = null;
     this.state.cycle = emptyCycle();
     this.state.cycle.cyclePhase = "waiting_direction";
     this.pushLog(`Switched to market ${market.slug}.`, "info");
     this.touch();
-  }
-
-  private async fetchMarketStartPrice(market: Btc15mMarketView): Promise<number | null> {
-    if (typeof market.priceToBeat === "number" && Number.isFinite(market.priceToBeat) && market.priceToBeat > 0) {
-      return market.priceToBeat;
-    }
-    return this.runtime.fetchMarketStartPrice(market);
   }
 
   private async maybePlaceBuy(): Promise<void> {
@@ -349,7 +293,7 @@ export class Btc15mBot {
     }
 
     const timeToEndMs = market.endTimeMs - now;
-    if (timeToEndMs < this.config.repeatThresholdMin * 60_000 && !this.state.cycle.position) {
+    if (timeToEndMs < this.config.forceSellThresholdMin * 60_000 && !this.state.cycle.position) {
       await this.cancelBuy("late-market");
       this.state.cycle.cyclePhase = "market_idle";
       return;
@@ -376,139 +320,53 @@ export class Btc15mBot {
   private async reconcileHolding(now: number): Promise<void> {
     const market = this.state.market;
     const position = this.state.cycle.position;
-    const sellOrder = this.state.cycle.sellOrder;
-    if (!market || !position || !sellOrder) {
+    if (!market || !position) {
       return;
     }
 
+    const snap = this.bookSnapshots.get(position.tokenId);
+    const bestBid = snap?.bestBid ?? null;
     const timeToEndMs = market.endTimeMs - now;
-    if (timeToEndMs < this.config.forceSellThresholdMin * 60_000) {
-      await this.replaceSellAtBestBid(position, sellOrder, "force_sell", "force_selling");
-      return;
+
+    // --- TRAILING STOP LOGIC ---
+    const highWaterMark = this.state.cycle.highWaterMark ?? position.avgEntryPrice;
+    if (bestBid !== null && bestBid > highWaterMark + this.config.trailStep) {
+      const cooldownOk =
+        this.dryRun || now - this.lastTrailUpdateMs >= this.config.trailUpdateIntervalSec * 1000;
+      if (cooldownOk) {
+        const newSellPrice = roundUsd(bestBid - this.config.trailDist);
+        // Cancel existing sell if any (API call only; keep book subscription)
+        await this.cancelSellOrderApi();
+        this.state.cycle.highWaterMark = bestBid;
+        this.lastTrailUpdateMs = now;
+        await this.placeSell(newSellPrice, "holding");
+        return; // don't also force-sell this tick
+      }
     }
 
-    const profitCheckDue = now - sellOrder.createdAt >= this.config.profitCheckDelayMin * 60_000;
-    if (!profitCheckDue || sellOrder.price !== this.config.targetSellPrice) {
+    // --- FORCE SELL ---
+    if (timeToEndMs >= this.config.forceSellThresholdMin * 60_000) {
       return;
     }
+    const forceSellPrice = bestBid && bestBid > 0 ? bestBid : 0.01;
+    await this.cancelSellOrderApi();
+    await this.placeSell(forceSellPrice, "force_selling");
+    if (this.dryRun) {
+      await this.handleSellFill(forceSellPrice, "force_sell");
+    }
+  }
 
-    const bestBid = await this.getBestBid(position.tokenId);
-    const nextPrice = bestBid !== null &&
-      bestBid !== undefined &&
-      bestBid >= this.config.fallbackSellPrice &&
-      bestBid < this.config.targetSellPrice
-      ? normalizeSellPrice(bestBid)
-      : this.config.fallbackSellPrice;
-
+  private async cancelSellOrderApi(): Promise<void> {
+    const sellOrder = this.state.cycle.sellOrder;
+    if (!sellOrder) return;
     if (sellOrder.orderId) {
       try {
         await this.runtime.cancelOrder(sellOrder.orderId);
       } catch {
-        // Order may already be filled/cancelled.
+        // best effort
       }
     }
-    await this.placeSell(nextPrice, "holding");
-    this.pushLog(`Profit check moved SELL to ${formatPrice(nextPrice)}.`, "info");
-    if (this.dryRun && bestBid !== null && bestBid !== undefined && bestBid >= nextPrice) {
-      await this.handleSellFill(nextPrice, "target_sell");
-    }
-  }
-
-  private async reconcileLivePosition(now: number): Promise<void> {
-    const market = this.state.market;
-    if (!market || this.state.cycle.position || !this.runtime.getLivePosition) {
-      return;
-    }
-
-    const livePosition = await this.runtime.getLivePosition(market);
-    if (!livePosition || livePosition.shares <= 0) {
-      return;
-    }
-
-    if (this.state.cycle.buyOrder) {
-      await this.transitionBuyFilledToHolding(livePosition.shares);
-    } else if (this.hasCompletedTrade(market.slug, livePosition.bettingSide)) {
-      return;
-    } else {
-      this.state.cycle.position = {
-        bettingSide: livePosition.bettingSide,
-        tokenId: livePosition.tokenId,
-        shares: normalizeSize(livePosition.shares),
-        avgEntryPrice: this.config.buyPrice,
-        costBasisUsd: roundUsd(livePosition.shares * this.config.buyPrice),
-      };
-      this.state.cycle.buyOrder = null;
-      this.state.cycle.cycleStartedAt = this.state.cycle.cycleStartedAt ?? now;
-      this.state.cycle.cyclePhase = "holding";
-      await this.syncRecoveredPositionBudget(this.state.cycle.position.costBasisUsd);
-      this.pushLog(
-        `Recovered LIVE position: ${formatSize(livePosition.shares)} ${livePosition.bettingSide.toUpperCase()} shares.`,
-        "warn",
-      );
-      if (market.endTimeMs - now < this.config.forceSellThresholdMin * 60_000) {
-        const bestBid = await this.getBestBid(livePosition.tokenId);
-        if (bestBid !== null && bestBid > 0) {
-          await this.placeSell(bestBid, "force_selling");
-        }
-      } else {
-        await this.placeSell(this.config.targetSellPrice, "holding");
-      }
-    }
-
-    if (
-      this.state.cycle.cyclePhase === "holding" &&
-      market.endTimeMs - now < this.config.forceSellThresholdMin * 60_000
-    ) {
-      await this.reconcileHolding(now);
-    }
-  }
-
-  private async resolveExpiredMarketPosition(): Promise<boolean> {
-    const market = this.state.market;
-    const position = this.state.cycle.position;
-    if (!market || !position) {
-      return false;
-    }
-
-    const startPrice = this.state.marketStartBtcPrice ?? await this.fetchMarketStartPrice(market);
-    const settledBtcPrice = await this.runtime.fetchBtcPrice(market.endTimeMs);
-    if (startPrice === null || settledBtcPrice === null) {
-      return false;
-    }
-
-    this.state.marketStartBtcPrice = startPrice;
-    this.state.currentBtcPrice = settledBtcPrice;
-
-    const winningSide: Btc15mSide = settledBtcPrice > startPrice ? "up" : "down";
-    const settledSellPrice = position.bettingSide === winningSide ? 1 : 0;
-    this.pushLog(
-      `Market expired with unsold ${position.bettingSide.toUpperCase()} position; recording resolved_unfilled at ${formatPrice(settledSellPrice)}.`,
-      settledSellPrice > 0 ? "warn" : "error",
-    );
-    await this.handleSellFill(settledSellPrice, "resolved_unfilled");
-    return true;
-  }
-
-  private async reconcileClosedLivePosition(): Promise<boolean> {
-    const market = this.state.market;
-    const position = this.state.cycle.position;
-    const sellOrder = this.state.cycle.sellOrder;
-    if (!market || !position || !sellOrder || !this.runtime.getLivePosition) {
-      return false;
-    }
-
-    const livePosition = await this.runtime.getLivePosition(market);
-    if (livePosition?.tokenId === position.tokenId && livePosition.shares > 0.000001) {
-      return false;
-    }
-
-    const exitReason = this.state.cycle.cyclePhase === "force_selling" ? "force_sell" : "target_sell";
-    this.pushLog(
-      `SELL ${position.bettingSide.toUpperCase()} appears filled on Polymarket; recording ${exitReason} at ${formatPrice(sellOrder.price)}.`,
-      "warn",
-    );
-    await this.handleSellFill(sellOrder.price, exitReason);
-    return true;
+    this.state.cycle.sellOrder = null;
   }
 
   private decideRepeat(now: number): void {
@@ -518,8 +376,9 @@ export class Btc15mBot {
       return;
     }
 
-    if (this.hasCompletedMarketTrade(market.slug)) {
-      this.state.cycle = emptyCycle();
+    // Safety: never repeat if position or sell order still open
+    if (this.state.cycle.position !== null || this.state.cycle.sellOrder !== null) {
+      this.pushLog("Cycle not fully closed; skipping repeat (safety guard).", "warn");
       this.state.cycle.cyclePhase = "market_idle";
       return;
     }
@@ -531,14 +390,6 @@ export class Btc15mBot {
     }
 
     this.state.cycle.cyclePhase = "market_idle";
-  }
-
-  private isEntryCutoffReached(now: number): boolean {
-    const market = this.state.market;
-    if (!market) {
-      return true;
-    }
-    return market.endTimeMs - now < this.config.repeatThresholdMin * 60_000;
   }
 
   private async cancelBuy(reason: string): Promise<void> {
@@ -581,6 +432,9 @@ export class Btc15mBot {
   }
 
   private subscribeBook(tokenId: string, mode: "buy" | "sell"): void {
+    if (this.subscribedTokens.has(tokenId)) {
+      return; // already subscribed; listener reads state dynamically
+    }
     this.runtime.onMarketBookSubscribe(tokenId, (bestBid, bestAsk) => {
       this.bookSnapshots.set(tokenId, { bestBid, bestAsk });
       if (mode === "buy") {
@@ -619,13 +473,6 @@ export class Btc15mBot {
     }
 
     const shares = normalizeSize(Math.min(filledSize, buyOrder.size));
-    if (shares < buyOrder.size && buyOrder.orderId) {
-      try {
-        await this.runtime.cancelOrder(buyOrder.orderId);
-      } catch {
-        // Remaining quantity may already be gone.
-      }
-    }
     const consumed = roundUsd(shares * buyOrder.price);
     await this.runtime.budget.consume(consumed, "btc15m-buy-filled");
     const unfilledBudget = roundUsd(Math.max(0, buyOrder.size - shares) * buyOrder.price);
@@ -644,40 +491,14 @@ export class Btc15mBot {
     };
     this.state.cycle.buyOrder = null;
     this.pushLog(`BUY filled. Holding ${formatSize(shares)} ${buyOrder.bettingSide.toUpperCase()} shares.`, "success");
-    await this.placeSell(this.config.targetSellPrice, "holding");
+    this.state.cycle.highWaterMark = buyOrder.price;
+    this.state.cycle.cyclePhase = "holding";
+    // Subscribe to book so we can track bestBid for trailing stop
+    if (this.dryRun) {
+      this.subscribeBook(buyOrder.tokenId, "sell");
+    }
     await this.refreshBudget();
     await this.persistRuntimeState();
-  }
-
-  private async replaceSellAtBestBid(
-    position: Btc15mPosition,
-    sellOrder: Btc15mTrackedOrder,
-    exitReason: Btc15mCompletedTrade["exitReason"],
-    phase: "holding" | "force_selling",
-  ): Promise<void> {
-    const bestBid = await this.getBestBid(position.tokenId);
-    if (bestBid === null || bestBid === undefined || bestBid <= 0) {
-      return;
-    }
-
-    if (sellOrder.orderId) {
-      try {
-        await this.runtime.cancelOrder(sellOrder.orderId);
-      } catch {
-        // Order may already be filled/cancelled.
-      }
-    }
-    const sellPrice = normalizeSellPrice(bestBid);
-    if (bestBid < MIN_CLOB_PRICE) {
-      this.pushLog(
-        `Best bid ${formatPrice(bestBid)} is below CLOB minimum; placing SELL at ${formatPrice(sellPrice)}.`,
-        "warn",
-      );
-    }
-    await this.placeSell(sellPrice, phase);
-    if (this.dryRun && bestBid >= sellPrice) {
-      await this.handleSellFill(sellPrice, exitReason);
-    }
   }
 
   private async placeSell(
@@ -690,11 +511,10 @@ export class Btc15mBot {
       return;
     }
 
-    const normalizedPrice = normalizeSellPrice(price);
     const response = await this.runtime.placeLimitOrder({
       tokenId: position.tokenId,
       side: "sell",
-      price: normalizedPrice,
+      price,
       size: position.shares,
     });
     const now = this.runtime.now();
@@ -705,7 +525,7 @@ export class Btc15mBot {
       side: "sell",
       tokenId: position.tokenId,
       bettingSide: position.bettingSide,
-      price: normalizedPrice,
+      price,
       size: position.shares,
       filledSize: 0,
       status: "open",
@@ -714,8 +534,8 @@ export class Btc15mBot {
       updatedAt: now,
     };
     this.state.cycle.cyclePhase = phase;
-    this.pushLog(`SELL ${position.bettingSide.toUpperCase()} @ ${formatPrice(normalizedPrice)} submitted (${orderId}).`, "info");
-    if (phase === "holding" && !this.subscribedTokens.has(position.tokenId)) {
+    this.pushLog(`SELL ${position.bettingSide.toUpperCase()} @ ${formatPrice(price)} submitted (${orderId}).`, "info");
+    if (this.dryRun && phase === "holding") {
       this.subscribeBook(position.tokenId, "sell");
     }
   }
@@ -726,19 +546,9 @@ export class Btc15mBot {
   ): Promise<void> {
     const position = this.state.cycle.position;
     const market = this.state.market;
-    const sellOrder = this.state.cycle.sellOrder;
-    if (!position || !market || !sellOrder) {
+    if (!position || !market || !this.state.cycle.sellOrder) {
       return;
     }
-
-    sellOrder.status = "filled";
-    sellOrder.filledSize = position.shares;
-    sellOrder.updatedAt = this.runtime.now();
-    this.state.cycle.sellOrder = null;
-    this.state.cycle.position = null;
-    this.state.cycle.cyclePhase = "cycle_done";
-    this.runtime.onMarketBookUnsubscribe(position.tokenId);
-    this.subscribedTokens.delete(position.tokenId);
 
     const pnlUsd = roundUsd((sellPrice - position.avgEntryPrice) * position.shares);
     const trade: Btc15mCompletedTrade = {
@@ -758,6 +568,11 @@ export class Btc15mBot {
     await this.runtime.budget.addFunds(roundUsd(sellPrice * position.shares), "btc15m-sell-filled");
     this.state.completedTrades = [...this.state.completedTrades, trade].slice(-500);
     await this.runtime.persistTrade(trade);
+    this.runtime.onMarketBookUnsubscribe(position.tokenId);
+    this.subscribedTokens.delete(position.tokenId);
+    this.state.cycle.sellOrder = null;
+    this.state.cycle.position = null;
+    this.state.cycle.cyclePhase = "cycle_done";
     this.pushLog(`SELL filled. PnL ${pnlUsd.toFixed(2)} (${trade.result}).`, trade.result === "win" ? "success" : "warn");
     await this.refreshBudget();
     await this.persistRuntimeState();
@@ -809,72 +624,6 @@ export class Btc15mBot {
     const snapshot = await this.runtime.budget.snapshot();
     this.state.budget = snapshot;
     this.state.analytics = computeAnalytics(this.state.completedTrades, snapshot);
-  }
-
-  private async maybeResetBudget(now: number): Promise<void> {
-    const budget = this.state.budget;
-    if (!budget) {
-      return;
-    }
-
-    const lastResetAt = budget.lastProfitResetAt ?? budget.updatedAt;
-    const resetIntervalMs = this.config.budgetResetIntervalHours * 60 * 60 * 1000;
-    if (now - lastResetAt < resetIntervalMs) {
-      return;
-    }
-
-    const cycle = this.state.cycle;
-    const hasActiveCycle = Boolean(cycle.buyOrder || cycle.sellOrder || cycle.position);
-    if (hasActiveCycle || budget.lockedBudget > 0) {
-      return;
-    }
-
-    const { snapshot, skimmedProfitUsd } = await this.runtime.budget.resetAvailableBudget(
-      this.config.workingBudgetUsd,
-      now,
-      "btc15m-profit-skim",
-    );
-    this.state.budget = snapshot;
-    this.state.analytics = computeAnalytics(this.state.completedTrades, snapshot);
-    if (skimmedProfitUsd > 0) {
-      this.pushLog(`Budget reset: skimmed ${formatUsd(skimmedProfitUsd)} profit.`, "success");
-    }
-  }
-
-  private hasCompletedTrade(marketSlug: string, bettingSide: Btc15mSide): boolean {
-    return this.state.completedTrades.some((trade) => (
-      trade.marketSlug === marketSlug && trade.bettingSide === bettingSide
-    ));
-  }
-
-  private hasCompletedMarketTrade(marketSlug: string): boolean {
-    return this.state.completedTrades.some((trade) => trade.marketSlug === marketSlug);
-  }
-
-  private async getBestBid(tokenId: string): Promise<number | null> {
-    const snapshotBid = this.bookSnapshots.get(tokenId)?.bestBid;
-    if (snapshotBid !== null && snapshotBid !== undefined) {
-      return snapshotBid;
-    }
-    const top = await this.runtime.getTopOfBook?.(tokenId);
-    if (top) {
-      this.bookSnapshots.set(tokenId, top);
-      return top.bestBid;
-    }
-    return null;
-  }
-
-  private async syncRecoveredPositionBudget(costBasisUsd: number): Promise<void> {
-    try {
-      await this.runtime.budget.reserve(costBasisUsd, "btc15m-live-position-recovered");
-      await this.runtime.budget.consume(costBasisUsd, "btc15m-live-position-recovered");
-      await this.refreshBudget();
-    } catch (error) {
-      this.pushLog(
-        `Recovered position budget sync skipped: ${error instanceof Error ? error.message : String(error)}.`,
-        "warn",
-      );
-    }
   }
 
   private async persistRuntimeState(): Promise<void> {
@@ -956,7 +705,7 @@ function cloneStatus(status: Btc15mBotStatus): Btc15mBotStatus {
 }
 
 function matchesOrder(message: ScalperUserWsMessage, order: Btc15mTrackedOrder): boolean {
-  return Boolean(message.orderId && order.orderId && message.orderId === order.orderId);
+  return message.orderId === order.orderId || message.assetIds.includes(order.tokenId);
 }
 
 function extractOrderId(payload: unknown): string | null {
@@ -987,7 +736,7 @@ function extractMatchedSize(message: ScalperUserWsMessage): number | null {
 }
 
 function isFilledStatus(status: string | null): boolean {
-  return status === "filled" || status === "completed";
+  return status === "matched" || status === "filled" || status === "completed";
 }
 
 function isFailureStatus(status: string | null): boolean {
@@ -1004,18 +753,6 @@ function formatSize(value: number): string {
 
 function formatPrice(value: number): string {
   return value.toFixed(2);
-}
-
-function formatUsd(value: number): string {
-  return `$${roundUsd(value).toFixed(2)}`;
-}
-
-function normalizeSellPrice(value: number): number {
-  if (!Number.isFinite(value)) {
-    return MIN_CLOB_PRICE;
-  }
-  const ticked = Math.floor(value * 100) / 100;
-  return Math.min(MAX_CLOB_PRICE, Math.max(MIN_CLOB_PRICE, roundUsd(ticked)));
 }
 
 function roundUsd(value: number): number {

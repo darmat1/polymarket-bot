@@ -262,7 +262,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (requestUrl.pathname === "/api/btc15m/stop" && req.method === "POST") {
-      const payload = await stopBtc15mBot(loadSettings());
+      const payload = stopBtc15mBot(loadSettings());
       return json(res, 200, payload);
     }
 

@@ -44,10 +44,9 @@ export interface Btc5mSettings {
 
 export interface Btc15mSettings {
   buyPriceLimit: number;
-  targetSellPriceLimit: number;
-  fallbackSellPriceLimit: number;
-  profitCheckDelayMin: number;
-  budgetResetIntervalHours: number;
+  trailStep: number;            // BTC15M_TRAIL_STEP, default 0.05
+  trailDist: number;            // BTC15M_TRAIL_DIST, default 0.02
+  trailUpdateIntervalSec: number; // BTC15M_TRAIL_UPDATE_SEC, default 3
   orderSize: number;
   workingBudgetUsd: number;
   repeatThresholdMin: number;
@@ -55,6 +54,16 @@ export interface Btc15mSettings {
   neutralZoneUsd: number;
   tickIntervalSec: number;
   stateFile: string;
+}
+
+export interface Btc15mHedgeSettings {
+  workingBudgetUsd: number;      // default 5
+  orderSize: number;             // sharesPerSide, default 5
+  targetCombinedPrice: number | null; // null = use market price
+  entryCutoffMin: number;        // default 3
+  forceUnwindThresholdMin: number; // default 2
+  tickIntervalSec: number;       // default 2
+  stateFile: string;             // default "data/btc15m-hedge-state.json"
 }
 
 export interface Settings {
@@ -84,6 +93,7 @@ export interface Settings {
   scalper: ScalperSettings;
   btc5m: Btc5mSettings;
   btc15m: Btc15mSettings;
+  btc15mHedge: Btc15mHedgeSettings;
 }
 
 export function loadSettings(): Settings {
@@ -108,13 +118,9 @@ export function loadSettings(): Settings {
 
   const btc15m: Btc15mSettings = {
     buyPriceLimit: parseNumber(process.env.BTC15M_BUY_PRICE_LIMIT, 0.25),
-    targetSellPriceLimit: parseNumber(process.env.BTC15M_TARGET_SELL_PRICE_LIMIT, 0.8),
-    fallbackSellPriceLimit: parseNumber(
-      process.env.BTC15M_FALLBACK_SELL_PRICE_LIMIT,
-      parseNumber(process.env.BTC15M_SELL_PRICE_LIMIT, 0.4),
-    ),
-    profitCheckDelayMin: parseNumber(process.env.BTC15M_PROFIT_CHECK_DELAY_MIN, 3),
-    budgetResetIntervalHours: parseNumber(process.env.BTC15M_BUDGET_RESET_INTERVAL_HOURS, 3),
+    trailStep: parseNumber(process.env.BTC15M_TRAIL_STEP, 0.05),
+    trailDist: parseNumber(process.env.BTC15M_TRAIL_DIST, 0.02),
+    trailUpdateIntervalSec: parseNumber(process.env.BTC15M_TRAIL_UPDATE_SEC, 3),
     orderSize: parseNumber(process.env.BTC15M_ORDER_SIZE, 5),
     workingBudgetUsd: parseNumber(process.env.BTC15M_WORKING_BUDGET, 5),
     repeatThresholdMin: parseNumber(process.env.BTC15M_REPEAT_MIN, 6),
@@ -122,6 +128,18 @@ export function loadSettings(): Settings {
     neutralZoneUsd: parseNumber(process.env.BTC15M_NEUTRAL_ZONE_USD, 5),
     tickIntervalSec: parseNumber(process.env.BTC15M_TICK_INTERVAL_SEC, 2),
     stateFile: process.env.BTC15M_STATE_FILE?.trim() || "data/btc15m-trader-state.json",
+  };
+
+  const btc15mHedge: Btc15mHedgeSettings = {
+    workingBudgetUsd: parseNumber(process.env.BTC15M_HEDGE_WORKING_BUDGET, 5),
+    orderSize: parseNumber(process.env.BTC15M_HEDGE_ORDER_SIZE, 5),
+    targetCombinedPrice: process.env.BTC15M_HEDGE_TARGET_COMBINED_PRICE
+      ? parseNumber(process.env.BTC15M_HEDGE_TARGET_COMBINED_PRICE, 0)
+      : null,
+    entryCutoffMin: parseNumber(process.env.BTC15M_HEDGE_ENTRY_CUTOFF_MIN, 3),
+    forceUnwindThresholdMin: parseNumber(process.env.BTC15M_HEDGE_FORCE_UNWIND_MIN, 2),
+    tickIntervalSec: parseNumber(process.env.BTC15M_HEDGE_TICK_INTERVAL_SEC, 2),
+    stateFile: process.env.BTC15M_HEDGE_STATE_FILE?.trim() || "data/btc15m-hedge-state.json",
   };
 
   validateScalperSettings(scalper);
@@ -158,6 +176,7 @@ export function loadSettings(): Settings {
     scalper,
     btc5m,
     btc15m,
+    btc15mHedge,
   };
 }
 
@@ -241,22 +260,20 @@ function validateBtc5mSettings(settings: Btc5mSettings): void {
 }
 
 function validateBtc15mSettings(settings: Btc15mSettings): void {
+  if (!(settings.buyPriceLimit > 0 && settings.buyPriceLimit < 1)) {
+    throw new Error("BTC15M_BUY_PRICE_LIMIT must be between 0 and 1.");
+  }
+
   for (const [name, value] of [
-    ["BTC15M_BUY_PRICE_LIMIT", settings.buyPriceLimit],
-    ["BTC15M_TARGET_SELL_PRICE_LIMIT", settings.targetSellPriceLimit],
-    ["BTC15M_FALLBACK_SELL_PRICE_LIMIT", settings.fallbackSellPriceLimit],
-  ] as const) {
-    if (!(value > 0 && value < 1)) {
-      throw new Error(`${name} must be between 0 and 1.`);
-    }
+    ["BTC15M_TRAIL_STEP", settings.trailStep],
+    ["BTC15M_TRAIL_DIST", settings.trailDist],
+    ["BTC15M_TRAIL_UPDATE_SEC", settings.trailUpdateIntervalSec],
+  ] as [string, number][]) {
+    if (!(value > 0)) throw new Error(`${name} must be greater than zero.`);
   }
 
-  if (settings.fallbackSellPriceLimit <= settings.buyPriceLimit) {
-    throw new Error("BTC15M_FALLBACK_SELL_PRICE_LIMIT must be greater than BTC15M_BUY_PRICE_LIMIT.");
-  }
-
-  if (settings.targetSellPriceLimit <= settings.fallbackSellPriceLimit) {
-    throw new Error("BTC15M_TARGET_SELL_PRICE_LIMIT must be greater than BTC15M_FALLBACK_SELL_PRICE_LIMIT.");
+  if (settings.trailStep <= settings.trailDist) {
+    throw new Error("BTC15M_TRAIL_STEP must be greater than BTC15M_TRAIL_DIST.");
   }
 
   for (const [name, value] of [
@@ -264,8 +281,6 @@ function validateBtc15mSettings(settings: Btc15mSettings): void {
     ["BTC15M_WORKING_BUDGET", settings.workingBudgetUsd],
     ["BTC15M_REPEAT_MIN", settings.repeatThresholdMin],
     ["BTC15M_FORCE_SELL_MIN", settings.forceSellThresholdMin],
-    ["BTC15M_PROFIT_CHECK_DELAY_MIN", settings.profitCheckDelayMin],
-    ["BTC15M_BUDGET_RESET_INTERVAL_HOURS", settings.budgetResetIntervalHours],
     ["BTC15M_NEUTRAL_ZONE_USD", settings.neutralZoneUsd],
     ["BTC15M_TICK_INTERVAL_SEC", settings.tickIntervalSec],
   ] as const) {
