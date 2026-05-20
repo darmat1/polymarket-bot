@@ -518,6 +518,12 @@ export class Btc15mBot {
       return;
     }
 
+    if (this.hasCompletedMarketTrade(market.slug)) {
+      this.state.cycle = emptyCycle();
+      this.state.cycle.cyclePhase = "market_idle";
+      return;
+    }
+
     if (market.endTimeMs - now > this.config.repeatThresholdMin * 60_000) {
       this.state.cycle = emptyCycle();
       this.state.cycle.cyclePhase = "waiting_direction";
@@ -613,6 +619,13 @@ export class Btc15mBot {
     }
 
     const shares = normalizeSize(Math.min(filledSize, buyOrder.size));
+    if (shares < buyOrder.size && buyOrder.orderId) {
+      try {
+        await this.runtime.cancelOrder(buyOrder.orderId);
+      } catch {
+        // Remaining quantity may already be gone.
+      }
+    }
     const consumed = roundUsd(shares * buyOrder.price);
     await this.runtime.budget.consume(consumed, "btc15m-buy-filled");
     const unfilledBudget = roundUsd(Math.max(0, buyOrder.size - shares) * buyOrder.price);
@@ -834,6 +847,10 @@ export class Btc15mBot {
     ));
   }
 
+  private hasCompletedMarketTrade(marketSlug: string): boolean {
+    return this.state.completedTrades.some((trade) => trade.marketSlug === marketSlug);
+  }
+
   private async getBestBid(tokenId: string): Promise<number | null> {
     const snapshotBid = this.bookSnapshots.get(tokenId)?.bestBid;
     if (snapshotBid !== null && snapshotBid !== undefined) {
@@ -970,7 +987,7 @@ function extractMatchedSize(message: ScalperUserWsMessage): number | null {
 }
 
 function isFilledStatus(status: string | null): boolean {
-  return status === "matched" || status === "filled" || status === "completed";
+  return status === "filled" || status === "completed";
 }
 
 function isFailureStatus(status: string | null): boolean {

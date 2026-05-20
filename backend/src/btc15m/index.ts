@@ -41,7 +41,17 @@ export async function startBtc15mBot(
   options: StartBtc15mBotOptions = {},
 ): Promise<Btc15mBotStatus> {
   if (activeBot) {
-    return activeBot.getStatus();
+    const activeStatus = activeBot.getStatus();
+    if (shouldRestartActiveBotOnStart(activeStatus.enginePhase)) {
+      await activeBot.stop();
+      activeBot = null;
+      if (bookListeners.size === 0) {
+        chainlinkPriceSource?.close();
+        chainlinkPriceSource = null;
+      }
+    } else {
+      return activeStatus;
+    }
   }
 
   const baseConfig = configFromSettings(settings);
@@ -288,7 +298,7 @@ async function reconcileStoppedPersistedOpenOrders(
   const persisted = await store.readState();
   const { buyOrder, sellOrder, position } = persisted.cycle;
   const savedOrderIds = [buyOrder?.orderId, sellOrder?.orderId].filter((orderId): orderId is string => Boolean(orderId));
-  if (savedOrderIds.length === 0 || position) {
+  if (savedOrderIds.length === 0 && !position) {
     return persisted;
   }
 
@@ -296,6 +306,39 @@ async function reconcileStoppedPersistedOpenOrders(
     try {
       const service = PolymarketService.getInstance(settings);
       await service.initialize();
+      if (position && persisted.market) {
+        const livePosition = await getLivePosition(service, persisted.market);
+        if (!livePosition || livePosition.shares <= 0.000001) {
+          if (buyOrder?.reservedBudget && buyOrder.reservedBudget > 0) {
+            await store.updateBudget((budget) => {
+              const release = Math.min(budget.lockedBudget, buyOrder.reservedBudget);
+              budget.lockedBudget = Math.max(0, budget.lockedBudget - release);
+              budget.availableBudget += release;
+            });
+          }
+
+          const log: Btc15mLogEntry = {
+            timestamp: Date.now(),
+            message: "Cleared stale BTC 15m position state because no matching live position exists.",
+            type: "warn",
+          };
+          await store.updateRuntimeState({
+            enginePhase: "stopped",
+            market: null,
+            marketStartBtcPrice: null,
+            currentBtcPrice: null,
+            cycle: emptyCycle(),
+            logs: [log, ...persisted.logs].slice(0, 60),
+            lastError: null,
+          });
+          return store.readState();
+        }
+      }
+
+      if (savedOrderIds.length === 0) {
+        return persisted;
+      }
+
       const liveOrders = await service.getOpenOrders();
       const liveOrderIds = new Set(liveOrders.map((order) => order.id));
       if (savedOrderIds.some((orderId) => liveOrderIds.has(orderId))) {
@@ -364,6 +407,10 @@ export function shouldResetIdleBudgetOnStartup(
   return persisted.budget.initialBudget !== target ||
     persisted.budget.availableBudget !== target ||
     persisted.budget.lockedBudget !== 0;
+}
+
+export function shouldRestartActiveBotOnStart(phase: Btc15mBotStatus["enginePhase"]): boolean {
+  return phase === "auto_stopped";
 }
 
 function hasActiveCycle(cycle: Btc15mCycleState): boolean {

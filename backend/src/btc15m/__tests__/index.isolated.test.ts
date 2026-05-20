@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import { shouldResetIdleBudgetOnStartup } from "../index.js";
+import { shouldResetIdleBudgetOnStartup, shouldRestartActiveBotOnStart } from "../index.js";
 import type { Btc15mPersistentState } from "../types.js";
 
 function makePersistedState(overrides: Partial<Btc15mPersistentState> = {}): Btc15mPersistentState {
@@ -107,6 +107,9 @@ async function main() {
   );
 
   assert.equal(shouldResetIdleBudgetOnStartup(makePersistedState(), 3), false);
+  assert.equal(shouldRestartActiveBotOnStart("auto_stopped"), true);
+  assert.equal(shouldRestartActiveBotOnStart("running"), false);
+  assert.equal(shouldRestartActiveBotOnStart("stopped"), false);
   console.log("btc15m startup budget reset: OK");
 }
 
