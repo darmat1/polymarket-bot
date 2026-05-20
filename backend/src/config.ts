@@ -44,7 +44,10 @@ export interface Btc5mSettings {
 
 export interface Btc15mSettings {
   buyPriceLimit: number;
-  sellPriceLimit: number;
+  targetSellPriceLimit: number;
+  fallbackSellPriceLimit: number;
+  profitCheckDelayMin: number;
+  budgetResetIntervalHours: number;
   orderSize: number;
   workingBudgetUsd: number;
   repeatThresholdMin: number;
@@ -105,7 +108,13 @@ export function loadSettings(): Settings {
 
   const btc15m: Btc15mSettings = {
     buyPriceLimit: parseNumber(process.env.BTC15M_BUY_PRICE_LIMIT, 0.25),
-    sellPriceLimit: parseNumber(process.env.BTC15M_SELL_PRICE_LIMIT, 0.4),
+    targetSellPriceLimit: parseNumber(process.env.BTC15M_TARGET_SELL_PRICE_LIMIT, 0.8),
+    fallbackSellPriceLimit: parseNumber(
+      process.env.BTC15M_FALLBACK_SELL_PRICE_LIMIT,
+      parseNumber(process.env.BTC15M_SELL_PRICE_LIMIT, 0.4),
+    ),
+    profitCheckDelayMin: parseNumber(process.env.BTC15M_PROFIT_CHECK_DELAY_MIN, 3),
+    budgetResetIntervalHours: parseNumber(process.env.BTC15M_BUDGET_RESET_INTERVAL_HOURS, 3),
     orderSize: parseNumber(process.env.BTC15M_ORDER_SIZE, 5),
     workingBudgetUsd: parseNumber(process.env.BTC15M_WORKING_BUDGET, 5),
     repeatThresholdMin: parseNumber(process.env.BTC15M_REPEAT_MIN, 6),
@@ -234,15 +243,20 @@ function validateBtc5mSettings(settings: Btc5mSettings): void {
 function validateBtc15mSettings(settings: Btc15mSettings): void {
   for (const [name, value] of [
     ["BTC15M_BUY_PRICE_LIMIT", settings.buyPriceLimit],
-    ["BTC15M_SELL_PRICE_LIMIT", settings.sellPriceLimit],
+    ["BTC15M_TARGET_SELL_PRICE_LIMIT", settings.targetSellPriceLimit],
+    ["BTC15M_FALLBACK_SELL_PRICE_LIMIT", settings.fallbackSellPriceLimit],
   ] as const) {
     if (!(value > 0 && value < 1)) {
       throw new Error(`${name} must be between 0 and 1.`);
     }
   }
 
-  if (settings.sellPriceLimit <= settings.buyPriceLimit) {
-    throw new Error("BTC15M_SELL_PRICE_LIMIT must be greater than BTC15M_BUY_PRICE_LIMIT.");
+  if (settings.fallbackSellPriceLimit <= settings.buyPriceLimit) {
+    throw new Error("BTC15M_FALLBACK_SELL_PRICE_LIMIT must be greater than BTC15M_BUY_PRICE_LIMIT.");
+  }
+
+  if (settings.targetSellPriceLimit <= settings.fallbackSellPriceLimit) {
+    throw new Error("BTC15M_TARGET_SELL_PRICE_LIMIT must be greater than BTC15M_FALLBACK_SELL_PRICE_LIMIT.");
   }
 
   for (const [name, value] of [
@@ -250,6 +264,8 @@ function validateBtc15mSettings(settings: Btc15mSettings): void {
     ["BTC15M_WORKING_BUDGET", settings.workingBudgetUsd],
     ["BTC15M_REPEAT_MIN", settings.repeatThresholdMin],
     ["BTC15M_FORCE_SELL_MIN", settings.forceSellThresholdMin],
+    ["BTC15M_PROFIT_CHECK_DELAY_MIN", settings.profitCheckDelayMin],
+    ["BTC15M_BUDGET_RESET_INTERVAL_HOURS", settings.budgetResetIntervalHours],
     ["BTC15M_NEUTRAL_ZONE_USD", settings.neutralZoneUsd],
     ["BTC15M_TICK_INTERVAL_SEC", settings.tickIntervalSec],
   ] as const) {

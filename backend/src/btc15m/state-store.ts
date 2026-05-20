@@ -172,6 +172,8 @@ export class Btc15mStateStore {
         lockedBudget: 0,
         updatedAt: now,
         lastBalanceCheck: null,
+        lastProfitResetAt: now,
+        skimmedProfitUsd: 0,
       },
       enginePhase: "stopped",
       market: null,
@@ -202,11 +204,15 @@ function normalizeConfig(
   input: Partial<Btc15mBotConfig> | undefined,
   fallback: Btc15mBotConfig,
 ): Btc15mBotConfig {
+  const legacy = input as (Partial<Btc15mBotConfig> & { sellPrice?: unknown }) | undefined;
   return {
     workingBudgetUsd: numberOr(input?.workingBudgetUsd, fallback.workingBudgetUsd),
     shares: numberOr(input?.shares, fallback.shares),
     buyPrice: numberOr(input?.buyPrice, fallback.buyPrice),
-    sellPrice: numberOr(input?.sellPrice, fallback.sellPrice),
+    targetSellPrice: numberOr(input?.targetSellPrice, fallback.targetSellPrice),
+    fallbackSellPrice: numberOr(input?.fallbackSellPrice ?? legacy?.sellPrice, fallback.fallbackSellPrice),
+    profitCheckDelayMin: numberOr(input?.profitCheckDelayMin, fallback.profitCheckDelayMin),
+    budgetResetIntervalHours: numberOr(input?.budgetResetIntervalHours, fallback.budgetResetIntervalHours),
     repeatThresholdMin: numberOr(input?.repeatThresholdMin, fallback.repeatThresholdMin),
     forceSellThresholdMin: numberOr(input?.forceSellThresholdMin, fallback.forceSellThresholdMin),
     neutralZoneUsd: numberOr(input?.neutralZoneUsd, fallback.neutralZoneUsd),
@@ -225,6 +231,8 @@ function normalizeBudgetInput(
     lockedBudget: numberOr(input?.lockedBudget, fallback.lockedBudget),
     updatedAt: numberOr(input?.updatedAt, fallback.updatedAt),
     lastBalanceCheck: normalizeBalanceCheck(input?.lastBalanceCheck),
+    lastProfitResetAt: nullableNumber(input?.lastProfitResetAt) ?? numberOr(input?.updatedAt, fallback.lastProfitResetAt ?? Date.now()),
+    skimmedProfitUsd: numberOr(input?.skimmedProfitUsd, fallback.skimmedProfitUsd),
   };
   normalizeBudget(budget, maxBudget);
   return budget;
@@ -245,6 +253,8 @@ function toBudgetSnapshot(budget: Btc15mPersistedBudgetState): BudgetSnapshot {
     equity: roundBudget(budget.availableBudget + budget.lockedBudget),
     updatedAt: budget.updatedAt,
     balanceCheck: budget.lastBalanceCheck,
+    lastProfitResetAt: budget.lastProfitResetAt,
+    skimmedProfitUsd: budget.skimmedProfitUsd,
   };
 }
 
@@ -317,17 +327,19 @@ function nullableNumber(value: unknown): number | null {
 }
 
 function dedupeCompletedTrades(trades: Btc15mCompletedTrade[]): Btc15mCompletedTrade[] {
-  const seen = new Set<string>();
-  const result: Btc15mCompletedTrade[] = [];
+  const byCycle = new Map<string, Btc15mCompletedTrade>();
   for (const trade of trades) {
     const key = completedTradeKey(trade);
-    if (seen.has(key)) {
+    const existing = byCycle.get(key);
+    if (!existing) {
+      byCycle.set(key, trade);
       continue;
     }
-    seen.add(key);
-    result.push(trade);
+    if (trade.shares > existing.shares || (trade.shares === existing.shares && trade.closedAt < existing.closedAt)) {
+      byCycle.set(key, trade);
+    }
   }
-  return result;
+  return Array.from(byCycle.values()).sort((left, right) => left.closedAt - right.closedAt);
 }
 
 function completedTradeKey(trade: Btc15mCompletedTrade): string {
@@ -336,7 +348,6 @@ function completedTradeKey(trade: Btc15mCompletedTrade): string {
     trade.bettingSide,
     trade.buyPrice,
     trade.sellPrice,
-    trade.shares,
     trade.exitReason,
     trade.startedAt,
   ].join("|");

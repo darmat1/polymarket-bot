@@ -85,7 +85,10 @@ export interface Btc15mBotConfig {
   workingBudgetUsd: number;
   shares: number;
   buyPrice: number;
-  sellPrice: number;
+  targetSellPrice: number;
+  fallbackSellPrice: number;
+  profitCheckDelayMin: number;
+  budgetResetIntervalHours: number;
   repeatThresholdMin: number;
   forceSellThresholdMin: number;
   neutralZoneUsd: number;
@@ -128,6 +131,8 @@ export interface Btc15mPersistedBudgetState {
   lockedBudget: number;
   updatedAt: number;
   lastBalanceCheck: BudgetBalanceCheck | null;
+  lastProfitResetAt: number | null;
+  skimmedProfitUsd: number;
 }
 
 export interface Btc15mRuntimeStateUpdate {

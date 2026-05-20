@@ -56,6 +56,8 @@ export async function startBtc15mBot(
       budget.initialBudget = config.workingBudgetUsd;
       budget.availableBudget = config.workingBudgetUsd;
       budget.lockedBudget = 0;
+      budget.lastProfitResetAt = Date.now();
+      budget.skimmedProfitUsd = 0;
       budget.lastBalanceCheck = null;
     });
   }
@@ -104,6 +106,22 @@ export async function startBtc15mBot(
         await budgetManager.addFunds(amount, reason);
       },
       snapshot: () => budgetManager.getSnapshot(),
+      resetAvailableBudget: async (maxAvailable, resetAt, reason) => {
+        let skimmedProfitUsd = 0;
+        const snapshot = await store.updateBudget((budget) => {
+          budget.lastProfitResetAt = resetAt;
+          const target = roundBudget(maxAvailable);
+          if (budget.lockedBudget <= 0 && budget.availableBudget > target) {
+            skimmedProfitUsd = roundBudget(budget.availableBudget - target);
+            budget.availableBudget = target;
+            budget.skimmedProfitUsd = roundBudget((budget.skimmedProfitUsd ?? 0) + skimmedProfitUsd);
+          }
+        });
+        console.log(
+          `[BUDGET] Available: ${snapshot.availableBudget.toFixed(2)} | Locked: ${snapshot.lockedBudget.toFixed(2)} | Equity: ${snapshot.equity.toFixed(2)} | ${reason ?? "btc15m-budget-reset"}`,
+        );
+        return { snapshot, skimmedProfitUsd };
+      },
     },
     persistTrade: (trade) => store.appendCompletedTrade(trade),
     persistConfig: (cfg) => store.updateConfig(cfg),
@@ -149,7 +167,10 @@ export async function stopBtc15mBot(settings?: Settings): Promise<Btc15mBotStatu
       workingBudgetUsd: 5,
       shares: 5,
       buyPrice: 0.25,
-      sellPrice: 0.4,
+      targetSellPrice: 0.8,
+      fallbackSellPrice: 0.4,
+      profitCheckDelayMin: 3,
+      budgetResetIntervalHours: 3,
       repeatThresholdMin: 6,
       forceSellThresholdMin: 2,
       neutralZoneUsd: 5,
@@ -313,7 +334,10 @@ export function configFromSettings(settings: Settings): Btc15mBotConfig {
     workingBudgetUsd: settings.btc15m.workingBudgetUsd,
     shares: settings.btc15m.orderSize,
     buyPrice: settings.btc15m.buyPriceLimit,
-    sellPrice: settings.btc15m.sellPriceLimit,
+    targetSellPrice: settings.btc15m.targetSellPriceLimit,
+    fallbackSellPrice: settings.btc15m.fallbackSellPriceLimit,
+    profitCheckDelayMin: settings.btc15m.profitCheckDelayMin,
+    budgetResetIntervalHours: settings.btc15m.budgetResetIntervalHours,
     repeatThresholdMin: settings.btc15m.repeatThresholdMin,
     forceSellThresholdMin: settings.btc15m.forceSellThresholdMin,
     neutralZoneUsd: settings.btc15m.neutralZoneUsd,
@@ -336,6 +360,8 @@ function createIdleStatus(
         equity: persisted.budget.availableBudget + persisted.budget.lockedBudget,
         updatedAt: persisted.budget.updatedAt,
         balanceCheck: persisted.budget.lastBalanceCheck,
+        lastProfitResetAt: persisted.budget.lastProfitResetAt,
+        skimmedProfitUsd: persisted.budget.skimmedProfitUsd,
       }
     : null;
 
@@ -376,6 +402,10 @@ function sanitizeConfigOverrides(overrides: Partial<Btc15mBotConfig> | undefined
   return Object.fromEntries(
     Object.entries(overrides).filter(([, value]) => typeof value === "number" && Number.isFinite(value) && value > 0),
   ) as Partial<Btc15mBotConfig>;
+}
+
+function roundBudget(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 function subscribeMarketBook(

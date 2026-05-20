@@ -55,7 +55,10 @@ const settings: Settings = {
   },
   btc15m: {
     buyPriceLimit: 0.25,
-    sellPriceLimit: 0.4,
+    targetSellPriceLimit: 0.8,
+    fallbackSellPriceLimit: 0.4,
+    profitCheckDelayMin: 3,
+    budgetResetIntervalHours: 3,
     orderSize: 5,
     workingBudgetUsd: 5,
     repeatThresholdMin: 6,

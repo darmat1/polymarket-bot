@@ -7,7 +7,10 @@ const config: Btc15mBotConfig = {
   workingBudgetUsd: 5,
   shares: 5,
   buyPrice: 0.25,
-  sellPrice: 0.4,
+  targetSellPrice: 0.8,
+  fallbackSellPrice: 0.4,
+  profitCheckDelayMin: 3,
+  budgetResetIntervalHours: 3,
   repeatThresholdMin: 6,
   forceSellThresholdMin: 2,
   neutralZoneUsd: 5,
@@ -25,6 +28,7 @@ const market: Btc15mMarketView = {
 };
 
 type BookListener = (bestBid: number | null, bestAsk: number | null) => void;
+type UserWsHandler = Parameters<Btc15mRuntime["startUserWs"]>[0];
 
 function makeHarness(overrides: Partial<{
   now: number;
@@ -35,6 +39,8 @@ function makeHarness(overrides: Partial<{
   livePosition: { bettingSide: "up" | "down"; tokenId: string; shares: number } | null;
   topOfBook: { bestBid: number | null; bestAsk: number | null };
   slowAddFunds: boolean;
+  addedFunds: number;
+  lastProfitResetAt: number;
 }> = {}) {
   let now = overrides.now ?? market.startTimeMs + 60_000;
   let currentBtc = overrides.currentBtc ?? 100_000;
@@ -42,11 +48,14 @@ function makeHarness(overrides: Partial<{
   let nextMarket: Btc15mMarketView | null = overrides.market === undefined ? market : overrides.market;
   let reserved = 0;
   let consumed = 0;
-  let added = 0;
+  let added = overrides.addedFunds ?? 0;
+  let lastProfitResetAt = overrides.lastProfitResetAt ?? now;
+  let skimmedProfitUsd = 0;
   const orders: PlaceOrderArgs[] = [];
   const cancelled: string[] = [];
   const trades: Btc15mCompletedTrade[] = [];
   const listeners = new Map<string, BookListener>();
+  let userWsHandler: UserWsHandler | null = null;
 
   const runtime: Btc15mRuntime = {
     now: () => now,
@@ -66,8 +75,12 @@ function makeHarness(overrides: Partial<{
     onMarketBookUnsubscribe: (tokenId) => {
       listeners.delete(tokenId);
     },
-    startUserWs: async () => undefined,
-    stopUserWs: () => undefined,
+    startUserWs: async (handler) => {
+      userWsHandler = handler;
+    },
+    stopUserWs: () => {
+      userWsHandler = null;
+    },
     budget: {
       async reserve(amount) {
         if (overrides.reserveThrows) {
@@ -88,6 +101,30 @@ function makeHarness(overrides: Partial<{
         }
         added += amount;
       },
+      async resetAvailableBudget(maxAvailable, resetAt) {
+        const availableBudget = 5 - reserved + added;
+        const skimmed = reserved <= 0 && availableBudget > maxAvailable
+          ? Math.round((availableBudget - maxAvailable) * 100) / 100
+          : 0;
+        if (skimmed > 0) {
+          added -= skimmed;
+          skimmedProfitUsd = Math.round((skimmedProfitUsd + skimmed) * 100) / 100;
+        }
+        lastProfitResetAt = resetAt;
+        return {
+          skimmedProfitUsd: skimmed,
+          snapshot: {
+            initialBudget: 5,
+            availableBudget: 5 - reserved + added,
+            lockedBudget: reserved,
+            equity: 5 - consumed + added,
+            updatedAt: resetAt,
+            balanceCheck: null,
+            lastProfitResetAt,
+            skimmedProfitUsd,
+          },
+        };
+      },
       async snapshot() {
         return {
           initialBudget: 5,
@@ -96,6 +133,8 @@ function makeHarness(overrides: Partial<{
           equity: 5 - consumed + added,
           updatedAt: now,
           balanceCheck: null,
+          lastProfitResetAt,
+          skimmedProfitUsd,
         };
       },
     },
@@ -114,9 +153,14 @@ function makeHarness(overrides: Partial<{
     cancelled,
     trades,
     listeners,
+    emitUserWs(message: Parameters<UserWsHandler>[0]) {
+      userWsHandler?.(message);
+    },
     get reserved() { return reserved; },
     get consumed() { return consumed; },
     get added() { return added; },
+    get lastProfitResetAt() { return lastProfitResetAt; },
+    get skimmedProfitUsd() { return skimmedProfitUsd; },
     setNow(value: number) { now = value; },
     setCurrentBtc(value: number) { currentBtc = value; },
     setStartBtc(value: number) { startBtc = value; },
@@ -210,16 +254,16 @@ async function simBuyAndTargetSellFillCompletesTrade() {
   assert.equal(bot.getStatus().cycle.cyclePhase, "holding");
   assert.equal(h.orders.length, 2);
   assert.equal(h.orders[1].side, "sell");
-  assert.equal(h.orders[1].price, 0.4);
+  assert.equal(h.orders[1].price, 0.8);
   assert.equal(h.consumed, 1.25);
 
-  h.listeners.get("tok-down")?.(0.41, null);
+  h.listeners.get("tok-down")?.(0.81, null);
   await bot.flushPendingActions();
   assert.equal(h.trades.length, 1);
   assert.equal(h.trades[0].result, "win");
   assert.equal(h.trades[0].exitReason, "target_sell");
-  assert.equal(h.trades[0].pnlUsd, 0.75);
-  assert.equal(h.added, 2);
+  assert.equal(h.trades[0].pnlUsd, 2.75);
+  assert.equal(h.added, 4);
   assert.equal(bot.getStatus().cycle.cyclePhase, "cycle_done");
   await bot.stop();
   console.log("sim buy/sell fills: OK");
@@ -243,13 +287,85 @@ async function forceSellsAtBestBidWhenLate() {
   console.log("force sell: OK");
 }
 
+async function forceSellUsesClobMinimumWhenBestBidIsTooLow() {
+  const h = makeHarness({
+    currentBtc: 100_100,
+    topOfBook: { bestBid: 0.002, bestAsk: 0.003 },
+  });
+  const bot = new Btc15mBot({ config, dryRun: true, runtime: h.runtime });
+  await bot.start({ scheduleLoop: false });
+  h.listeners.get("tok-down")?.(null, 0.24);
+  await bot.flushPendingActions();
+
+  h.setNow(market.endTimeMs - 60_000);
+  await bot.runOneTick();
+  await bot.flushPendingActions();
+
+  assert.equal(h.cancelled.includes("sell-2"), true);
+  assert.equal(h.orders.at(-1)?.side, "sell");
+  assert.equal(h.orders.at(-1)?.price, 0.01);
+  assert.equal(h.trades.length, 0);
+  assert.equal(bot.getStatus().cycle.cyclePhase, "force_selling");
+  assert.equal(bot.getStatus().logs.some((entry) => /below CLOB minimum/i.test(entry.message)), true);
+  await bot.stop();
+  console.log("force sell clamps below-min bid: OK");
+}
+
+async function profitCheckSellsAtCurrentBidAboveFallback() {
+  const h = makeHarness({
+    currentBtc: 100_100,
+    topOfBook: { bestBid: 0.55, bestAsk: 0.56 },
+  });
+  const bot = new Btc15mBot({ config, dryRun: true, runtime: h.runtime });
+  await bot.start({ scheduleLoop: false });
+  h.listeners.get("tok-down")?.(null, 0.24);
+  await bot.flushPendingActions();
+
+  h.setNow(market.startTimeMs + 60_000 + config.profitCheckDelayMin * 60_000);
+  await bot.runOneTick();
+  await bot.flushPendingActions();
+
+  assert.equal(h.cancelled.includes("sell-2"), true);
+  assert.equal(h.orders.at(-1)?.side, "sell");
+  assert.equal(h.orders.at(-1)?.price, 0.55);
+  assert.equal(h.trades.length, 1);
+  assert.equal(h.trades[0].sellPrice, 0.55);
+  assert.equal(h.trades[0].exitReason, "target_sell");
+  await bot.stop();
+  console.log("profit check sells at current bid: OK");
+}
+
+async function profitCheckFallsBackToSecondThresholdBelowFallback() {
+  const h = makeHarness({
+    currentBtc: 100_100,
+    topOfBook: { bestBid: 0.33, bestAsk: 0.34 },
+  });
+  const bot = new Btc15mBot({ config, dryRun: true, runtime: h.runtime });
+  await bot.start({ scheduleLoop: false });
+  h.listeners.get("tok-down")?.(null, 0.24);
+  await bot.flushPendingActions();
+
+  h.setNow(market.startTimeMs + 60_000 + config.profitCheckDelayMin * 60_000);
+  await bot.runOneTick();
+  await bot.flushPendingActions();
+
+  assert.equal(h.cancelled.includes("sell-2"), true);
+  assert.equal(h.orders.at(-1)?.side, "sell");
+  assert.equal(h.orders.at(-1)?.price, 0.4);
+  assert.equal(h.trades.length, 0);
+  assert.equal(bot.getStatus().cycle.cyclePhase, "holding");
+  assert.equal(bot.getStatus().cycle.sellOrder?.price, 0.4);
+  await bot.stop();
+  console.log("profit check falls back: OK");
+}
+
 async function repeatsAndSwitchesMarket() {
   const h = makeHarness({ currentBtc: 100_100 });
   const bot = new Btc15mBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
   h.listeners.get("tok-down")?.(null, 0.24);
   await bot.flushPendingActions();
-  h.listeners.get("tok-down")?.(0.41, null);
+  h.listeners.get("tok-down")?.(0.81, null);
   await bot.flushPendingActions();
   await bot.runOneTick();
   assert.equal(bot.getStatus().cycle.cyclePhase, "waiting_direction");
@@ -371,13 +487,13 @@ async function holdingWaitsUntilForceSellCutoff() {
           side: "sell",
           tokenId: "tok-down",
           bettingSide: "down",
-          price: 0.4,
+          price: 0.8,
           size: 5,
           filledSize: 0,
           status: "open",
           reservedBudget: 0,
-          createdAt: market.startTimeMs + 60_000,
-          updatedAt: market.startTimeMs + 60_000,
+          createdAt: market.endTimeMs - 6 * 60_000,
+          updatedAt: market.endTimeMs - 6 * 60_000,
         },
         position: {
           bettingSide: "down",
@@ -458,17 +574,213 @@ async function deduplicatesConcurrentSellFills() {
   await bot.flushPendingActions();
 
   const listener = h.listeners.get("tok-down");
-  listener?.(0.41, null);
-  listener?.(0.41, null);
-  listener?.(0.41, null);
+  listener?.(0.81, null);
+  listener?.(0.81, null);
+  listener?.(0.81, null);
   await bot.flushPendingActions();
 
   assert.equal(h.trades.length, 1);
   assert.equal(bot.getStatus().completedTrades.length, 1);
-  assert.equal(h.added, 2);
+  assert.equal(h.added, 4);
   assert.equal(bot.getStatus().cycle.cyclePhase, "cycle_done");
   await bot.stop();
   console.log("dedupe concurrent sell fills: OK");
+}
+
+async function ignoresLiveFillEventsForSameAssetWithDifferentOrderId() {
+  const h = makeHarness({ currentBtc: 100_100 });
+  const bot = new Btc15mBot({ config, dryRun: false, runtime: h.runtime });
+  await bot.start({ scheduleLoop: false });
+  assert.equal(bot.getStatus().cycle.buyOrder?.orderId, "buy-1");
+
+  h.emitUserWs({
+    eventType: "order",
+    status: "matched",
+    type: null,
+    side: null,
+    orderId: "other-order",
+    assetIds: ["tok-down"],
+    raw: { size: "5" },
+  });
+  await bot.flushPendingActions();
+
+  assert.equal(h.trades.length, 0);
+  assert.equal(bot.getStatus().cycle.cyclePhase, "buy_pending");
+  assert.equal(bot.getStatus().cycle.buyOrder?.orderId, "buy-1");
+  await bot.stop();
+  console.log("ignore same-asset wrong-order live fill: OK");
+}
+
+async function doesNotRecoverLivePositionAfterCompletedTradeForSameMarket() {
+  const h = makeHarness({
+    currentBtc: 100_100,
+    livePosition: { bettingSide: "down", tokenId: "tok-down", shares: 4.99 },
+  });
+  const completed: Btc15mCompletedTrade = {
+    id: "done",
+    marketSlug: market.slug,
+    bettingSide: "down",
+    buyPrice: 0.25,
+    sellPrice: 0.4,
+    shares: 4.99,
+    pnlUsd: 0.75,
+    result: "win",
+    exitReason: "target_sell",
+    startedAt: market.startTimeMs + 10_000,
+    closedAt: market.startTimeMs + 20_000,
+  };
+  const bot = new Btc15mBot({
+    config,
+    dryRun: false,
+    runtime: h.runtime,
+    initialTrades: [completed],
+    initialRuntimeState: {
+      market,
+      marketStartBtcPrice: 100_000,
+      currentBtcPrice: 100_100,
+      cycle: {
+        cyclePhase: "cycle_done",
+        cycleStartedAt: completed.startedAt,
+        buyOrder: null,
+        sellOrder: null,
+        position: null,
+      },
+      logs: [],
+      lastError: null,
+    },
+  });
+
+  await bot.start({ scheduleLoop: false, runImmediateTick: false });
+  await bot.runOneTick();
+
+  assert.equal(h.orders.length, 0);
+  assert.equal(bot.getStatus().cycle.position, null);
+  assert.equal(bot.getStatus().completedTrades.length, 1);
+  await bot.stop();
+  console.log("skip recovered position after completed market trade: OK");
+}
+
+async function activeBuyStillRecoversAfterPreviousSameSideTrade() {
+  const h = makeHarness({
+    currentBtc: 99_900,
+    livePosition: { bettingSide: "up", tokenId: "tok-up", shares: 5 },
+  });
+  const completed: Btc15mCompletedTrade = {
+    id: "previous",
+    marketSlug: market.slug,
+    bettingSide: "up",
+    buyPrice: 0.25,
+    sellPrice: 0.4,
+    shares: 5,
+    pnlUsd: 0.75,
+    result: "win",
+    exitReason: "target_sell",
+    startedAt: market.startTimeMs + 10_000,
+    closedAt: market.startTimeMs + 20_000,
+  };
+  const bot = new Btc15mBot({
+    config,
+    dryRun: false,
+    runtime: h.runtime,
+    initialTrades: [completed],
+  });
+
+  await bot.start({ scheduleLoop: false });
+
+  assert.equal(h.orders.length, 1);
+  assert.equal(h.orders[0].side, "buy");
+  await bot.runOneTick();
+
+  assert.equal(h.orders.length, 2);
+  assert.equal(h.orders[1].side, "sell");
+  assert.equal(h.orders[1].tokenId, "tok-up");
+  assert.equal(bot.getStatus().cycle.cyclePhase, "holding");
+  assert.equal(bot.getStatus().cycle.sellOrder?.orderId, "sell-2");
+  await bot.stop();
+  console.log("active buy recovers after previous same-side trade: OK");
+}
+
+async function skimsProfitAfterBudgetResetIntervalWhenIdle() {
+  const now = market.startTimeMs + 4 * 60 * 60_000;
+  const h = makeHarness({
+    currentBtc: 100_000,
+    now,
+    addedFunds: 5,
+    lastProfitResetAt: now - config.budgetResetIntervalHours * 60 * 60_000,
+  });
+  const bot = new Btc15mBot({ config, dryRun: true, runtime: h.runtime });
+
+  await bot.start({ scheduleLoop: false });
+
+  assert.equal(bot.getStatus().budget?.availableBudget, config.workingBudgetUsd);
+  assert.equal(bot.getStatus().budget?.skimmedProfitUsd, 5);
+  assert.equal(h.skimmedProfitUsd, 5);
+  assert.equal(h.lastProfitResetAt, now);
+  assert.equal(bot.getStatus().logs.some((entry) => /Budget reset: skimmed \$5\.00 profit/.test(entry.message)), true);
+  await bot.stop();
+  console.log("budget profit skim: OK");
+}
+
+async function defersProfitSkimWhilePositionOpen() {
+  const now = market.startTimeMs + 5 * 60_000;
+  const activeMarket = {
+    ...market,
+    endTimeMs: now + 10 * 60_000,
+  };
+  const h = makeHarness({
+    market: activeMarket,
+    currentBtc: 100_100,
+    now,
+    addedFunds: 5,
+    lastProfitResetAt: now - config.budgetResetIntervalHours * 60 * 60_000,
+  });
+  const bot = new Btc15mBot({
+    config,
+    dryRun: false,
+    runtime: h.runtime,
+    initialRuntimeState: {
+      market: activeMarket,
+      marketStartBtcPrice: 100_000,
+      currentBtcPrice: 100_100,
+      cycle: {
+        cyclePhase: "holding",
+        cycleStartedAt: now - 60_000,
+        buyOrder: null,
+        sellOrder: {
+          id: "sell",
+          orderId: "sell-order",
+          side: "sell",
+          tokenId: "tok-down",
+          bettingSide: "down",
+          price: 0.8,
+          size: 5,
+          filledSize: 0,
+          status: "open",
+          reservedBudget: 0,
+          createdAt: now,
+          updatedAt: now,
+        },
+        position: {
+          bettingSide: "down",
+          tokenId: "tok-down",
+          shares: 5,
+          avgEntryPrice: 0.25,
+          costBasisUsd: 1.25,
+        },
+      },
+      logs: [],
+      lastError: null,
+    },
+  });
+
+  await bot.start({ scheduleLoop: false, runImmediateTick: false });
+  await bot.runOneTick();
+
+  assert.equal(bot.getStatus().budget?.availableBudget, 10);
+  assert.equal(bot.getStatus().budget?.skimmedProfitUsd, 0);
+  assert.equal(h.lastProfitResetAt, now - config.budgetResetIntervalHours * 60 * 60_000);
+  await bot.stop();
+  console.log("budget profit skim deferred while active: OK");
 }
 
 async function main() {
@@ -480,6 +792,9 @@ async function main() {
   await cancelsBuyOnReturnToNeutralZone();
   await simBuyAndTargetSellFillCompletesTrade();
   await forceSellsAtBestBidWhenLate();
+  await forceSellUsesClobMinimumWhenBestBidIsTooLow();
+  await profitCheckSellsAtCurrentBidAboveFallback();
+  await profitCheckFallsBackToSecondThresholdBelowFallback();
   await repeatsAndSwitchesMarket();
   await autoStopsWhenBudgetReserveThrows();
   await livePositionRecoveryForceSellsWhenWsFillWasMissed();
@@ -489,6 +804,11 @@ async function main() {
   await holdingWaitsUntilForceSellCutoff();
   await flipsStalePendingBuyWhenDirectionChanges();
   await deduplicatesConcurrentSellFills();
+  await ignoresLiveFillEventsForSameAssetWithDifferentOrderId();
+  await doesNotRecoverLivePositionAfterCompletedTradeForSameMarket();
+  await activeBuyStillRecoversAfterPreviousSameSideTrade();
+  await skimsProfitAfterBudgetResetIntervalWhenIdle();
+  await defersProfitSkimWhilePositionOpen();
 }
 
 void main().catch((error) => {

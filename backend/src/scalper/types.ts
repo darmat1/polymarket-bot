@@ -64,6 +64,8 @@ export interface BudgetSnapshot {
   equity: number;
   updatedAt: number;
   balanceCheck: BudgetBalanceCheck | null;
+  lastProfitResetAt?: number | null;
+  skimmedProfitUsd?: number;
 }
 
 export interface ScalperStateStoreOptions {
