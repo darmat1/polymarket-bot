@@ -301,6 +301,7 @@ export function App() {
   const [btc5mLoading, setBtc5mLoading] = useState(false);
   const [btc15mStatus, setBtc15mStatus] = useState<Btc15mStatusPayload | null>(null);
   const [btc15mLoading, setBtc15mLoading] = useState(false);
+  const btc15mPrevPhaseRef = useRef<string | null>(null);
   const [btc15mFormConfig, setBtc15mFormConfig] = useState({
     workingBudgetUsd: 5,
     shares: 5,
@@ -916,9 +917,17 @@ export function App() {
   }, [activeTab]);
 
   useEffect(() => {
-    if (!btc15mStatus?.config || btc15mStatus.enginePhase === "running") {
-      return;
-    }
+    if (!btc15mStatus?.config) return;
+    const phase = btc15mStatus.enginePhase;
+    const prevPhase = btc15mPrevPhaseRef.current;
+    btc15mPrevPhaseRef.current = phase;
+
+    // Sync form only on first load or when bot transitions running → stopped.
+    // Never sync during polling while bot is stopped — that would overwrite user edits.
+    const isFirstLoad = prevPhase === null;
+    const justStopped = prevPhase === "running" && phase !== "running";
+    if (!isFirstLoad && !justStopped) return;
+    if (phase === "running") return;
 
     setBtc15mFormConfig({
       workingBudgetUsd: btc15mStatus.config.workingBudgetUsd,
@@ -931,7 +940,7 @@ export function App() {
       forceSellThresholdMin: btc15mStatus.config.forceSellThresholdMin,
       neutralZoneUsd: btc15mStatus.config.neutralZoneUsd,
     });
-  }, [btc15mStatus?.config, btc15mStatus?.enginePhase]);
+  }, [btc15mStatus?.enginePhase]);
 
   useEffect(() => {
     if (!selectedEvent) {

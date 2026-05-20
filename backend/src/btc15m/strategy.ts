@@ -50,6 +50,7 @@ export interface Btc15mRuntime {
   persistRuntimeState?: (state: Btc15mRuntimeStateUpdate) => Promise<void>;
   setIntervalFn?: typeof setInterval;
   clearIntervalFn?: typeof clearInterval;
+  getOrder?: (orderId: string) => Promise<{ status: string; size_matched: string } | null>;
 }
 
 export interface Btc15mBotStartOptions {
@@ -77,6 +78,8 @@ export class Btc15mBot {
   private readonly bookSnapshots = new Map<string, { bestBid: number | null; bestAsk: number | null }>();
   private readonly subscribedTokens = new Set<string>();
   private lastTrailUpdateMs = 0;
+  private lastOrderPollMs = 0;
+  private readonly orderPollIntervalMs = 5000; // 5 seconds
   private state: Btc15mBotStatus;
 
   constructor(options: Btc15mBotOptions) {
@@ -314,6 +317,31 @@ export class Btc15mBot {
     if (expectedSide !== buyOrder.bettingSide) {
       await this.cancelBuy("direction-reset");
       this.state.cycle.cyclePhase = "waiting_direction";
+    }
+
+    // Polling fallback: check order status via API every 5s to catch missed WS fills
+    if (!this.dryRun && this.runtime.getOrder && buyOrder.orderId) {
+      const now = this.runtime.now();
+      if (now - this.lastOrderPollMs >= this.orderPollIntervalMs) {
+        this.lastOrderPollMs = now;
+        try {
+          const orderData = await this.runtime.getOrder(buyOrder.orderId);
+          if (orderData) {
+            if (isFilledStatus(orderData.status)) {
+              const filledSize = parseFloat(orderData.size_matched) || buyOrder.size;
+              this.pushLog(`Buy fill detected via polling (status: ${orderData.status}, size: ${filledSize}).`, "info");
+              await this.transitionBuyFilledToHolding(filledSize);
+            } else if (isFailureStatus(orderData.status)) {
+              this.pushLog(`Buy order failed via polling (status: ${orderData.status}).`, "warn");
+              await this.cancelBuy(`poll-${orderData.status}`);
+              this.state.cycle.cyclePhase = "waiting_direction";
+            }
+            // If still open/partial - do nothing, wait for next poll
+          }
+        } catch (error) {
+          // polling is best-effort, swallow errors
+        }
+      }
     }
   }
 

@@ -97,6 +97,14 @@ export async function startBtc15mBot(
     persistTrade: (trade) => store.appendCompletedTrade(trade),
     persistConfig: (cfg) => store.updateConfig(cfg),
     persistRuntimeState: (state) => store.updateRuntimeState(state),
+    getOrder: async (orderId) => {
+      try {
+        const order = await service.getOrder(orderId);
+        return { status: order.status, size_matched: order.size_matched };
+      } catch {
+        return null;
+      }
+    },
   };
 
   const latestPersisted = await store.readState();
