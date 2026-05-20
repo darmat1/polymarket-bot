@@ -1565,20 +1565,6 @@ export function App() {
         </div>
 
         <div className="topbar-side">
-          <div className="scalper-controls">
-            <span className={`status-badge ${scalperActive ? "on" : "off"}`}>
-              <span className={`indicator-dot ${scalperActive ? "pulse" : ""}`} />
-              SCALPER {scalperActive ? "ON" : "OFF"}
-            </span>
-            <button
-              type="button"
-              className={`button button-small ${scalperActive ? "button-secondary" : "button-primary"}`}
-              onClick={() => void toggleScalper()}
-              disabled={scalperLoading}
-            >
-              {scalperLoading ? "..." : scalperActive ? "Stop Scalper" : "Start Scalper"}
-            </button>
-          </div>
           <span className="topbar-meta">
             {accountSummary?.address
               ? shortenAddress(accountSummary.address)

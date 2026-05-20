@@ -181,6 +181,10 @@ export class Btc15mBot {
     this.tickInProgress = true;
     try {
       const now = this.runtime.now();
+      if (this.state.market && now >= this.state.market.endTimeMs) {
+        await this.resolveExpiredMarketPosition();
+      }
+
       const resolvedMarket = await this.runtime.resolveMarket();
       if (!resolvedMarket) {
         this.state.market = null;
@@ -192,7 +196,7 @@ export class Btc15mBot {
       }
 
       const shouldSwitchMarket = !this.state.market || this.state.market.slug !== resolvedMarket.slug || now >= this.state.market.endTimeMs;
-      if (!this.dryRun && shouldSwitchMarket) {
+      if (!this.dryRun && shouldSwitchMarket && (!this.state.market || now < this.state.market.endTimeMs)) {
         await this.reconcileClosedLivePosition();
       }
 
@@ -457,6 +461,32 @@ export class Btc15mBot {
     ) {
       await this.reconcileHolding(now);
     }
+  }
+
+  private async resolveExpiredMarketPosition(): Promise<boolean> {
+    const market = this.state.market;
+    const position = this.state.cycle.position;
+    if (!market || !position) {
+      return false;
+    }
+
+    const startPrice = this.state.marketStartBtcPrice ?? await this.fetchMarketStartPrice(market);
+    const settledBtcPrice = await this.runtime.fetchBtcPrice(market.endTimeMs);
+    if (startPrice === null || settledBtcPrice === null) {
+      return false;
+    }
+
+    this.state.marketStartBtcPrice = startPrice;
+    this.state.currentBtcPrice = settledBtcPrice;
+
+    const winningSide: Btc15mSide = settledBtcPrice > startPrice ? "up" : "down";
+    const settledSellPrice = position.bettingSide === winningSide ? 1 : 0;
+    this.pushLog(
+      `Market expired with unsold ${position.bettingSide.toUpperCase()} position; recording resolved_unfilled at ${formatPrice(settledSellPrice)}.`,
+      settledSellPrice > 0 ? "warn" : "error",
+    );
+    await this.handleSellFill(settledSellPrice, "resolved_unfilled");
+    return true;
   }
 
   private async reconcileClosedLivePosition(): Promise<boolean> {

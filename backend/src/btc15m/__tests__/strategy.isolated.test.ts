@@ -475,6 +475,73 @@ async function recordsSellFillWhenLivePositionDisappears() {
   console.log("missing sell fill reconciliation: OK");
 }
 
+async function recordsResolvedLossWhenMarketExpiresWithUnsoldPosition() {
+  const expiredMarket = { ...market };
+  const nextMarket = {
+    ...market,
+    slug: "btc-updown-15m-1779221700",
+    startTimeMs: market.endTimeMs,
+    endTimeMs: market.endTimeMs + 900_000,
+  };
+  const h = makeHarness({
+    market: nextMarket,
+    currentBtc: 99_900,
+    startBtc: 100_000,
+    now: expiredMarket.endTimeMs + 1_000,
+    livePosition: { bettingSide: "up", tokenId: "tok-up", shares: 5 },
+  });
+  const bot = new Btc15mBot({
+    config,
+    dryRun: false,
+    runtime: h.runtime,
+    initialRuntimeState: {
+      market: expiredMarket,
+      marketStartBtcPrice: 100_000,
+      currentBtcPrice: 100_090,
+      cycle: {
+        cyclePhase: "force_selling",
+        cycleStartedAt: expiredMarket.startTimeMs + 60_000,
+        buyOrder: null,
+        sellOrder: {
+          id: "sell",
+          orderId: "sell-order",
+          side: "sell",
+          tokenId: "tok-up",
+          bettingSide: "up",
+          price: 0.08,
+          size: 5,
+          filledSize: 0,
+          status: "open",
+          reservedBudget: 0,
+          createdAt: expiredMarket.endTimeMs - 60_000,
+          updatedAt: expiredMarket.endTimeMs - 60_000,
+        },
+        position: {
+          bettingSide: "up",
+          tokenId: "tok-up",
+          shares: 5,
+          avgEntryPrice: 0.25,
+          costBasisUsd: 1.25,
+        },
+      },
+      logs: [],
+      lastError: null,
+    },
+  });
+
+  await bot.start({ scheduleLoop: false, runImmediateTick: false });
+  await bot.runOneTick();
+
+  assert.equal(h.trades.length, 1);
+  assert.equal(h.trades[0].sellPrice, 0);
+  assert.equal(h.trades[0].pnlUsd, -1.25);
+  assert.equal(h.trades[0].result, "loss");
+  assert.equal(h.trades[0].exitReason, "resolved_unfilled");
+  assert.equal(bot.getStatus().market?.slug, nextMarket.slug);
+  await bot.stop();
+  console.log("expired market unresolved loss: OK");
+}
+
 async function stopCancelsOpenBuyAndReleasesBudget() {
   const h = makeHarness({ currentBtc: 99_900 });
   const bot = new Btc15mBot({ config, dryRun: false, runtime: h.runtime });
@@ -867,6 +934,7 @@ async function main() {
   await autoStopsWhenBudgetReserveThrows();
   await livePositionRecoveryForceSellsWhenWsFillWasMissed();
   await recordsSellFillWhenLivePositionDisappears();
+  await recordsResolvedLossWhenMarketExpiresWithUnsoldPosition();
   await stopCancelsOpenBuyAndReleasesBudget();
   await cancelsPendingBuyBeforeEntryCutoff();
   await doesNotOpenNewBuyInsideEntryCutoff();

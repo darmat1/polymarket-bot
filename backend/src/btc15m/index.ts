@@ -15,6 +15,7 @@ import type {
   Btc15mBotConfig,
   Btc15mBotStatus,
   Btc15mCompletedTrade,
+  Btc15mCycleState,
   Btc15mLogEntry,
   Btc15mPersistentState,
   Btc15mSide,
@@ -50,17 +51,7 @@ export async function startBtc15mBot(
     defaultConfig: baseConfig,
   });
   await store.updateConfig(config);
-  const persisted = await store.readState();
-  if (persisted.budget.initialBudget !== config.workingBudgetUsd) {
-    await store.updateBudget((budget) => {
-      budget.initialBudget = config.workingBudgetUsd;
-      budget.availableBudget = config.workingBudgetUsd;
-      budget.lockedBudget = 0;
-      budget.lastProfitResetAt = Date.now();
-      budget.skimmedProfitUsd = 0;
-      budget.lastBalanceCheck = null;
-    });
-  }
+  await reconcileStoppedPersistedBudget(store, config.workingBudgetUsd);
 
   const service = PolymarketService.getInstance(settings);
   const clob = new ClobPublicClient(settings.polymarketHost);
@@ -151,6 +142,9 @@ export async function stopBtc15mBot(settings?: Settings): Promise<Btc15mBotStatu
     if (bookListeners.size === 0) {
       chainlinkPriceSource?.close();
       chainlinkPriceSource = null;
+    }
+    if (settings) {
+      return getBtc15mBotStatus(settings);
     }
     return status;
   }
@@ -267,7 +261,7 @@ export async function getBtc15mBotStatus(settings: Settings): Promise<Btc15mBotS
     filePath: settings.btc15m.stateFile,
     defaultConfig: configFromSettings(settings),
   });
-  const persisted = await reconcileStoppedPersistedOpenOrders(settings, store);
+  const persisted = await reconcileStoppedPersistedState(settings, store);
   const status = createIdleStatus(settings, persisted.config, persisted.completedTrades, persisted);
   const hasActiveCycle = Boolean(persisted.cycle.buyOrder || persisted.cycle.sellOrder || persisted.cycle.position);
   status.market = hasActiveCycle ? persisted.market : null;
@@ -277,6 +271,14 @@ export async function getBtc15mBotStatus(settings: Settings): Promise<Btc15mBotS
   status.logs = persisted.logs;
   status.lastError = persisted.lastError;
   return status;
+}
+
+async function reconcileStoppedPersistedState(
+  settings: Settings,
+  store: ReturnType<typeof createBtc15mStateStore>,
+): Promise<Btc15mPersistentState> {
+  const persisted = await reconcileStoppedPersistedOpenOrders(settings, store);
+  return reconcileStoppedPersistedBudget(store, persisted.config.workingBudgetUsd, persisted);
 }
 
 async function reconcileStoppedPersistedOpenOrders(
@@ -327,6 +329,45 @@ async function reconcileStoppedPersistedOpenOrders(
     lastError: null,
   });
   return store.readState();
+}
+
+async function reconcileStoppedPersistedBudget(
+  store: ReturnType<typeof createBtc15mStateStore>,
+  workingBudgetUsd: number,
+  persistedState?: Btc15mPersistentState,
+): Promise<Btc15mPersistentState> {
+  const persisted = persistedState ?? await store.readState();
+  if (!shouldResetIdleBudgetOnStartup(persisted, workingBudgetUsd)) {
+    return persisted;
+  }
+
+  const resetAt = Date.now();
+  await store.updateBudget((budget) => {
+    budget.initialBudget = roundBudget(workingBudgetUsd);
+    budget.availableBudget = roundBudget(workingBudgetUsd);
+    budget.lockedBudget = 0;
+    budget.updatedAt = resetAt;
+    budget.lastProfitResetAt = resetAt;
+    budget.lastBalanceCheck = null;
+  });
+  return store.readState();
+}
+
+export function shouldResetIdleBudgetOnStartup(
+  persisted: Pick<Btc15mPersistentState, "cycle" | "budget">,
+  workingBudgetUsd: number,
+): boolean {
+  const target = roundBudget(workingBudgetUsd);
+  if (hasActiveCycle(persisted.cycle)) {
+    return false;
+  }
+  return persisted.budget.initialBudget !== target ||
+    persisted.budget.availableBudget !== target ||
+    persisted.budget.lockedBudget !== 0;
+}
+
+function hasActiveCycle(cycle: Btc15mCycleState): boolean {
+  return Boolean(cycle.buyOrder || cycle.sellOrder || cycle.position);
 }
 
 export function configFromSettings(settings: Settings): Btc15mBotConfig {
