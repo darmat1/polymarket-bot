@@ -191,7 +191,12 @@ export class Btc15mBot {
         return;
       }
 
-      if (!this.state.market || this.state.market.slug !== resolvedMarket.slug || now >= this.state.market.endTimeMs) {
+      const shouldSwitchMarket = !this.state.market || this.state.market.slug !== resolvedMarket.slug || now >= this.state.market.endTimeMs;
+      if (!this.dryRun && shouldSwitchMarket) {
+        await this.reconcileClosedLivePosition();
+      }
+
+      if (shouldSwitchMarket) {
         await this.switchMarket(resolvedMarket);
       }
 
@@ -212,7 +217,10 @@ export class Btc15mBot {
       }
 
       if (!this.dryRun) {
-        await this.reconcileLivePosition(now);
+        const reconciledClosedPosition = await this.reconcileClosedLivePosition();
+        if (!reconciledClosedPosition) {
+          await this.reconcileLivePosition(now);
+        }
       }
 
       if (this.state.cycle.cyclePhase === "buy_pending") {
@@ -449,6 +457,28 @@ export class Btc15mBot {
     ) {
       await this.reconcileHolding(now);
     }
+  }
+
+  private async reconcileClosedLivePosition(): Promise<boolean> {
+    const market = this.state.market;
+    const position = this.state.cycle.position;
+    const sellOrder = this.state.cycle.sellOrder;
+    if (!market || !position || !sellOrder || !this.runtime.getLivePosition) {
+      return false;
+    }
+
+    const livePosition = await this.runtime.getLivePosition(market);
+    if (livePosition?.tokenId === position.tokenId && livePosition.shares > 0.000001) {
+      return false;
+    }
+
+    const exitReason = this.state.cycle.cyclePhase === "force_selling" ? "force_sell" : "target_sell";
+    this.pushLog(
+      `SELL ${position.bettingSide.toUpperCase()} appears filled on Polymarket; recording ${exitReason} at ${formatPrice(sellOrder.price)}.`,
+      "warn",
+    );
+    await this.handleSellFill(sellOrder.price, exitReason);
+    return true;
   }
 
   private decideRepeat(now: number): void {

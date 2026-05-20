@@ -415,6 +415,66 @@ async function livePositionRecoveryForceSellsWhenWsFillWasMissed() {
   console.log("live position recovery force sell: OK");
 }
 
+async function recordsSellFillWhenLivePositionDisappears() {
+  const now = market.endTimeMs - 60_000;
+  const h = makeHarness({
+    currentBtc: 100_100,
+    now,
+    livePosition: null,
+  });
+  const bot = new Btc15mBot({
+    config,
+    dryRun: false,
+    runtime: h.runtime,
+    initialRuntimeState: {
+      market,
+      marketStartBtcPrice: 100_000,
+      currentBtcPrice: 100_100,
+      cycle: {
+        cyclePhase: "force_selling",
+        cycleStartedAt: now - 8 * 60_000,
+        buyOrder: null,
+        sellOrder: {
+          id: "sell",
+          orderId: "sell-order",
+          side: "sell",
+          tokenId: "tok-down",
+          bettingSide: "down",
+          price: 0.2,
+          size: 5,
+          filledSize: 0,
+          status: "open",
+          reservedBudget: 0,
+          createdAt: now - 30_000,
+          updatedAt: now - 30_000,
+        },
+        position: {
+          bettingSide: "down",
+          tokenId: "tok-down",
+          shares: 5,
+          avgEntryPrice: 0.25,
+          costBasisUsd: 1.25,
+        },
+      },
+      logs: [],
+      lastError: null,
+    },
+  });
+
+  await bot.start({ scheduleLoop: false, runImmediateTick: false });
+  await bot.runOneTick();
+
+  assert.equal(h.trades.length, 1);
+  assert.equal(h.trades[0].sellPrice, 0.2);
+  assert.equal(h.trades[0].pnlUsd, -0.25);
+  assert.equal(h.trades[0].result, "loss");
+  assert.equal(h.trades[0].exitReason, "force_sell");
+  assert.equal(bot.getStatus().cycle.position, null);
+  assert.equal(bot.getStatus().completedTrades.length, 1);
+  await bot.stop();
+  console.log("missing sell fill reconciliation: OK");
+}
+
 async function stopCancelsOpenBuyAndReleasesBudget() {
   const h = makeHarness({ currentBtc: 99_900 });
   const bot = new Btc15mBot({ config, dryRun: false, runtime: h.runtime });
@@ -457,7 +517,10 @@ async function cancelsPendingBuyBeforeEntryCutoff() {
 }
 
 async function doesNotOpenNewBuyInsideEntryCutoff() {
-  const h = makeHarness({ currentBtc: 100_100, now: market.endTimeMs - 5 * 60_000 });
+  const h = makeHarness({
+    currentBtc: 100_100,
+    now: market.endTimeMs - 5 * 60_000,
+  });
   const bot = new Btc15mBot({ config, dryRun: false, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
 
@@ -468,7 +531,11 @@ async function doesNotOpenNewBuyInsideEntryCutoff() {
 }
 
 async function holdingWaitsUntilForceSellCutoff() {
-  const h = makeHarness({ currentBtc: 100_100, now: market.endTimeMs - 5 * 60_000 });
+  const h = makeHarness({
+    currentBtc: 100_100,
+    now: market.endTimeMs - 5 * 60_000,
+    livePosition: { bettingSide: "down", tokenId: "tok-down", shares: 5 },
+  });
   const bot = new Btc15mBot({
     config,
     dryRun: false,
@@ -733,6 +800,7 @@ async function defersProfitSkimWhilePositionOpen() {
     now,
     addedFunds: 5,
     lastProfitResetAt: now - config.budgetResetIntervalHours * 60 * 60_000,
+    livePosition: { bettingSide: "down", tokenId: "tok-down", shares: 5 },
   });
   const bot = new Btc15mBot({
     config,
@@ -798,6 +866,7 @@ async function main() {
   await repeatsAndSwitchesMarket();
   await autoStopsWhenBudgetReserveThrows();
   await livePositionRecoveryForceSellsWhenWsFillWasMissed();
+  await recordsSellFillWhenLivePositionDisappears();
   await stopCancelsOpenBuyAndReleasesBudget();
   await cancelsPendingBuyBeforeEntryCutoff();
   await doesNotOpenNewBuyInsideEntryCutoff();
