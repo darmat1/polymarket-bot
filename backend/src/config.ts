@@ -23,6 +23,19 @@ function parseNumber(value: string | undefined, fallback: number): number {
   return parsed;
 }
 
+function parseOptionalNumber(value: string | undefined): number | null {
+  if (value === undefined || value.trim() === "") {
+    return null;
+  }
+
+  const parsed = Number(value);
+  if (Number.isNaN(parsed)) {
+    throw new Error(`Invalid numeric environment value: ${value}`);
+  }
+
+  return parsed;
+}
+
 export interface ScalperSettings {
   buyPriceLimit: number;
   sellPriceLimit: number;
@@ -57,13 +70,13 @@ export interface Btc15mSettings {
 }
 
 export interface Btc15mHedgeSettings {
-  workingBudgetUsd: number;      // default 5
-  orderSize: number;             // sharesPerSide, default 5
-  targetCombinedPrice: number | null; // null = use market price
-  entryCutoffMin: number;        // default 3
-  forceUnwindThresholdMin: number; // default 2
-  tickIntervalSec: number;       // default 2
-  stateFile: string;             // default "data/btc15m-hedge-state.json"
+  workingBudgetUsd: number;
+  orderSize: number;
+  targetCombinedPrice: number | null;
+  entryCutoffMin: number;
+  forceUnwindThresholdMin: number;
+  tickIntervalSec: number;
+  stateFile: string;
 }
 
 export interface Settings {
@@ -131,12 +144,10 @@ export function loadSettings(): Settings {
   };
 
   const btc15mHedge: Btc15mHedgeSettings = {
-    workingBudgetUsd: parseNumber(process.env.BTC15M_HEDGE_WORKING_BUDGET, 5),
+    workingBudgetUsd: parseNumber(process.env.BTC15M_HEDGE_WORKING_BUDGET, 3),
     orderSize: parseNumber(process.env.BTC15M_HEDGE_ORDER_SIZE, 5),
-    targetCombinedPrice: process.env.BTC15M_HEDGE_TARGET_COMBINED_PRICE
-      ? parseNumber(process.env.BTC15M_HEDGE_TARGET_COMBINED_PRICE, 0)
-      : null,
-    entryCutoffMin: parseNumber(process.env.BTC15M_HEDGE_ENTRY_CUTOFF_MIN, 3),
+    targetCombinedPrice: parseOptionalNumber(process.env.BTC15M_HEDGE_TARGET_COMBINED_PRICE),
+    entryCutoffMin: parseNumber(process.env.BTC15M_HEDGE_ENTRY_CUTOFF_MIN, 6),
     forceUnwindThresholdMin: parseNumber(process.env.BTC15M_HEDGE_FORCE_UNWIND_MIN, 2),
     tickIntervalSec: parseNumber(process.env.BTC15M_HEDGE_TICK_INTERVAL_SEC, 2),
     stateFile: process.env.BTC15M_HEDGE_STATE_FILE?.trim() || "data/btc15m-hedge-state.json",
@@ -145,6 +156,7 @@ export function loadSettings(): Settings {
   validateScalperSettings(scalper);
   validateBtc5mSettings(btc5m);
   validateBtc15mSettings(btc15m);
+  validateBtc15mHedgeSettings(btc15mHedge);
 
   return {
     polymarketHost: process.env.POLYMARKET_HOST ?? "https://clob.polymarket.com",
@@ -291,5 +303,38 @@ function validateBtc15mSettings(settings: Btc15mSettings): void {
 
   if (settings.forceSellThresholdMin >= 15) {
     throw new Error("BTC15M_FORCE_SELL_MIN must be less than the 15-minute window.");
+  }
+}
+
+function validateBtc15mHedgeSettings(settings: Btc15mHedgeSettings): void {
+  if (
+    settings.targetCombinedPrice !== null &&
+    !(settings.targetCombinedPrice > 0 && settings.targetCombinedPrice < 1)
+  ) {
+    throw new Error("BTC15M_HEDGE_TARGET_COMBINED_PRICE must be between 0 and 1.");
+  }
+
+  for (const [name, value] of [
+    ["BTC15M_HEDGE_WORKING_BUDGET", settings.workingBudgetUsd],
+    ["BTC15M_HEDGE_ORDER_SIZE", settings.orderSize],
+    ["BTC15M_HEDGE_ENTRY_CUTOFF_MIN", settings.entryCutoffMin],
+    ["BTC15M_HEDGE_FORCE_UNWIND_MIN", settings.forceUnwindThresholdMin],
+    ["BTC15M_HEDGE_TICK_INTERVAL_SEC", settings.tickIntervalSec],
+  ] as const) {
+    if (value <= 0) {
+      throw new Error(`${name} must be greater than zero.`);
+    }
+  }
+
+  if (settings.entryCutoffMin >= 15) {
+    throw new Error("BTC15M_HEDGE_ENTRY_CUTOFF_MIN must be less than the 15-minute window.");
+  }
+
+  if (settings.forceUnwindThresholdMin >= 15) {
+    throw new Error("BTC15M_HEDGE_FORCE_UNWIND_MIN must be less than the 15-minute window.");
+  }
+
+  if (settings.forceUnwindThresholdMin >= settings.entryCutoffMin) {
+    throw new Error("BTC15M_HEDGE_FORCE_UNWIND_MIN must be less than BTC15M_HEDGE_ENTRY_CUTOFF_MIN.");
   }
 }
