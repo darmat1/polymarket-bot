@@ -156,6 +156,12 @@ async function plannedBuyTracksPriceDownWithinRange() {
   h.setOrderBook({ bestBid: 0.3, bestAsk: 0.31 });
   await bot.runOneTick();
   assert.equal(bot.getStatus().cycle.plannedBuyPrice, 0.33);
+
+  h.setOrderBook({ bestBid: 0.32, bestAsk: 0.33 });
+  await bot.runOneTick();
+  assert.equal(h.orders.length, 1);
+  assert.equal(bot.getStatus().cycle.plannedBuyPrice, null);
+  assert.equal(bot.getStatus().cycle.cyclePhase, "buy_pending");
   bot.stop();
   console.log("planned buy tracks down: OK");
 }
@@ -198,6 +204,12 @@ async function simBuyAndTargetSellFillCompletesTrade() {
   assert.equal(bot.getStatus().cycle.cyclePhase, "holding");
   assert.equal(bot.getStatus().cycle.sellOrder, null);
   assert.equal(h.consumed, 2.1);
+
+  h.setOrderBook({ bestBid: 0.47, bestAsk: 0.48 });
+  h.listeners.get("tok-up")?.(0.47, null);
+  await bot.flushPendingActions();
+  await bot.runOneTick();
+  assert.equal(bot.getStatus().cycle.trailStopPrice, 0.45);
 
   h.setOrderBook({ bestBid: 0.51, bestAsk: 0.52 });
   h.listeners.get("tok-up")?.(0.51, null);
@@ -340,6 +352,47 @@ async function rearmsBuyAfterHighPricePullbackReentersRange() {
   console.log("rearms after pullback: OK");
 }
 
+async function plannedBuyNeverIncreasesDuringActiveCycle() {
+  const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.3, bestAsk: 0.31 } });
+  const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
+  await bot.start({ scheduleLoop: false });
+  const currentPlannedBuy = bot.getStatus().cycle.plannedBuyPrice;
+  assert.equal(currentPlannedBuy, 0.33);
+
+  h.setOrderBook({ bestBid: 0.35, bestAsk: 0.36 });
+  await bot.runOneTick();
+  assert.equal(h.orders.length, 1);
+  assert.equal(h.orders[0].price <= currentPlannedBuy, true);
+  bot.stop();
+  console.log("planned buy never increases: OK");
+}
+
+async function trailStopNeverDecreasesOnPullback() {
+  const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.39, bestAsk: 0.4 } });
+  const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
+  await bot.start({ scheduleLoop: false });
+  h.setOrderBook({ bestBid: 0.41, bestAsk: 0.42 });
+  await bot.runOneTick();
+  h.listeners.get("tok-up")?.(null, 0.42);
+  await bot.flushPendingActions();
+
+  h.setOrderBook({ bestBid: 0.51, bestAsk: 0.52 });
+  h.listeners.get("tok-up")?.(0.51, null);
+  await bot.flushPendingActions();
+  await bot.runOneTick();
+  const currentStop = bot.getStatus().cycle.trailStopPrice;
+  assert.equal(currentStop, 0.49);
+
+  h.setOrderBook({ bestBid: 0.46, bestAsk: 0.47 });
+  h.listeners.get("tok-up")?.(0.46, null);
+  await bot.flushPendingActions();
+  await bot.runOneTick();
+  assert.equal(h.orders.at(-1)?.side, "sell");
+  assert.equal((h.orders.at(-1)?.price ?? 0) >= currentStop, true);
+  bot.stop();
+  console.log("trail stop never decreases: OK");
+}
+
 async function main() {
   await startStopTest();
   await armsVirtualBuyAboveCurrentUpPriceInsideBounds();
@@ -353,6 +406,8 @@ async function main() {
   await buysUpWhenMarketRisesToArmedVirtualTarget();
   await cancelsStaleBuyOrderAfterSharpPriceJump();
   await rearmsBuyAfterHighPricePullbackReentersRange();
+  await plannedBuyNeverIncreasesDuringActiveCycle();
+  await trailStopNeverDecreasesOnPullback();
 }
 
 void main().catch((error) => {

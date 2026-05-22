@@ -320,20 +320,32 @@ export class Btc15mAutoBot {
     }
 
     const previousAnchor = this.state.cycle.plannedBuyAnchorPrice;
-    const nextAnchor = previousAnchor === null || previousAnchor === undefined || marketPrice < previousAnchor
+    const hasAnchor = previousAnchor !== null && previousAnchor !== undefined;
+    const nextAnchor = !hasAnchor || marketPrice < previousAnchor
       ? marketPrice
       : previousAnchor;
+    const previousPlannedBuyPrice = this.state.cycle.plannedBuyPrice;
     const plannedBuyPrice = roundUsd(nextAnchor + this.config.trailDist);
+    const guardedPlannedBuyPrice = previousPlannedBuyPrice !== null && previousPlannedBuyPrice !== undefined
+      ? Math.min(previousPlannedBuyPrice, plannedBuyPrice)
+      : plannedBuyPrice;
 
-    if (marketPrice < plannedBuyPrice) {
+    this.state.cycle.buyBlockReason = null;
+    this.state.cycle.buyBlockReferencePrice = null;
+
+    if (!hasAnchor || marketPrice <= nextAnchor) {
       this.state.cycle.plannedBuyAnchorPrice = nextAnchor;
-      this.state.cycle.plannedBuyPrice = plannedBuyPrice;
-      this.state.cycle.buyBlockReason = null;
-      this.state.cycle.buyBlockReferencePrice = null;
+      this.state.cycle.plannedBuyPrice = guardedPlannedBuyPrice;
       return;
     }
 
-    const stake = roundUsd(this.config.shares * plannedBuyPrice);
+    if (marketPrice < guardedPlannedBuyPrice) {
+      this.state.cycle.plannedBuyAnchorPrice = nextAnchor;
+      this.state.cycle.plannedBuyPrice = guardedPlannedBuyPrice;
+      return;
+    }
+
+    const stake = roundUsd(this.config.shares * guardedPlannedBuyPrice);
     try {
       await this.runtime.budget.reserve(stake, "btc15mAuto-cycle-buy");
     } catch (error) {
@@ -347,7 +359,7 @@ export class Btc15mAutoBot {
     const response = await this.runtime.placeLimitOrder({
       tokenId,
       side: "buy",
-      price: plannedBuyPrice,
+      price: guardedPlannedBuyPrice,
       size: this.config.shares,
     });
     const orderId = extractOrderId(response) ?? `btc15mAuto-buy:${market.slug}:${now}`;
@@ -361,7 +373,7 @@ export class Btc15mAutoBot {
         side: "buy",
         tokenId,
         bettingSide,
-        price: plannedBuyPrice,
+        price: guardedPlannedBuyPrice,
         size: this.config.shares,
         filledSize: 0,
         status: "open",
@@ -483,23 +495,29 @@ export class Btc15mAutoBot {
       }
     }
 
+    const isLateForceSellWindow = timeToEndMs < this.config.forceSellThresholdMin * 60_000;
+
     // --- TRAILING STOP LOGIC ---
     const highWaterMark = this.state.cycle.highWaterMark ?? position.avgEntryPrice;
-    if (bestBid !== null && bestBid > highWaterMark + this.config.trailStep) {
+    if (bestBid !== null && bestBid > highWaterMark) {
       const cooldownOk =
         this.dryRun || now - this.lastTrailUpdateMs >= this.config.trailUpdateIntervalSec * 1000;
       if (cooldownOk) {
         this.state.cycle.highWaterMark = bestBid;
-        this.state.cycle.trailStopPrice = roundUsd(bestBid - this.config.trailDist);
+        const nextTrailStopPrice = roundUsd(bestBid - this.config.trailDist);
+        const currentTrailStopPrice = this.state.cycle.trailStopPrice;
+        this.state.cycle.trailStopPrice = currentTrailStopPrice !== null && currentTrailStopPrice !== undefined
+          ? Math.max(currentTrailStopPrice, nextTrailStopPrice)
+          : nextTrailStopPrice;
         this.lastTrailUpdateMs = now;
         this.pushLog(`Trail stop moved to ${formatPrice(this.state.cycle.trailStopPrice)} (high ${formatPrice(bestBid)}).`, "info");
       }
     }
 
     const trailStopPrice = this.state.cycle.trailStopPrice;
-    if (bestBid !== null && trailStopPrice !== null && bestBid <= trailStopPrice) {
-      const liveExitPrice = bestBid > 0 ? bestBid : trailStopPrice;
-      this.pushLog(`Trail stop triggered at ${formatPrice(trailStopPrice)} (live bid ${formatPrice(liveExitPrice)}).`, "warn");
+    if (!isLateForceSellWindow && bestBid !== null && trailStopPrice !== null && bestBid <= trailStopPrice) {
+      const liveExitPrice = trailStopPrice;
+      this.pushLog(`Trail stop triggered at ${formatPrice(trailStopPrice)} (live bid ${formatPrice(bestBid)}).`, "warn");
       await this.placeSell(liveExitPrice, "holding");
       if (this.dryRun) {
         await this.handleSellFill(liveExitPrice, "target_sell");
@@ -508,7 +526,7 @@ export class Btc15mAutoBot {
     }
 
     // --- FORCE SELL ---
-    if (timeToEndMs >= this.config.forceSellThresholdMin * 60_000) {
+    if (!isLateForceSellWindow) {
       return;
     }
     // Fetch the freshest bid synchronously — WS bookSnapshots may be stale/empty
