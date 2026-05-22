@@ -209,13 +209,13 @@ async function simBuyAndTargetSellFillCompletesTrade() {
   h.listeners.get("tok-up")?.(0.47, null);
   await bot.flushPendingActions();
   await bot.runOneTick();
-  assert.equal(bot.getStatus().cycle.trailStopPrice, 0.45);
+  assert.equal(bot.getStatus().cycle.trailStopPrice, 0.46);
 
   h.setOrderBook({ bestBid: 0.51, bestAsk: 0.52 });
   h.listeners.get("tok-up")?.(0.51, null);
   await bot.flushPendingActions();
   await bot.runOneTick();
-  assert.equal(bot.getStatus().cycle.trailStopPrice, 0.49);
+  assert.equal(bot.getStatus().cycle.trailStopPrice, 0.5);
 
   h.setOrderBook({ bestBid: 0.49, bestAsk: 0.5 });
   h.listeners.get("tok-up")?.(0.49, null);
@@ -223,13 +223,13 @@ async function simBuyAndTargetSellFillCompletesTrade() {
   await bot.runOneTick();
   assert.equal(h.orders.length, 2);
   assert.equal(h.orders[1].side, "sell");
-  assert.equal(h.orders[1].price, 0.49);
+  assert.equal(h.orders[1].price, 0.5);
   assert.equal(bot.getStatus().sessionTrades.length, 1);
   assert.equal(bot.getStatus().sessionTrades[0].result, "win");
   assert.equal(bot.getStatus().sessionTrades[0].exitReason, "target_sell");
-  assert.equal(bot.getStatus().sessionTrades[0].pnlUsd, 0.35);
+  assert.equal(bot.getStatus().sessionTrades[0].pnlUsd, 0.4);
   assert.equal(h.trades.length, 0);
-  assert.equal(h.added, 2.45);
+  assert.equal(h.added, 2.5);
   assert.equal(["cycle_done", "waiting_direction"].includes(bot.getStatus().cycle.cyclePhase), true);
   bot.stop();
   console.log("sim buy/sell fills: OK");
@@ -381,7 +381,7 @@ async function trailStopNeverDecreasesOnPullback() {
   await bot.flushPendingActions();
   await bot.runOneTick();
   const currentStop = bot.getStatus().cycle.trailStopPrice;
-  assert.equal(currentStop, 0.49);
+  assert.equal(currentStop, 0.5);
 
   h.setOrderBook({ bestBid: 0.46, bestAsk: 0.47 });
   h.listeners.get("tok-up")?.(0.46, null);

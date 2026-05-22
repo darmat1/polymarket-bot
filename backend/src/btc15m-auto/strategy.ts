@@ -483,6 +483,7 @@ export class Btc15mAutoBot {
 
     const snap = this.bookSnapshots.get(position.tokenId);
     let bestBid = snap?.bestBid ?? null;
+    let bestAsk = snap?.bestAsk ?? null;
     const timeToEndMs = market.endTimeMs - now;
 
     if (this.runtime.getOrderBook) {
@@ -490,6 +491,7 @@ export class Btc15mAutoBot {
         const book = await this.runtime.getOrderBook(position.tokenId);
         this.bookSnapshots.set(position.tokenId, { bestBid: book.bestBid, bestAsk: book.bestAsk });
         bestBid = book.bestBid;
+        bestAsk = book.bestAsk;
       } catch (error) {
         this.pushLog(`getOrderBook failed during holding: ${error instanceof Error ? error.message : String(error)}`, "warn");
       }
@@ -498,19 +500,24 @@ export class Btc15mAutoBot {
     const isLateForceSellWindow = timeToEndMs < this.config.forceSellThresholdMin * 60_000;
 
     // --- TRAILING STOP LOGIC ---
+    // Trail off the SAME price the UI shows as "UP PRICE" (bestAsk-preferred), so STOP SELL is
+    // always exactly trailDist below UP PRICE at a fresh high. Previously the trail tracked
+    // bestBid while the UI showed bestAsk — the bid/ask spread made the visible gap 0.03 instead
+    // of the configured 0.02, and the stop appeared not to follow the price.
+    const refPrice = bestAsk ?? bestBid;
     const highWaterMark = this.state.cycle.highWaterMark ?? position.avgEntryPrice;
-    if (bestBid !== null && bestBid > highWaterMark) {
+    if (refPrice !== null && refPrice > highWaterMark) {
       const cooldownOk =
         this.dryRun || now - this.lastTrailUpdateMs >= this.config.trailUpdateIntervalSec * 1000;
       if (cooldownOk) {
-        this.state.cycle.highWaterMark = bestBid;
-        const nextTrailStopPrice = roundUsd(bestBid - this.config.trailDist);
+        this.state.cycle.highWaterMark = refPrice;
+        const nextTrailStopPrice = roundUsd(refPrice - this.config.trailDist);
         const currentTrailStopPrice = this.state.cycle.trailStopPrice;
         this.state.cycle.trailStopPrice = currentTrailStopPrice !== null && currentTrailStopPrice !== undefined
           ? Math.max(currentTrailStopPrice, nextTrailStopPrice)
           : nextTrailStopPrice;
         this.lastTrailUpdateMs = now;
-        this.pushLog(`Trail stop moved to ${formatPrice(this.state.cycle.trailStopPrice)} (high ${formatPrice(bestBid)}).`, "info");
+        this.pushLog(`Trail stop moved to ${formatPrice(this.state.cycle.trailStopPrice)} (UP price ${formatPrice(refPrice)}).`, "info");
       }
     }
 

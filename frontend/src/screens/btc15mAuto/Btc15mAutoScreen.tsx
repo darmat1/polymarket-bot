@@ -242,37 +242,51 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
             </div>
             {status?.market?.slug ? <a className="positions-link" href={`https://polymarket.com/event/${status.market.slug}`} target="_blank" rel="noreferrer">Open market ↗</a> : null}
           </div>
+          {/* Common cards — full width, apply to the whole market regardless of side */}
           <div className="btc15m-monitor-grid">
             <span><em>Market</em><strong>{status?.market?.slug ?? "—"}</strong></span>
             <span><em>Time left</em><strong>{status?.market ? formatTimeRemaining(status.market.endTimeMs) : "—"}</strong></span>
             <span><em>Start BTC</em><strong>{formatBtcPrice(status?.marketStartBtcPrice)}</strong></span>
             <span><em>Current BTC</em><strong>{formatBtcPrice(status?.currentBtcPrice)}</strong></span>
-            <span><em>Up Price</em><strong>{formatUsdPrice(status?.upPrice)}</strong></span>
-            <span><em>Planned Buy</em><strong>{formatUsdPrice(status?.cycle.plannedBuyPrice ?? null)}</strong></span>
-            <span><em>Buy State</em><strong>{status?.cycle.buyBlockReason ?? "armed"}</strong></span>
             <span><em>Delta</em><strong>{formatBtcDelta(status)}</strong></span>
             <span><em>Cycle</em><strong>{status?.cycle.cyclePhase ?? "—"}</strong></span>
           </div>
-          <div className="btc15m-cycle-grid">
-            <div>
-              <h3>Buy order</h3>
-              {status?.cycle.buyOrder ? (
-                <dl><dt>Side</dt><dd>{status.cycle.buyOrder.bettingSide.toUpperCase()}</dd><dt>Price</dt><dd>{formatUsdPrice(status.cycle.buyOrder.price)}</dd><dt>Size</dt><dd>{formatPosNum(status.cycle.buyOrder.size)}</dd><dt>Status</dt><dd>{status.cycle.buyOrder.status}</dd></dl>
-              ) : <p className="status status-muted">none</p>}
+
+          {/* Two-column split: left = UP side, right reserved for future DOWN side */}
+          <div className="btc15m-side-split">
+            <div className="btc15m-side-col">
+              <h3 className="btc15m-side-title btc15m-side-title-up">UP</h3>
+              <div className="btc15m-monitor-grid">
+                <span><em>Up Price</em><strong>{formatUsdPrice(status?.upPrice)}</strong></span>
+                <span><em>Planned Buy</em><strong>{formatUsdPrice(status?.cycle.plannedBuyPrice ?? null)}</strong></span>
+                <span><em>Buy State</em><strong>{status?.cycle.buyBlockReason ?? "armed"}</strong></span>
+              </div>
+              <div className="btc15m-cycle-grid">
+                <div>
+                  <h3>Buy order</h3>
+                  {status?.cycle.buyOrder ? (
+                    <dl><dt>Side</dt><dd>{status.cycle.buyOrder.bettingSide.toUpperCase()}</dd><dt>Price</dt><dd>{formatUsdPrice(status.cycle.buyOrder.price)}</dd><dt>Size</dt><dd>{formatPosNum(status.cycle.buyOrder.size)}</dd><dt>Status</dt><dd>{status.cycle.buyOrder.status}</dd></dl>
+                  ) : <p className="status status-muted">none</p>}
+                </div>
+                <div>
+                  <h3>Position</h3>
+                  {status?.cycle.position ? (
+                    <dl><dt>Side</dt><dd>{status.cycle.position.bettingSide.toUpperCase()}</dd><dt>Shares</dt><dd>{formatPosNum(status.cycle.position.shares)}</dd><dt>Avg</dt><dd>{formatUsdPrice(status.cycle.position.avgEntryPrice)}</dd><dt>Cost</dt><dd>{formatUsd(status.cycle.position.costBasisUsd)}</dd>{showPositionStop ? <><dt>Stop</dt><dd className="pnl-neg">{formatUsdPrice(status.cycle.trailStopPrice ?? null)}</dd></> : null}</dl>
+                  ) : showPositionPlannedBuy ? (
+                    <dl><dt>Planned Buy</dt><dd className="btc15m-value-gold">{formatUsdPrice(status?.cycle.plannedBuyPrice ?? null)}</dd></dl>
+                  ) : <p className="status status-muted">none</p>}
+                </div>
+                <div>
+                  <h3>Sell order</h3>
+                  {status?.cycle.sellOrder ? (
+                    <dl><dt>Price</dt><dd>{formatUsdPrice(status.cycle.sellOrder.price)}</dd><dt>Size</dt><dd>{formatPosNum(status.cycle.sellOrder.size)}</dd><dt>Status</dt><dd>{status.cycle.sellOrder.status}</dd><dt>Order</dt><dd>{status.cycle.sellOrder.orderId ?? "—"}</dd></dl>
+                  ) : <p className="status status-muted">none</p>}
+                </div>
+              </div>
             </div>
-            <div>
-              <h3>Position</h3>
-              {status?.cycle.position ? (
-                <dl><dt>Side</dt><dd>{status.cycle.position.bettingSide.toUpperCase()}</dd><dt>Shares</dt><dd>{formatPosNum(status.cycle.position.shares)}</dd><dt>Avg</dt><dd>{formatUsdPrice(status.cycle.position.avgEntryPrice)}</dd><dt>Cost</dt><dd>{formatUsd(status.cycle.position.costBasisUsd)}</dd>{showPositionStop ? <><dt>Stop</dt><dd className="pnl-neg">{formatUsdPrice(status.cycle.trailStopPrice ?? null)}</dd></> : null}</dl>
-              ) : showPositionPlannedBuy ? (
-                <dl><dt>Planned Buy</dt><dd className="btc15m-value-gold">{formatUsdPrice(status?.cycle.plannedBuyPrice ?? null)}</dd></dl>
-              ) : <p className="status status-muted">none</p>}
-            </div>
-            <div>
-              <h3>Sell order</h3>
-              {status?.cycle.sellOrder ? (
-                <dl><dt>Price</dt><dd>{formatUsdPrice(status.cycle.sellOrder.price)}</dd><dt>Size</dt><dd>{formatPosNum(status.cycle.sellOrder.size)}</dd><dt>Status</dt><dd>{status.cycle.sellOrder.status}</dd><dt>Order</dt><dd>{status.cycle.sellOrder.orderId ?? "—"}</dd></dl>
-              ) : <p className="status status-muted">none</p>}
+            <div className="btc15m-side-col btc15m-side-col-placeholder">
+              <h3 className="btc15m-side-title btc15m-side-title-down">DOWN</h3>
+              <p className="status status-muted">Reserved for the DOWN side / additional blocks.</p>
             </div>
           </div>
         </article>

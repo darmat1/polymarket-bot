@@ -1239,6 +1239,61 @@ input:checked ~ .toggle-label {
   gap: 12px;
 }
 
+/* Two-column split below the common cards: left = UP side, right = future DOWN side. */
+.btc15m-side-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.btc15m-side-col {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 14px;
+  background: rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.btc15m-side-col-placeholder {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.btc15m-side-title {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.btc15m-side-title-up {
+  color: var(--mint, #4ade80);
+}
+
+.btc15m-side-title-down {
+  color: var(--rose, #fb7185);
+}
+
+/* The left side's inner cycle grid only has space for 3 narrow cards — keep them readable. */
+.btc15m-side-col .btc15m-cycle-grid {
+  gap: 10px;
+}
+
+/* Collapse to a single column on narrower screens (matches the 1580px positions rule). */
+@media (max-width: 1580px) {
+  .btc15m-side-split {
+    grid-template-columns: 1fr;
+  }
+}
+
 .btc15m-cycle-grid > div {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
