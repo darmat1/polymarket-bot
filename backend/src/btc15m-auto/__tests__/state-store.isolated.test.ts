@@ -39,7 +39,8 @@ async function main() {
     assert.equal(initial.enginePhase, "stopped");
     assert.deepEqual(initial.completedTrades, []);
     assert.equal(initial.market, null);
-    assert.equal(initial.cycle.position, null);
+    assert.equal(initial.upCycle.position, null);
+    assert.equal(initial.downCycle.position, null);
 
     await store.updateConfig({ ...defaultConfig, workingBudgetUsd: 10 });
     const reloaded = await store.readState();
@@ -77,14 +78,16 @@ async function main() {
       market,
       marketStartBtcPrice: 100_000,
       currentBtcPrice: 100_100,
-      cycle,
+      upCycle: cycle,
+      downCycle: cycle,
       logs: [{ timestamp: 1, message: "test", type: "info" }],
       lastError: null,
     });
     const runtime = await store.readState();
     assert.equal(runtime.enginePhase, "stopped");
     assert.equal(runtime.market?.slug, market.slug);
-    assert.equal(runtime.cycle.position?.tokenId, "tok-up");
+    assert.equal(runtime.upCycle.position?.tokenId, "tok-up");
+    assert.equal(runtime.downCycle.position?.tokenId, "tok-up");
     assert.equal(runtime.logs.length, 1);
 
     const trade: Btc15mAutoCompletedTrade = {

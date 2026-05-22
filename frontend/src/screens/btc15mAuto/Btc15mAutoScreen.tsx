@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   getBtc15mAutoStatus,
+  hardResetBtc15mAutoBot as hardResetBtc15mAutoBotRequest,
   resetBtc15mAutoBudget as resetBtc15mAutoBudgetRequest,
   toggleBtc15mAutoBot as toggleBtc15mAutoBotRequest,
 } from "../../shared/api/btc15mAuto";
@@ -13,7 +14,7 @@ import {
   formatUsd,
   formatUsdPrice,
 } from "../../shared/lib/format";
-import type { Btc15mAutoCompletedTrade, Btc15mAutoStatusPayload } from "../../shared/types/api";
+import type { Btc15mAutoCompletedTrade, Btc15mAutoCycle, Btc15mAutoStatusPayload } from "../../shared/types/api";
 
 type AddToast = (
   type: "info" | "success" | "warn" | "error",
@@ -46,15 +47,24 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
   const trades: Btc15mAutoCompletedTrade[] = status?.dryRun
     ? (status.sessionTrades ?? [])
     : (status?.completedTrades ?? []);
-  const showPositionStop = Boolean(status?.cycle.position && status.cycle.trailStopPrice !== null && status.cycle.trailStopPrice !== undefined);
-  const showPositionPlannedBuy = useMemo(() => {
-    if (!status || status.cycle.position || status.cycle.plannedBuyPrice === null || status.cycle.plannedBuyPrice === undefined) {
-      return false;
-    }
-    return status.upPrice !== null
-      && status.upPrice > status.config.minBuyPrice
-      && status.upPrice < status.config.maxBuyPrice;
-  }, [status]);
+  const showStopFor = (cycle: Btc15mAutoCycle | undefined) =>
+    Boolean(cycle?.position && cycle.trailStopPrice !== null && cycle.trailStopPrice !== undefined);
+  const showPlannedBuyFor = (cycle: Btc15mAutoCycle | undefined, sidePrice: number | null | undefined) => {
+    if (!status || !cycle) return false;
+    if (cycle.position || cycle.plannedBuyPrice === null || cycle.plannedBuyPrice === undefined) return false;
+    if (sidePrice === null || sidePrice === undefined) return false;
+    return sidePrice > status.config.minBuyPrice && sidePrice < status.config.maxBuyPrice;
+  };
+  const showPositionStopUp = showStopFor(status?.upCycle);
+  const showPositionStopDown = showStopFor(status?.downCycle);
+  const showPositionPlannedBuyUp = useMemo(
+    () => showPlannedBuyFor(status?.upCycle, status?.upPrice ?? null),
+    [status],
+  );
+  const showPositionPlannedBuyDown = useMemo(
+    () => showPlannedBuyFor(status?.downCycle, status?.downPrice ?? null),
+    [status],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -138,6 +148,30 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
     }
   }
 
+  async function hardResetBot() {
+    if (loading) return;
+    if (status?.enginePhase === "running") {
+      addToast("error", "Stop the bot first", "Hard-reset can only run when the bot is stopped.");
+      return;
+    }
+    if (!window.confirm(
+      "Hard-reset BTC 15m Auto?\n\nThis WIPES ALL local state:\n• both UP and DOWN cycles (orders, positions, trail stops)\n• completed trade history\n• budget restored to working budget\n\nUse this only after the bot is stopped AND you've manually closed any positions on Polymarket. This does NOT cancel orders on Polymarket.",
+    )) {
+      return;
+    }
+    setLoading(true);
+    try {
+      const payload = await hardResetBtc15mAutoBotRequest();
+      setStatus(payload);
+      addToast("success", "BTC 15m Auto hard-reset", "All local state wiped. Ready for a clean Start.");
+    } catch (error) {
+      addToast("error", "BTC 15m Auto hard-reset failed", error instanceof Error ? error.message : "Unknown error");
+    } finally {
+      setLoading(false);
+      void loadStatus();
+    }
+  }
+
   async function toggleBot() {
     if (loading) {
       return;
@@ -173,8 +207,18 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
             <button className="button button-secondary" onClick={() => void loadStatus()} type="button" disabled={loading}>
               {loading ? "..." : "Refresh"}
             </button>
-            <button className="button button-secondary" onClick={() => void resetBudget()} type="button" disabled={loading}>
+            <button className="button button-secondary" onClick={() => void resetBudget()} type="button" disabled={loading || status?.enginePhase === "running"}>
               {loading ? "..." : "Clear budget"}
+            </button>
+            <button
+              className="button button-secondary"
+              onClick={() => void hardResetBot()}
+              type="button"
+              disabled={loading || status?.enginePhase === "running"}
+              title="Wipe ALL local state (cycles, positions, trade history, budget). Bot must be stopped. Does NOT cancel orders on Polymarket."
+              style={{ borderColor: "var(--rose, #fb7185)", color: "var(--rose, #fb7185)" }}
+            >
+              Reset bot
             </button>
             <button className={`button ${status?.enginePhase === "running" ? "button-secondary" : "button-primary"}`} onClick={() => void toggleBot()} type="button" disabled={loading}>
               {loading ? "..." : status?.enginePhase === "running" ? "Stop Bot" : "Start Bot"}
@@ -249,45 +293,56 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
             <span><em>Start BTC</em><strong>{formatBtcPrice(status?.marketStartBtcPrice)}</strong></span>
             <span><em>Current BTC</em><strong>{formatBtcPrice(status?.currentBtcPrice)}</strong></span>
             <span><em>Delta</em><strong>{formatBtcDelta(status)}</strong></span>
-            <span><em>Cycle</em><strong>{status?.cycle.cyclePhase ?? "—"}</strong></span>
+            <span><em>Cycle</em><strong>{status?.upCycle.cyclePhase ?? "—"} / {status?.downCycle.cyclePhase ?? "—"}</strong></span>
           </div>
 
-          {/* Two-column split: left = UP side, right reserved for future DOWN side */}
+          {/* Two-column split: UP and DOWN run as independent parallel cycles, shared budget. */}
           <div className="btc15m-side-split">
-            <div className="btc15m-side-col">
-              <h3 className="btc15m-side-title btc15m-side-title-up">UP</h3>
-              <div className="btc15m-monitor-grid">
-                <span><em>Up Price</em><strong>{formatUsdPrice(status?.upPrice)}</strong></span>
-                <span><em>Planned Buy</em><strong>{formatUsdPrice(status?.cycle.plannedBuyPrice ?? null)}</strong></span>
-                <span><em>Buy State</em><strong>{status?.cycle.buyBlockReason ?? "armed"}</strong></span>
+            {([
+              { key: "up" as const, cycle: status?.upCycle, sidePrice: status?.upPrice, showStop: showPositionStopUp, showPlanned: showPositionPlannedBuyUp, titleCls: "btc15m-side-title-up", priceLabel: "Up Price" },
+              { key: "down" as const, cycle: status?.downCycle, sidePrice: status?.downPrice, showStop: showPositionStopDown, showPlanned: showPositionPlannedBuyDown, titleCls: "btc15m-side-title-down", priceLabel: "Down Price" },
+            ]).map(({ key, cycle, sidePrice, showStop, showPlanned, titleCls, priceLabel }) => (
+              <div key={key} className="btc15m-side-col">
+                <h3 className={`btc15m-side-title ${titleCls}`}>{key.toUpperCase()}</h3>
+                <div className="btc15m-monitor-grid">
+                  <span><em>{priceLabel}</em><strong>{formatUsdPrice(sidePrice ?? null)}</strong></span>
+                  {cycle?.position ? (
+                    <span>
+                      <em>Stop Sell</em>
+                      <strong className="btc15m-value-stop">{formatUsdPrice(cycle.trailStopPrice ?? null)}</strong>
+                    </span>
+                  ) : (
+                    <span>
+                      <em>Planned Buy</em>
+                      <strong className="btc15m-value-planned">{formatUsdPrice(cycle?.plannedBuyPrice ?? null)}</strong>
+                    </span>
+                  )}
+                  <span><em>Buy State</em><strong>{cycle?.buyBlockReason ?? cycle?.cyclePhase ?? "—"}</strong></span>
+                </div>
+                <div className="btc15m-cycle-grid">
+                  <div>
+                    <h3>Buy order</h3>
+                    {cycle?.buyOrder ? (
+                      <dl><dt>Side</dt><dd>{cycle.buyOrder.bettingSide.toUpperCase()}</dd><dt>Price</dt><dd>{formatUsdPrice(cycle.buyOrder.price)}</dd><dt>Size</dt><dd>{formatPosNum(cycle.buyOrder.size)}</dd><dt>Status</dt><dd>{cycle.buyOrder.status}</dd></dl>
+                    ) : <p className="status status-muted">none</p>}
+                  </div>
+                  <div>
+                    <h3>Position</h3>
+                    {cycle?.position ? (
+                      <dl><dt>Side</dt><dd>{cycle.position.bettingSide.toUpperCase()}</dd><dt>Shares</dt><dd>{formatPosNum(cycle.position.shares)}</dd><dt>Avg</dt><dd>{formatUsdPrice(cycle.position.avgEntryPrice)}</dd><dt>Cost</dt><dd>{formatUsd(cycle.position.costBasisUsd)}</dd>{showStop ? <><dt>Stop</dt><dd className="pnl-neg">{formatUsdPrice(cycle.trailStopPrice ?? null)}</dd></> : null}</dl>
+                    ) : showPlanned ? (
+                      <dl><dt>Planned Buy</dt><dd className="btc15m-value-gold">{formatUsdPrice(cycle?.plannedBuyPrice ?? null)}</dd></dl>
+                    ) : <p className="status status-muted">none</p>}
+                  </div>
+                  <div>
+                    <h3>Sell order</h3>
+                    {cycle?.sellOrder ? (
+                      <dl><dt>Price</dt><dd>{formatUsdPrice(cycle.sellOrder.price)}</dd><dt>Size</dt><dd>{formatPosNum(cycle.sellOrder.size)}</dd><dt>Status</dt><dd>{cycle.sellOrder.status}</dd><dt>Order</dt><dd>{cycle.sellOrder.orderId ?? "—"}</dd></dl>
+                    ) : <p className="status status-muted">none</p>}
+                  </div>
+                </div>
               </div>
-              <div className="btc15m-cycle-grid">
-                <div>
-                  <h3>Buy order</h3>
-                  {status?.cycle.buyOrder ? (
-                    <dl><dt>Side</dt><dd>{status.cycle.buyOrder.bettingSide.toUpperCase()}</dd><dt>Price</dt><dd>{formatUsdPrice(status.cycle.buyOrder.price)}</dd><dt>Size</dt><dd>{formatPosNum(status.cycle.buyOrder.size)}</dd><dt>Status</dt><dd>{status.cycle.buyOrder.status}</dd></dl>
-                  ) : <p className="status status-muted">none</p>}
-                </div>
-                <div>
-                  <h3>Position</h3>
-                  {status?.cycle.position ? (
-                    <dl><dt>Side</dt><dd>{status.cycle.position.bettingSide.toUpperCase()}</dd><dt>Shares</dt><dd>{formatPosNum(status.cycle.position.shares)}</dd><dt>Avg</dt><dd>{formatUsdPrice(status.cycle.position.avgEntryPrice)}</dd><dt>Cost</dt><dd>{formatUsd(status.cycle.position.costBasisUsd)}</dd>{showPositionStop ? <><dt>Stop</dt><dd className="pnl-neg">{formatUsdPrice(status.cycle.trailStopPrice ?? null)}</dd></> : null}</dl>
-                  ) : showPositionPlannedBuy ? (
-                    <dl><dt>Planned Buy</dt><dd className="btc15m-value-gold">{formatUsdPrice(status?.cycle.plannedBuyPrice ?? null)}</dd></dl>
-                  ) : <p className="status status-muted">none</p>}
-                </div>
-                <div>
-                  <h3>Sell order</h3>
-                  {status?.cycle.sellOrder ? (
-                    <dl><dt>Price</dt><dd>{formatUsdPrice(status.cycle.sellOrder.price)}</dd><dt>Size</dt><dd>{formatPosNum(status.cycle.sellOrder.size)}</dd><dt>Status</dt><dd>{status.cycle.sellOrder.status}</dd><dt>Order</dt><dd>{status.cycle.sellOrder.orderId ?? "—"}</dd></dl>
-                  ) : <p className="status status-muted">none</p>}
-                </div>
-              </div>
-            </div>
-            <div className="btc15m-side-col btc15m-side-col-placeholder">
-              <h3 className="btc15m-side-title btc15m-side-title-down">DOWN</h3>
-              <p className="status status-muted">Reserved for the DOWN side / additional blocks.</p>
-            </div>
+            ))}
           </div>
         </article>
 
@@ -307,23 +362,44 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
           </div>
           <div className="positions-table-wrap">
             <table className="positions-table btc15m-trade-table">
-              <thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Buy</th><th>Sell</th><th>Qty</th><th>PnL</th><th>Result</th><th>Exit</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Market</th>
+                  <th>Side</th>
+                  <th>Buy</th>
+                  <th>Sell</th>
+                  <th>Qty</th>
+                  <th>Cost</th>
+                  <th>Proceeds</th>
+                  <th>Fees</th>
+                  <th>PnL</th>
+                  <th>Result</th>
+                  <th>Exit</th>
+                </tr>
+              </thead>
               <tbody>
-                {trades.slice().reverse().map((trade) => (
-                  <tr key={trade.id} className={trade.result === "win" ? "btc15m-row-win" : "btc15m-row-loss"}>
-                    <td>{new Date(trade.closedAt).toLocaleString()}</td>
-                    <td>{trade.marketSlug.replace("btc-updown-15m-", "")}</td>
-                    <td>{trade.bettingSide.toUpperCase()}</td>
-                    <td>{formatUsdPrice(trade.buyPrice)}</td>
-                    <td>{formatUsdPrice(trade.sellPrice)}</td>
-                    <td>{formatPosNum(trade.shares)}</td>
-                    <td>{formatUsd(trade.pnlUsd)}</td>
-                    <td>{trade.result}</td>
-                    <td>{trade.exitReason}</td>
-                  </tr>
-                ))}
+                {trades.slice().reverse().map((trade) => {
+                  const totalFees = (trade.buyFeeUsd ?? 0) + (trade.sellFeeUsd ?? 0);
+                  return (
+                    <tr key={trade.id} className={trade.result === "win" ? "btc15m-row-win" : "btc15m-row-loss"}>
+                      <td>{new Date(trade.closedAt).toLocaleString()}</td>
+                      <td>{trade.marketSlug.replace("btc-updown-15m-", "")}</td>
+                      <td>{trade.bettingSide.toUpperCase()}</td>
+                      <td>{formatUsdPrice(trade.buyPrice)}</td>
+                      <td>{formatUsdPrice(trade.sellPrice)}</td>
+                      <td>{formatPosNum(trade.shares)}</td>
+                      <td>{trade.buyCostUsd !== undefined ? formatUsd(trade.buyCostUsd) : "—"}</td>
+                      <td>{trade.sellProceedsUsd !== undefined ? formatUsd(trade.sellProceedsUsd) : "—"}</td>
+                      <td>{trade.buyFeeUsd !== undefined || trade.sellFeeUsd !== undefined ? formatUsd(totalFees) : "—"}</td>
+                      <td>{formatUsd(trade.pnlUsd)}</td>
+                      <td>{trade.result}</td>
+                      <td>{trade.exitReason}</td>
+                    </tr>
+                  );
+                })}
                 {trades.length === 0 ? (
-                  <tr><td colSpan={9} className="status status-muted">No trades yet.</td></tr>
+                  <tr><td colSpan={12} className="status status-muted">No trades yet.</td></tr>
                 ) : null}
               </tbody>
             </table>

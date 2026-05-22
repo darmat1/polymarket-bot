@@ -61,10 +61,22 @@ export interface Btc15mAutoCompletedTrade {
   id: string;
   marketSlug: string;
   bettingSide: Btc15mAutoSide;
+  /** Avg fill price for the buy. LIVE: aggregated across all on-chain trades for the order. SIM: limit price. */
   buyPrice: number;
+  /** Avg fill price for the sell. Same semantics as buyPrice. */
   sellPrice: number;
+  /** Total shares traded. */
   shares: number;
+  /** P&L net of fees in LIVE. SIM: (sellPrice - buyPrice) * shares. */
   pnlUsd: number;
+  /** Total USD paid on buy (avg fill price × shares). Set in LIVE only. */
+  buyCostUsd?: number;
+  /** Total USD received on sell. Set in LIVE only. */
+  sellProceedsUsd?: number;
+  /** Total fees paid in USD across all buy trades. Set in LIVE only. */
+  buyFeeUsd?: number;
+  /** Total fees paid in USD across all sell trades. Set in LIVE only. */
+  sellFeeUsd?: number;
   result: "win" | "loss";
   exitReason: "target_sell" | "force_sell" | "resolved_unfilled";
   startedAt: number;
@@ -128,7 +140,8 @@ export interface Btc15mAutoBotStatus {
   currentBtcPrice: number | null;
   upPrice: number | null;
   downPrice: number | null;
-  cycle: Btc15mAutoCycleState;
+  upCycle: Btc15mAutoCycleState;
+  downCycle: Btc15mAutoCycleState;
   /** LIVE trades — persisted across restarts. */
   completedTrades: Btc15mAutoCompletedTrade[];
   analytics: Btc15mAutoAnalyticsSummary;
@@ -154,7 +167,8 @@ export interface Btc15mAutoRuntimeStateUpdate {
   market: Btc15mAutoMarketView | null;
   marketStartBtcPrice: number | null;
   currentBtcPrice: number | null;
-  cycle: Btc15mAutoCycleState;
+  upCycle: Btc15mAutoCycleState;
+  downCycle: Btc15mAutoCycleState;
   logs: Btc15mAutoLogEntry[];
   lastError: string | null;
 }

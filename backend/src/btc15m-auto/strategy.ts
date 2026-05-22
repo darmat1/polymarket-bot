@@ -52,6 +52,12 @@ export interface Btc15mAutoRuntime {
   clearIntervalFn?: typeof clearInterval;
   getOrder?: (orderId: string) => Promise<{ status: string; size_matched: string; original_size?: string } | null>;
   getOrderBook?: (tokenId: string) => Promise<{ bestBid: number | null; bestAsk: number | null }>;
+  /**
+   * Fetch the actual settled trades for an order. A single limit order on Polymarket can match
+   * across multiple counterparties at different prices — we aggregate these to compute the TRUE
+   * avg fill price and total fees (instead of trusting the limit price).
+   */
+  getTradesForOrder?: (orderId: string) => Promise<Array<{ price: number; size: number; feeRateBps: number; side: string }>>;
 }
 
 export interface Btc15mAutoBotStartOptions {
@@ -78,11 +84,13 @@ export class Btc15mAutoBot {
   private pendingActions: Promise<void>[] = [];
   private readonly bookSnapshots = new Map<string, { bestBid: number | null; bestAsk: number | null }>();
   private readonly subscribedTokens = new Set<string>();
-  private lastTrailUpdateMs = 0;
-  private lastOrderPollMs = 0;
+  // Per-side trail/poll throttles — UP and DOWN run as independent parallel cycles.
+  private readonly lastTrailUpdateMs: Record<Btc15mAutoSide, number> = { up: 0, down: 0 };
+  private readonly lastOrderPollMs: Record<Btc15mAutoSide, number> = { up: 0, down: 0 };
   // Poll every tick (effectively ~1-2s) — Polymarket WS misses fills, so we need fast polling
   // for instant phase transitions. The API call is cheap (single REST GET).
   private readonly orderPollIntervalMs = 1000;
+  private static readonly SIDES: readonly Btc15mAutoSide[] = ["up", "down"];
   private state: Btc15mAutoBotStatus;
 
   constructor(options: Btc15mAutoBotOptions) {
@@ -96,7 +104,8 @@ export class Btc15mAutoBot {
       this.state.currentBtcPrice = options.initialRuntimeState.currentBtcPrice ?? null;
       this.state.upPrice = null;
       this.state.downPrice = null;
-      this.state.cycle = options.initialRuntimeState.cycle ?? this.state.cycle;
+      this.state.upCycle = options.initialRuntimeState.upCycle ?? this.state.upCycle;
+      this.state.downCycle = options.initialRuntimeState.downCycle ?? this.state.downCycle;
       this.state.logs = options.initialRuntimeState.logs ?? [];
       this.state.lastError = options.initialRuntimeState.lastError ?? null;
       this.state.enginePhase = "stopped";
@@ -105,6 +114,35 @@ export class Btc15mAutoBot {
 
   getStatus(): Btc15mAutoBotStatus {
     return cloneStatus(this.state);
+  }
+
+  // --- Per-side accessors. UP and DOWN are fully independent parallel cycles sharing one budget. ---
+  private cycleFor(side: Btc15mAutoSide): Btc15mAutoCycleState {
+    return side === "up" ? this.state.upCycle : this.state.downCycle;
+  }
+
+  private setCycleFor(side: Btc15mAutoSide, cycle: Btc15mAutoCycleState): void {
+    if (side === "up") {
+      this.state.upCycle = cycle;
+    } else {
+      this.state.downCycle = cycle;
+    }
+  }
+
+  private priceFor(side: Btc15mAutoSide): number | null {
+    return side === "up" ? this.state.upPrice : this.state.downPrice;
+  }
+
+  private tokenFor(side: Btc15mAutoSide, market: Btc15mAutoMarketView): string {
+    return side === "up" ? market.upTokenId : market.downTokenId;
+  }
+
+  private sideForToken(tokenId: string): Btc15mAutoSide | null {
+    const market = this.state.market;
+    if (!market) return null;
+    if (tokenId === market.upTokenId) return "up";
+    if (tokenId === market.downTokenId) return "down";
+    return null;
   }
 
   async start(options: Btc15mAutoBotStartOptions = {}): Promise<void> {
@@ -177,7 +215,8 @@ export class Btc15mAutoBot {
       const resolvedMarket = await this.runtime.resolveMarket();
       if (!resolvedMarket) {
         this.state.market = null;
-        this.state.cycle = emptyCycle();
+        this.state.upCycle = emptyCycle();
+        this.state.downCycle = emptyCycle();
         this.touch();
         await this.refreshBudget();
         await this.persistRuntimeState();
@@ -197,44 +236,9 @@ export class Btc15mAutoBot {
       await this.refreshMarketPrices();
       await this.refreshBudget();
 
-      if (this.state.cycle.cyclePhase === "waiting_market") {
-        this.state.cycle.cyclePhase = "waiting_direction";
-      }
-
-      // Self-heal inconsistent phases caused by crashes/restarts/race conditions in prior sessions.
-      // Without these the bot would silently get stuck (reconcilePendingBuy bails when buyOrder is null,
-      // reconcileHolding bails when position is null, etc).
-      if (this.state.cycle.cyclePhase === "buy_pending" && !this.state.cycle.buyOrder) {
-        this.pushLog("Self-heal: cyclePhase=buy_pending but buyOrder=null — resetting to waiting_direction.", "warn");
-        this.state.cycle.cyclePhase = "waiting_direction";
-      }
-      if (this.state.cycle.cyclePhase === "holding" && !this.state.cycle.position) {
-        this.pushLog("Self-heal: cyclePhase=holding but position=null — resetting to waiting_direction.", "warn");
-        this.state.cycle.cyclePhase = "waiting_direction";
-      }
-      if (this.state.cycle.cyclePhase === "force_selling" && !this.state.cycle.position) {
-        this.pushLog("Self-heal: cyclePhase=force_selling but position=null — resetting to market_idle.", "warn");
-        this.state.cycle.cyclePhase = "market_idle";
-        this.state.cycle.sellOrder = null;
-      }
-
-      if (this.state.cycle.cyclePhase === "buy_pending") {
-        await this.reconcilePendingBuy(now);
-      }
-
-      if (this.state.cycle.cyclePhase === "holding") {
-        await this.reconcileHolding(now);
-      }
-
-      if (this.state.cycle.cyclePhase === "cycle_done") {
-        this.decideRepeat(now);
-        this.touch();
-        await this.persistRuntimeState();
-        return;
-      }
-
-      if (this.state.cycle.cyclePhase === "waiting_direction") {
-        await this.maybePlaceBuy();
+      // Run the full per-side pipeline for UP and DOWN independently (parallel cycles, shared budget).
+      for (const side of Btc15mAutoBot.SIDES) {
+        await this.runSidePipeline(side, now);
       }
 
       this.touch();
@@ -248,6 +252,47 @@ export class Btc15mAutoBot {
     }
   }
 
+  /** Run the full phase pipeline for one side (UP or DOWN). */
+  private async runSidePipeline(side: Btc15mAutoSide, now: number): Promise<void> {
+    const cycle = this.cycleFor(side);
+
+    if (cycle.cyclePhase === "waiting_market") {
+      cycle.cyclePhase = "waiting_direction";
+    }
+
+    // Self-heal inconsistent phases caused by crashes/restarts/race conditions in prior sessions.
+    if (cycle.cyclePhase === "buy_pending" && !cycle.buyOrder) {
+      this.pushLog(`[${side.toUpperCase()}] Self-heal: buy_pending but buyOrder=null — reset to waiting_direction.`, "warn");
+      cycle.cyclePhase = "waiting_direction";
+    }
+    if (cycle.cyclePhase === "holding" && !cycle.position) {
+      this.pushLog(`[${side.toUpperCase()}] Self-heal: holding but position=null — reset to waiting_direction.`, "warn");
+      cycle.cyclePhase = "waiting_direction";
+    }
+    if (cycle.cyclePhase === "force_selling" && !cycle.position) {
+      this.pushLog(`[${side.toUpperCase()}] Self-heal: force_selling but position=null — reset to market_idle.`, "warn");
+      cycle.cyclePhase = "market_idle";
+      cycle.sellOrder = null;
+    }
+
+    if (cycle.cyclePhase === "buy_pending") {
+      await this.reconcilePendingBuy(side, now);
+    }
+
+    if (this.cycleFor(side).cyclePhase === "holding") {
+      await this.reconcileHolding(side, now);
+    }
+
+    if (this.cycleFor(side).cyclePhase === "cycle_done") {
+      this.decideRepeat(side, now);
+      return;
+    }
+
+    if (this.cycleFor(side).cyclePhase === "waiting_direction") {
+      await this.maybePlaceBuy(side);
+    }
+  }
+
   private async switchMarket(market: Btc15mAutoMarketView): Promise<void> {
     await this.cancelOpenOrders("market-switch");
     this.state.market = market;
@@ -255,19 +300,24 @@ export class Btc15mAutoBot {
     this.state.currentBtcPrice = null;
     this.state.upPrice = null;
     this.state.downPrice = null;
-    this.state.cycle = emptyCycle();
-    this.state.cycle.cyclePhase = "waiting_direction";
+    for (const side of Btc15mAutoBot.SIDES) {
+      const fresh = emptyCycle();
+      fresh.cyclePhase = "waiting_direction";
+      this.setCycleFor(side, fresh);
+    }
     this.pushLog(`Switched to market ${market.slug}.`, "info");
     this.touch();
   }
 
-  private async maybePlaceBuy(): Promise<void> {
+  private async maybePlaceBuy(side: Btc15mAutoSide): Promise<void> {
     const market = this.state.market;
     const start = this.state.marketStartBtcPrice;
     const current = this.state.currentBtcPrice;
     if (!market || start === null || current === null) {
       return;
     }
+    const cycle = this.cycleFor(side);
+    const tag = side.toUpperCase();
 
     // Time-gating: don't open a new cycle if we're already in the force-sell zone
     // (we'd just buy and immediately force-sell at a loss) or below the repeat threshold
@@ -279,38 +329,38 @@ export class Btc15mAutoBot {
     const minRequiredMs = Math.max(repeatThresholdMs, forceSellThresholdMs);
     if (timeToEndMs < minRequiredMs) {
       // Mark idle so we don't keep retrying every tick.
-      this.state.cycle.cyclePhase = "market_idle";
-      this.pushLog(`Skipping new cycle: ${(timeToEndMs / 60_000).toFixed(1)}min left < required ${(minRequiredMs / 60_000).toFixed(1)}min (repeat=${this.config.repeatThresholdMin}, force-sell=${this.config.forceSellThresholdMin}).`, "info");
+      cycle.cyclePhase = "market_idle";
+      this.pushLog(`[${tag}] Skipping new cycle: ${(timeToEndMs / 60_000).toFixed(1)}min left < required ${(minRequiredMs / 60_000).toFixed(1)}min.`, "info");
       return;
     }
 
-    const delta = current - start;
-    if (Math.abs(delta) <= this.config.neutralZoneUsd) {
-      return;
-    }
+    // The btc15m-auto strategy is purely orderbook-driven (planned-buy anchored to lowest seen
+    // marketPrice + trailDist on each token, per side). It does NOT need to gate on BTC delta —
+    // UP and DOWN cycles operate independently from the spot price direction. The neutralZoneUsd
+    // config remains on the type for backward-compatibility with other bots / persisted state
+    // but is intentionally unused here.
+    const bettingSide = side;
+    const tokenId = this.tokenFor(side, market);
 
-    const bettingSide: Btc15mAutoSide = "up";
-    const tokenId = market.upTokenId;
-
-    const marketPrice = this.state.upPrice;
+    const marketPrice = this.priceFor(side);
     if (marketPrice === null) {
       return;
     }
 
     if (marketPrice < this.config.minBuyPrice) {
-      this.state.cycle.plannedBuyPrice = null;
-      this.state.cycle.plannedBuyAnchorPrice = null;
-      this.state.cycle.buyBlockReason = "low_range";
-      this.state.cycle.buyBlockReferencePrice = null;
+      cycle.plannedBuyPrice = null;
+      cycle.plannedBuyAnchorPrice = null;
+      cycle.buyBlockReason = "low_range";
+      cycle.buyBlockReferencePrice = null;
       return;
     }
 
     if (marketPrice > this.config.maxBuyPrice) {
-      const highRef = Math.max(this.state.cycle.buyBlockReferencePrice ?? marketPrice, marketPrice);
-      this.state.cycle.buyBlockReason = "high_wait_pullback";
-      this.state.cycle.buyBlockReferencePrice = highRef;
-      this.state.cycle.plannedBuyPrice = null;
-      this.state.cycle.plannedBuyAnchorPrice = null;
+      const highRef = Math.max(cycle.buyBlockReferencePrice ?? marketPrice, marketPrice);
+      cycle.buyBlockReason = "high_wait_pullback";
+      cycle.buyBlockReferencePrice = highRef;
+      cycle.plannedBuyPrice = null;
+      cycle.plannedBuyAnchorPrice = null;
       if (highRef - marketPrice < this.config.trailStep) {
         return;
       }
@@ -319,54 +369,79 @@ export class Btc15mAutoBot {
       }
     }
 
-    const previousAnchor = this.state.cycle.plannedBuyAnchorPrice;
+    const previousAnchor = cycle.plannedBuyAnchorPrice;
     const hasAnchor = previousAnchor !== null && previousAnchor !== undefined;
     const nextAnchor = !hasAnchor || marketPrice < previousAnchor
       ? marketPrice
       : previousAnchor;
-    const previousPlannedBuyPrice = this.state.cycle.plannedBuyPrice;
+    const previousPlannedBuyPrice = cycle.plannedBuyPrice;
     const plannedBuyPrice = roundUsd(nextAnchor + this.config.trailDist);
     const guardedPlannedBuyPrice = previousPlannedBuyPrice !== null && previousPlannedBuyPrice !== undefined
       ? Math.min(previousPlannedBuyPrice, plannedBuyPrice)
       : plannedBuyPrice;
 
-    this.state.cycle.buyBlockReason = null;
-    this.state.cycle.buyBlockReferencePrice = null;
+    cycle.buyBlockReason = null;
+    cycle.buyBlockReferencePrice = null;
 
     if (!hasAnchor || marketPrice <= nextAnchor) {
-      this.state.cycle.plannedBuyAnchorPrice = nextAnchor;
-      this.state.cycle.plannedBuyPrice = guardedPlannedBuyPrice;
+      cycle.plannedBuyAnchorPrice = nextAnchor;
+      cycle.plannedBuyPrice = guardedPlannedBuyPrice;
       return;
     }
 
     if (marketPrice < guardedPlannedBuyPrice) {
-      this.state.cycle.plannedBuyAnchorPrice = nextAnchor;
-      this.state.cycle.plannedBuyPrice = guardedPlannedBuyPrice;
+      cycle.plannedBuyAnchorPrice = nextAnchor;
+      cycle.plannedBuyPrice = guardedPlannedBuyPrice;
       return;
     }
 
     const stake = roundUsd(this.config.shares * guardedPlannedBuyPrice);
     try {
-      await this.runtime.budget.reserve(stake, "btc15mAuto-cycle-buy");
+      await this.runtime.budget.reserve(stake, `btc15mAuto-${side}-cycle-buy`);
     } catch (error) {
-      this.state.enginePhase = "auto_stopped";
-      this.state.lastError = `Budget exhausted. Stopping. ${error instanceof Error ? error.message : String(error)}`;
-      this.pushLog(this.state.lastError, "error");
-      this.stopLoopOnly();
+      // With two parallel sides sharing one budget, a reserve failure here can mean either:
+      //  (a) the OTHER side just grabbed the last slice (transient — will free up after that side
+      //      consumes/releases/sells), OR
+      //  (b) real exhaustion (every cycle lost and the pool is drained).
+      // Auto-stopping on (a) would force the user to manually restart after every contention.
+      // Instead: log and skip THIS tick. The side stays in waiting_direction and retries next tick.
+      // If it's truly (b), the warning will repeat persistently and the user can stop manually.
+      const msg = error instanceof Error ? error.message : String(error);
+      this.pushLog(`[${tag}] Skip buy: budget reserve failed (${msg}). Will retry next tick.`, "warn");
       return;
     }
 
-    const response = await this.runtime.placeLimitOrder({
-      tokenId,
-      side: "buy",
-      price: guardedPlannedBuyPrice,
-      size: this.config.shares,
-    });
-    const orderId = extractOrderId(response) ?? `btc15mAuto-buy:${market.slug}:${now}`;
-    this.state.cycle = {
-      ...this.state.cycle,
+    let response: unknown;
+    try {
+      response = await this.runtime.placeLimitOrder({
+        tokenId,
+        side: "buy",
+        price: guardedPlannedBuyPrice,
+        size: this.config.shares,
+      });
+    } catch (error) {
+      // Polymarket rejected the order (or the request failed). Release the reservation we made
+      // above so the budget doesn't leak, and stay in waiting_direction so the next tick retries.
+      const msg = error instanceof Error ? error.message : String(error);
+      await this.runtime.budget.release(stake, `btc15mAuto-${side}-place-failed`);
+      this.pushLog(`[${tag}] BUY placement failed: ${msg}. Released $${stake.toFixed(2)} reserve.`, "error");
+      return;
+    }
+    const extractedOrderId = extractOrderId(response);
+    // If Polymarket accepted the order (success validation passed in placeLimitOrder) but the
+    // response shape doesn't yield a parseable orderID, abort instead of inventing a sentinel.
+    // A sentinel makes polling/WS detection impossible (no real ID to match against), which
+    // historically led to phantom positions when polling 404'd on the sentinel.
+    if (!extractedOrderId) {
+      await this.runtime.budget.release(stake, `btc15mAuto-${side}-no-order-id`);
+      this.pushLog(`[${tag}] BUY response had no orderID. Released reserve, no local tracking.`, "error");
+      return;
+    }
+    const orderId = extractedOrderId;
+    this.setCycleFor(side, {
+      ...cycle,
       cyclePhase: "buy_pending",
-      cycleStartedAt: this.state.cycle.cycleStartedAt ?? now,
+      cycleStartedAt: cycle.cycleStartedAt ?? now,
       buyOrder: {
         id: randomUUID(),
         orderId,
@@ -385,50 +460,54 @@ export class Btc15mAutoBot {
       plannedBuyAnchorPrice: null,
       buyBlockReason: null,
       buyBlockReferencePrice: null,
-    };
-    this.pushLog(`BUY ${bettingSide.toUpperCase()} @ ${formatPrice(plannedBuyPrice)} submitted (${orderId}).`, "info");
+    });
+    this.pushLog(`[${tag}] BUY @ ${formatPrice(guardedPlannedBuyPrice)} submitted (${orderId}).`, "info");
     if (this.dryRun) {
-      this.subscribeBook(tokenId, "buy");
+      this.subscribeBook(tokenId);
     }
   }
 
-  private async reconcilePendingBuy(now: number): Promise<void> {
+  private async reconcilePendingBuy(side: Btc15mAutoSide, now: number): Promise<void> {
     const market = this.state.market;
-    const buyOrder = this.state.cycle.buyOrder;
+    const cycle = this.cycleFor(side);
+    const buyOrder = cycle.buyOrder;
     if (!market || !buyOrder) {
       return;
     }
+    const tag = side.toUpperCase();
 
-    // Polling fallback FIRST: check order status via API every 5s to catch missed WS fills.
+    // Polling fallback FIRST: check order status via API to catch missed WS fills.
     // Must run before any cancel logic so we don't discard already-filled orders.
     if (!this.dryRun && this.runtime.getOrder && buyOrder.orderId) {
-      if (now - this.lastOrderPollMs >= this.orderPollIntervalMs) {
-        this.lastOrderPollMs = now;
+      if (now - this.lastOrderPollMs[side] >= this.orderPollIntervalMs) {
+        this.lastOrderPollMs[side] = now;
         try {
           const orderData = await this.runtime.getOrder(buyOrder.orderId);
           if (orderData) {
             const statusLower = (orderData.status ?? "").toLowerCase();
             const matched = parseFloat(orderData.size_matched) || 0;
             const original = parseFloat(orderData.original_size ?? String(buyOrder.size)) || buyOrder.size;
-            // Polymarket sometimes keeps status="live" even after full match.
-            // Treat as filled if size_matched >= original_size, OR status is matched/filled,
-            // OR the order is gone (not_found sentinel from runtime).
             const fullyFilled = matched >= original - 1e-9 && matched > 0;
             const statusFilled = isFilledStatus(statusLower);
-            const statusNotFound = statusLower === "not_found";
-
-            if (statusFilled || fullyFilled || statusNotFound) {
+            // NOTE: We deliberately do NOT treat a "not_found" (404) response as a fill anymore.
+            // Polymarket returns 404 in TWO very different cases:
+            //   (a) order was matched and archived → really filled
+            //   (b) order was rejected at placement or never existed → NOT filled
+            // (b) would cause phantom positions in the UI (bot thinks it bought, Polymarket has
+            // nothing). Since `success` is now validated at placement time, a missing order
+            // here means it never existed → don't fake a fill. We rely on size_matched and
+            // explicit status only.
+            if (statusFilled || fullyFilled) {
               const filledSize = matched > 0 ? matched : buyOrder.size;
-              this.pushLog(`Buy fill detected via polling (status: ${orderData.status}, matched: ${matched}/${original}).`, "info");
-              await this.transitionBuyFilledToHolding(filledSize);
+              this.pushLog(`[${tag}] Buy fill detected via polling (status: ${orderData.status}, matched: ${matched}/${original}).`, "info");
+              await this.transitionBuyFilledToHolding(side, filledSize);
               return; // Already transitioned — skip cancel checks below
-            } else if (isFailureStatus(statusLower)) {
-              this.pushLog(`Buy order failed via polling (status: ${orderData.status}).`, "warn");
-              await this.cancelBuy(`poll-${orderData.status}`);
-              this.state.cycle.cyclePhase = "waiting_direction";
+            } else if (isFailureStatus(statusLower) || statusLower === "not_found") {
+              this.pushLog(`[${tag}] Buy order ${statusLower === "not_found" ? "not found on Polymarket" : "failed"} (status: ${orderData.status}). Cancelling local tracking.`, "warn");
+              await this.cancelBuy(side, `poll-${orderData.status}`);
+              cycle.cyclePhase = "waiting_direction";
               return;
             }
-            // If still open/partial - fall through to direction/timing checks
           }
         } catch {
           // polling is best-effort, swallow errors
@@ -436,50 +515,33 @@ export class Btc15mAutoBot {
       }
     }
 
-    const liveUpPrice = this.state.upPrice;
-    if (liveUpPrice !== null && liveUpPrice > buyOrder.price) {
-      await this.cancelBuy(`missed-breakout (${liveUpPrice.toFixed(2)} > ${buyOrder.price.toFixed(2)})`);
-      this.state.cycle.cyclePhase = "waiting_direction";
+    const livePrice = this.priceFor(side);
+    if (livePrice !== null && livePrice > buyOrder.price) {
+      await this.cancelBuy(side, `missed-breakout (${livePrice.toFixed(2)} > ${buyOrder.price.toFixed(2)})`);
+      cycle.cyclePhase = "waiting_direction";
       return;
     }
 
     const timeToEndMs = market.endTimeMs - now;
-    if (timeToEndMs < this.config.forceSellThresholdMin * 60_000 && !this.state.cycle.position) {
-      await this.cancelBuy("late-market");
-      this.state.cycle.cyclePhase = "market_idle";
+    if (timeToEndMs < this.config.forceSellThresholdMin * 60_000 && !cycle.position) {
+      await this.cancelBuy(side, "late-market");
+      cycle.cyclePhase = "market_idle";
       return;
     }
 
-    const start = this.state.marketStartBtcPrice;
-    const current = this.state.currentBtcPrice;
-    if (start === null || current === null) {
-      return;
-    }
-
-    const delta = current - start;
-    const expectedSide: Btc15mAutoSide | null = Math.abs(delta) <= this.config.neutralZoneUsd
-      ? null
-      : "up";
-    if (expectedSide !== buyOrder.bettingSide) {
-      const flipReason = expectedSide === null
-        ? `neutral-zone (Δ=${delta.toFixed(2)})`
-        : `direction-flip (Δ=${delta.toFixed(2)}, was=${buyOrder.bettingSide}, now=${expectedSide})`;
-      this.pushLog(`Direction reset: ${flipReason}.`, "warn");
-      await this.cancelBuy(flipReason);
-      this.state.cycle.cyclePhase = "waiting_direction";
-      this.state.cycle.plannedBuyPrice = null;
-      this.state.cycle.plannedBuyAnchorPrice = null;
-      this.state.cycle.buyBlockReason = null;
-      this.state.cycle.buyBlockReferencePrice = null;
-    }
+    // btc15m-auto is orderbook-driven, not BTC-direction-driven — we do not cancel a pending buy
+    // just because BTC drifted into a neutral zone. The buy stays armed until either filled,
+    // breakout (`livePrice > buyOrder.price` handled above), or the late-market cutoff.
   }
 
-  private async reconcileHolding(now: number): Promise<void> {
+  private async reconcileHolding(side: Btc15mAutoSide, now: number): Promise<void> {
     const market = this.state.market;
-    const position = this.state.cycle.position;
+    const cycle = this.cycleFor(side);
+    const position = cycle.position;
     if (!market || !position) {
       return;
     }
+    const tag = side.toUpperCase();
 
     const snap = this.bookSnapshots.get(position.tokenId);
     let bestBid = snap?.bestBid ?? null;
@@ -493,41 +555,39 @@ export class Btc15mAutoBot {
         bestBid = book.bestBid;
         bestAsk = book.bestAsk;
       } catch (error) {
-        this.pushLog(`getOrderBook failed during holding: ${error instanceof Error ? error.message : String(error)}`, "warn");
+        this.pushLog(`[${tag}] getOrderBook failed during holding: ${error instanceof Error ? error.message : String(error)}`, "warn");
       }
     }
 
     const isLateForceSellWindow = timeToEndMs < this.config.forceSellThresholdMin * 60_000;
 
     // --- TRAILING STOP LOGIC ---
-    // Trail off the SAME price the UI shows as "UP PRICE" (bestAsk-preferred), so STOP SELL is
-    // always exactly trailDist below UP PRICE at a fresh high. Previously the trail tracked
-    // bestBid while the UI showed bestAsk — the bid/ask spread made the visible gap 0.03 instead
-    // of the configured 0.02, and the stop appeared not to follow the price.
+    // Trail off the SAME price the UI shows for this side (bestAsk-preferred), so STOP SELL is
+    // always exactly trailDist below the side price at a fresh high.
     const refPrice = bestAsk ?? bestBid;
-    const highWaterMark = this.state.cycle.highWaterMark ?? position.avgEntryPrice;
+    const highWaterMark = cycle.highWaterMark ?? position.avgEntryPrice;
     if (refPrice !== null && refPrice > highWaterMark) {
       const cooldownOk =
-        this.dryRun || now - this.lastTrailUpdateMs >= this.config.trailUpdateIntervalSec * 1000;
+        this.dryRun || now - this.lastTrailUpdateMs[side] >= this.config.trailUpdateIntervalSec * 1000;
       if (cooldownOk) {
-        this.state.cycle.highWaterMark = refPrice;
+        cycle.highWaterMark = refPrice;
         const nextTrailStopPrice = roundUsd(refPrice - this.config.trailDist);
-        const currentTrailStopPrice = this.state.cycle.trailStopPrice;
-        this.state.cycle.trailStopPrice = currentTrailStopPrice !== null && currentTrailStopPrice !== undefined
+        const currentTrailStopPrice = cycle.trailStopPrice;
+        cycle.trailStopPrice = currentTrailStopPrice !== null && currentTrailStopPrice !== undefined
           ? Math.max(currentTrailStopPrice, nextTrailStopPrice)
           : nextTrailStopPrice;
-        this.lastTrailUpdateMs = now;
-        this.pushLog(`Trail stop moved to ${formatPrice(this.state.cycle.trailStopPrice)} (UP price ${formatPrice(refPrice)}).`, "info");
+        this.lastTrailUpdateMs[side] = now;
+        this.pushLog(`[${tag}] Trail stop moved to ${formatPrice(cycle.trailStopPrice)} (price ${formatPrice(refPrice)}).`, "info");
       }
     }
 
-    const trailStopPrice = this.state.cycle.trailStopPrice;
+    const trailStopPrice = cycle.trailStopPrice;
     if (!isLateForceSellWindow && bestBid !== null && trailStopPrice !== null && bestBid <= trailStopPrice) {
       const liveExitPrice = trailStopPrice;
-      this.pushLog(`Trail stop triggered at ${formatPrice(trailStopPrice)} (live bid ${formatPrice(bestBid)}).`, "warn");
-      await this.placeSell(liveExitPrice, "holding");
+      this.pushLog(`[${tag}] Trail stop triggered at ${formatPrice(trailStopPrice)} (live bid ${formatPrice(bestBid)}).`, "warn");
+      await this.placeSell(side, liveExitPrice, "holding");
       if (this.dryRun) {
-        await this.handleSellFill(liveExitPrice, "target_sell");
+        await this.handleSellFill(side, liveExitPrice, "target_sell");
       }
       return;
     }
@@ -536,35 +596,30 @@ export class Btc15mAutoBot {
     if (!isLateForceSellWindow) {
       return;
     }
-    // Fetch the freshest bid synchronously — WS bookSnapshots may be stale/empty
-    // (especially if we just subscribed). Without a live bid we'd fall through to $0.01,
-    // which often sits unfilled because no one is bidding even that low.
     let liveBid: number | null = bestBid;
     if (!this.dryRun && this.runtime.getOrderBook) {
       try {
         const book = await this.runtime.getOrderBook(position.tokenId);
         if (book.bestBid !== null && book.bestBid > 0) {
           liveBid = book.bestBid;
-          // Also refresh our cache so the next tick is consistent
           this.bookSnapshots.set(position.tokenId, { bestBid: book.bestBid, bestAsk: book.bestAsk });
         }
       } catch (error) {
-        this.pushLog(`getOrderBook failed during force-sell: ${error instanceof Error ? error.message : String(error)}`, "warn");
+        this.pushLog(`[${tag}] getOrderBook failed during force-sell: ${error instanceof Error ? error.message : String(error)}`, "warn");
       }
     }
-    // Sell INTO the live bid (price = bestBid means our SELL crosses the spread → instant fill).
-    // If there's no bid at all, fall back to $0.01 (lowest tick) — at least we tried.
     const forceSellPrice = liveBid !== null && liveBid > 0 ? liveBid : 0.01;
-    await this.cancelSellOrderApi();
-    this.pushLog(`Force-sell at ${formatPrice(forceSellPrice)} (live bid: ${liveBid ?? "n/a"}).`, "warn");
-    await this.placeSell(forceSellPrice, "force_selling");
+    await this.cancelSellOrderApi(side);
+    this.pushLog(`[${tag}] Force-sell at ${formatPrice(forceSellPrice)} (live bid: ${liveBid ?? "n/a"}).`, "warn");
+    await this.placeSell(side, forceSellPrice, "force_selling");
     if (this.dryRun) {
-      await this.handleSellFill(forceSellPrice, "force_sell");
+      await this.handleSellFill(side, forceSellPrice, "force_sell");
     }
   }
 
-  private async cancelSellOrderApi(): Promise<void> {
-    const sellOrder = this.state.cycle.sellOrder;
+  private async cancelSellOrderApi(side: Btc15mAutoSide): Promise<void> {
+    const cycle = this.cycleFor(side);
+    const sellOrder = cycle.sellOrder;
     if (!sellOrder) return;
     if (sellOrder.orderId) {
       try {
@@ -572,7 +627,7 @@ export class Btc15mAutoBot {
       } catch {
       }
     }
-    this.state.cycle.sellOrder = null;
+    cycle.sellOrder = null;
   }
 
   private async getFreshBookSnapshot(tokenId: string): Promise<{ previous: { bestBid: number | null; bestAsk: number | null } | null; current: { bestBid: number | null; bestAsk: number | null } }> {
@@ -590,31 +645,34 @@ export class Btc15mAutoBot {
     return { previous, current: previous ?? { bestBid: null, bestAsk: null } };
   }
 
-  private decideRepeat(now: number): void {
+  private decideRepeat(side: Btc15mAutoSide, now: number): void {
     const market = this.state.market;
     if (!market) {
-      this.state.cycle = emptyCycle();
+      this.setCycleFor(side, emptyCycle());
       return;
     }
+    const cycle = this.cycleFor(side);
 
     // Safety: never repeat if position or sell order still open
-    if (this.state.cycle.position !== null || this.state.cycle.sellOrder !== null) {
-      this.pushLog("Cycle not fully closed; skipping repeat (safety guard).", "warn");
-      this.state.cycle.cyclePhase = "market_idle";
+    if (cycle.position !== null || cycle.sellOrder !== null) {
+      this.pushLog(`[${side.toUpperCase()}] Cycle not fully closed; skipping repeat (safety guard).`, "warn");
+      cycle.cyclePhase = "market_idle";
       return;
     }
 
     if (market.endTimeMs - now > this.config.repeatThresholdMin * 60_000) {
-      this.state.cycle = emptyCycle();
-      this.state.cycle.cyclePhase = "waiting_direction";
+      const fresh = emptyCycle();
+      fresh.cyclePhase = "waiting_direction";
+      this.setCycleFor(side, fresh);
       return;
     }
 
-    this.state.cycle.cyclePhase = "market_idle";
+    cycle.cyclePhase = "market_idle";
   }
 
-  private async cancelBuy(reason: string): Promise<void> {
-    const buyOrder = this.state.cycle.buyOrder;
+  private async cancelBuy(side: Btc15mAutoSide, reason: string): Promise<void> {
+    const cycle = this.cycleFor(side);
+    const buyOrder = cycle.buyOrder;
     if (!buyOrder) {
       return;
     }
@@ -630,130 +688,217 @@ export class Btc15mAutoBot {
     await this.runtime.budget.release(buyOrder.reservedBudget, reason);
     this.runtime.onMarketBookUnsubscribe(buyOrder.tokenId);
     this.subscribedTokens.delete(buyOrder.tokenId);
-    this.state.cycle.buyOrder = null;
-    this.pushLog(`BUY cancelled (${reason}).`, "warn");
+    cycle.buyOrder = null;
+    this.pushLog(`[${side.toUpperCase()}] BUY cancelled (${reason}).`, "warn");
   }
 
+  /** Cancel any open buy/sell orders on BOTH sides (used on stop / market-switch). */
   private async cancelOpenOrders(reason: string): Promise<void> {
-    const { buyOrder, sellOrder } = this.state.cycle;
-    if (buyOrder) {
-      await this.cancelBuy(reason);
-    }
-    if (sellOrder?.orderId) {
-      try {
-        await this.runtime.cancelOrder(sellOrder.orderId);
-      } catch {
-        // best effort
+    for (const side of Btc15mAutoBot.SIDES) {
+      const cycle = this.cycleFor(side);
+      const { buyOrder, sellOrder } = cycle;
+      if (buyOrder) {
+        await this.cancelBuy(side, reason);
+      }
+      if (sellOrder?.orderId) {
+        try {
+          await this.runtime.cancelOrder(sellOrder.orderId);
+        } catch {
+          // best effort
+        }
+      }
+      if (sellOrder) {
+        this.runtime.onMarketBookUnsubscribe(sellOrder.tokenId);
+        this.subscribedTokens.delete(sellOrder.tokenId);
+        cycle.sellOrder = null;
       }
     }
-    if (sellOrder) {
-      this.runtime.onMarketBookUnsubscribe(sellOrder.tokenId);
-      this.subscribedTokens.delete(sellOrder.tokenId);
-    }
   }
 
-  private subscribeBook(tokenId: string, _mode: "buy" | "sell"): void {
+  private subscribeBook(tokenId: string): void {
     if (this.subscribedTokens.has(tokenId)) {
       return;
     }
     this.runtime.onMarketBookSubscribe(tokenId, (bestBid, bestAsk) => {
       this.bookSnapshots.set(tokenId, { bestBid, bestAsk });
+      // In LIVE mode the book listener is ONLY used to populate bookSnapshots (for the trailing
+      // stop calculation in reconcileHolding). It must NOT auto-trigger fills — real fills come
+      // from the Polymarket user-WS channel and the polling fallback. Auto-firing transitionBuy
+      // or handleSellFill on book crossings would mark the position closed locally while the
+      // actual Polymarket order is still open → bot state diverges from reality.
+      if (!this.dryRun) return;
 
-      const buyOrder = this.state.cycle.buyOrder;
+      const side = this.sideForToken(tokenId);
+      if (!side) return;
+      const cycle = this.cycleFor(side);
+
+      const buyOrder = cycle.buyOrder;
       if (
         buyOrder &&
-        this.state.cycle.cyclePhase === "buy_pending" &&
+        cycle.cyclePhase === "buy_pending" &&
         buyOrder.tokenId === tokenId &&
         bestAsk !== null &&
         bestAsk <= buyOrder.price
       ) {
-        this.trackAction(this.transitionBuyFilledToHolding(buyOrder.size));
+        this.trackAction(this.transitionBuyFilledToHolding(side, buyOrder.size));
         return;
       }
 
-      const sellOrder = this.state.cycle.sellOrder;
+      const sellOrder = cycle.sellOrder;
       if (
         sellOrder &&
-        (this.state.cycle.cyclePhase === "holding" || this.state.cycle.cyclePhase === "force_selling") &&
+        (cycle.cyclePhase === "holding" || cycle.cyclePhase === "force_selling") &&
         sellOrder.tokenId === tokenId &&
         bestBid !== null &&
         bestBid >= sellOrder.price
       ) {
-        const exitReason = this.state.cycle.cyclePhase === "force_selling" ? "force_sell" : "target_sell";
-        this.trackAction(this.handleSellFill(sellOrder.price, exitReason));
+        const exitReason = cycle.cyclePhase === "force_selling" ? "force_sell" : "target_sell";
+        this.trackAction(this.handleSellFill(side, sellOrder.price, exitReason));
       }
     });
     this.subscribedTokens.add(tokenId);
   }
 
-  private async transitionBuyFilledToHolding(filledSize: number): Promise<void> {
+  private async transitionBuyFilledToHolding(side: Btc15mAutoSide, filledSize: number): Promise<void> {
     // Atomic capture-and-transition BEFORE any await. Concurrent WS fill events + polling
     // can both trigger this for the same buy — without atomic clearing both would consume()
     // budget twice and double-create the position.
-    const buyOrder = this.state.cycle.buyOrder;
-    if (!buyOrder || this.state.cycle.cyclePhase !== "buy_pending") {
+    const cycle = this.cycleFor(side);
+    const buyOrder = cycle.buyOrder;
+    if (!buyOrder || cycle.cyclePhase !== "buy_pending") {
       return;
     }
-    const shares = normalizeSize(Math.min(filledSize, buyOrder.size));
+    let shares = normalizeSize(Math.min(filledSize, buyOrder.size));
+    let avgPrice = buyOrder.price;
+    let buyFeeUsd = 0;
     // Move to "holding" synchronously so concurrent callers see phase != "buy_pending" and bail.
-    this.state.cycle.cyclePhase = "holding";
-    this.state.cycle.buyOrder = null;
-    const consumed = roundUsd(shares * buyOrder.price);
-    this.state.cycle.position = {
-      bettingSide: buyOrder.bettingSide,
-      tokenId: buyOrder.tokenId,
-      shares,
-      avgEntryPrice: buyOrder.price,
-      costBasisUsd: consumed,
-    };
-    this.state.cycle.highWaterMark = buyOrder.price;
-    this.state.cycle.trailStopPrice = roundUsd(Math.max(0.01, buyOrder.price - this.config.trailDist));
+    cycle.cyclePhase = "holding";
+    const tokenId = buyOrder.tokenId;
+    const orderIdForTrades = buyOrder.orderId;
+    cycle.buyOrder = null;
 
-    await this.runtime.budget.consume(consumed, "btc15mAuto-buy-filled");
-    const unfilledBudget = roundUsd(Math.max(0, buyOrder.size - shares) * buyOrder.price);
-    if (unfilledBudget > 0) {
-      await this.runtime.budget.release(unfilledBudget, "btc15mAuto-partial-unfilled");
+    // In LIVE, fetch real trades for this order to get the TRUE avg fill price and fees.
+    // A single limit order can match across multiple counterparties at different prices, so
+    // trusting buyOrder.price gives misleading P&L. SIM has no real fills — skip.
+    if (!this.dryRun && orderIdForTrades && this.runtime.getTradesForOrder) {
+      const aggregated = await this.aggregateTrades(orderIdForTrades, side, "BUY");
+      if (aggregated && aggregated.totalShares > 0) {
+        shares = roundShares(aggregated.totalShares);
+        avgPrice = aggregated.avgPrice;
+        buyFeeUsd = aggregated.totalFeeUsd;
+        this.pushLog(`[${side.toUpperCase()}] BUY real fill: ${shares.toFixed(2)} sh × $${avgPrice.toFixed(4)} avg, fees $${buyFeeUsd.toFixed(4)}.`, "info");
+      }
     }
 
-    // Re-register the book listener with mode="sell" — old listener was mode="buy" (captured in closure)
-    // and ignored sell-side trailing in dryRun. In LIVE we need the subscription alive for bookSnapshots
-    // so reconcileHolding can read bestBid for the trailing stop.
-    this.runtime.onMarketBookUnsubscribe(buyOrder.tokenId);
-    this.subscribedTokens.delete(buyOrder.tokenId);
-    this.pushLog(`BUY filled. Holding ${formatSize(shares)} ${buyOrder.bettingSide.toUpperCase()} shares.`, "success");
-    // Always re-subscribe for sell-side tracking (was previously dryRun-only — broke trailing in LIVE).
-    this.subscribeBook(buyOrder.tokenId, "sell");
+    const consumed = roundUsd(shares * avgPrice + buyFeeUsd);
+    cycle.position = {
+      bettingSide: buyOrder.bettingSide,
+      tokenId,
+      shares,
+      avgEntryPrice: roundPrice(avgPrice),
+      costBasisUsd: consumed,
+    };
+    // Track buy fee on the position so handleSellFill can include it in the final P&L.
+    (cycle.position as { buyFeeUsd?: number }).buyFeeUsd = buyFeeUsd;
+    cycle.highWaterMark = avgPrice;
+    cycle.trailStopPrice = roundUsd(Math.max(0.01, avgPrice - this.config.trailDist));
+
+    await this.runtime.budget.consume(consumed, `btc15mAuto-${side}-buy-filled`);
+    const reservedAmount = roundUsd(buyOrder.size * buyOrder.price);
+    const unfilledBudget = roundUsd(Math.max(0, reservedAmount - consumed));
+    if (unfilledBudget > 0) {
+      await this.runtime.budget.release(unfilledBudget, `btc15mAuto-${side}-partial-unfilled`);
+    }
+
+    this.runtime.onMarketBookUnsubscribe(tokenId);
+    this.subscribedTokens.delete(tokenId);
+    this.pushLog(`[${side.toUpperCase()}] BUY filled. Holding ${formatSize(shares)} shares @ $${avgPrice.toFixed(4)}.`, "success");
+    // Re-subscribe so reconcileHolding receives book updates for the trailing stop.
+    this.subscribeBook(tokenId);
     await this.refreshBudget();
     await this.persistRuntimeState();
   }
 
+  /**
+   * Fetch all Polymarket trades for an order and aggregate them into total shares, avg price,
+   * and total fees in USD. Returns null on failure or no trades. Used by LIVE-only paths to
+   * record the TRUE economic outcome of a fill (not just the limit price we placed).
+   */
+  private async aggregateTrades(
+    orderId: string,
+    side: Btc15mAutoSide,
+    label: "BUY" | "SELL",
+  ): Promise<{ totalShares: number; avgPrice: number; totalFeeUsd: number } | null> {
+    if (!this.runtime.getTradesForOrder) return null;
+    try {
+      const trades = await this.runtime.getTradesForOrder(orderId);
+      if (!trades || trades.length === 0) return null;
+      let totalShares = 0;
+      let totalNotional = 0;
+      let totalFeeUsd = 0;
+      for (const t of trades) {
+        const size = t.size;
+        const price = t.price;
+        if (!Number.isFinite(size) || !Number.isFinite(price) || size <= 0) continue;
+        const notional = size * price;
+        totalShares += size;
+        totalNotional += notional;
+        // Polymarket fees are taker-side, applied on notional. fee_rate_bps = basis points (1bp = 0.0001).
+        totalFeeUsd += notional * (t.feeRateBps / 10000);
+      }
+      if (totalShares <= 0) return null;
+      return {
+        totalShares,
+        avgPrice: totalNotional / totalShares,
+        totalFeeUsd: roundPrice(totalFeeUsd),
+      };
+    } catch (error) {
+      this.pushLog(`[${side.toUpperCase()}] ${label} aggregateTrades failed: ${error instanceof Error ? error.message : String(error)}`, "warn");
+      return null;
+    }
+  }
+
   private async placeSell(
+    side: Btc15mAutoSide,
     price: number,
     phase: "holding" | "force_selling",
   ): Promise<void> {
-    const position = this.state.cycle.position;
+    const cycle = this.cycleFor(side);
+    const position = cycle.position;
     const market = this.state.market;
     if (!position || !market) {
       return;
     }
 
     // Polymarket CLOB only accepts prices in [0.01, 0.99] at 0.01 tick.
-    // Trail logic (bestBid - trailDist) and force-sell can produce values like 0.001,
-    // 0, or negatives when the bid is very low — clamp here so the API never rejects us.
     const clamped = Math.min(0.99, Math.max(0.01, roundUsd(price)));
     if (clamped !== price) {
-      this.pushLog(`Sell price ${price} clamped to ${clamped} (Polymarket valid range 0.01–0.99).`, "warn");
+      this.pushLog(`[${side.toUpperCase()}] Sell price ${price} clamped to ${clamped} (valid range 0.01–0.99).`, "warn");
     }
 
-    const response = await this.runtime.placeLimitOrder({
-      tokenId: position.tokenId,
-      side: "sell",
-      price: clamped,
-      size: position.shares,
-    });
+    let response: unknown;
+    try {
+      response = await this.runtime.placeLimitOrder({
+        tokenId: position.tokenId,
+        side: "sell",
+        price: clamped,
+        size: position.shares,
+      });
+    } catch (error) {
+      // SELL placement failed — leave the position open (we still hold it). The next tick of
+      // reconcileHolding / force-sell will retry. Do NOT mark the position closed.
+      const msg = error instanceof Error ? error.message : String(error);
+      this.pushLog(`[${side.toUpperCase()}] SELL placement failed: ${msg}. Position kept; will retry.`, "error");
+      return;
+    }
+    const extractedOrderId = extractOrderId(response);
+    if (!extractedOrderId) {
+      this.pushLog(`[${side.toUpperCase()}] SELL response had no orderID. Position kept; will retry next tick.`, "error");
+      return;
+    }
     const now = this.runtime.now();
-    const orderId = extractOrderId(response) ?? `btc15mAuto-sell:${market.slug}:${now}`;
-    this.state.cycle.sellOrder = {
+    const orderId = extractedOrderId;
+    cycle.sellOrder = {
       id: randomUUID(),
       orderId,
       side: "sell",
@@ -767,51 +912,78 @@ export class Btc15mAutoBot {
       createdAt: now,
       updatedAt: now,
     };
-    this.state.cycle.cyclePhase = phase;
-    this.pushLog(`SELL ${position.bettingSide.toUpperCase()} @ ${formatPrice(clamped)} submitted (${orderId}).`, "info");
+    cycle.cyclePhase = phase;
+    this.pushLog(`[${side.toUpperCase()}] SELL @ ${formatPrice(clamped)} submitted (${orderId}).`, "info");
     if (this.dryRun && phase === "holding") {
-      this.subscribeBook(position.tokenId, "sell");
+      this.subscribeBook(position.tokenId);
     }
   }
 
   private async handleSellFill(
+    side: Btc15mAutoSide,
     sellPrice: number,
     exitReason: Btc15mAutoCompletedTrade["exitReason"],
   ): Promise<void> {
-    // Atomic capture-and-clear BEFORE any await. Multiple WS fill events can fire concurrently
-    // for the same order (replays, partial-then-full, polling races) — without this guard each
-    // event would snapshot the still-non-null sellOrder and re-credit funds + log a duplicate trade.
-    // This caused budget inflation ($13.50 from $5 working) and 5x duplicate rows in trade history.
-    const position = this.state.cycle.position;
+    // Atomic capture-and-clear BEFORE any await — guards against concurrent WS/poll fill events.
+    const cycle = this.cycleFor(side);
+    const position = cycle.position;
     const market = this.state.market;
-    const sellOrder = this.state.cycle.sellOrder;
+    const sellOrder = cycle.sellOrder;
     if (!position || !market || !sellOrder) {
       return;
     }
-    // Clear synchronously — subsequent concurrent calls will see null and bail out above.
-    this.state.cycle.sellOrder = null;
-    this.state.cycle.position = null;
-    this.state.cycle.cyclePhase = "cycle_done";
+    const sellOrderId = sellOrder.orderId;
+    cycle.sellOrder = null;
+    cycle.position = null;
+    cycle.cyclePhase = "cycle_done";
 
-    const pnlUsd = roundUsd((sellPrice - position.avgEntryPrice) * position.shares);
+    // In LIVE, fetch real trades to get the TRUE avg sell price + total fees. One limit sell can
+    // match against multiple buyers at different prices ("одна продажа может выполниться
+    // несколькими сделками"). Trust Polymarket trades over our intended price.
+    let realSellPrice = sellPrice;
+    let realShares = position.shares;
+    let sellFeeUsd = 0;
+    let sellProceedsUsd = roundUsd(sellPrice * position.shares);
+    const buyFeeUsd = (position as { buyFeeUsd?: number }).buyFeeUsd ?? 0;
+    const buyCostUsd = roundUsd(position.avgEntryPrice * position.shares);
+
+    if (!this.dryRun && sellOrderId && this.runtime.getTradesForOrder) {
+      const aggregated = await this.aggregateTrades(sellOrderId, side, "SELL");
+      if (aggregated && aggregated.totalShares > 0) {
+        realSellPrice = aggregated.avgPrice;
+        realShares = roundShares(aggregated.totalShares);
+        sellFeeUsd = aggregated.totalFeeUsd;
+        sellProceedsUsd = roundUsd(realSellPrice * realShares);
+        this.pushLog(`[${side.toUpperCase()}] SELL real fill: ${realShares.toFixed(2)} sh × $${realSellPrice.toFixed(4)} avg, fees $${sellFeeUsd.toFixed(4)}.`, "info");
+      }
+    }
+
+    // True net P&L: what we got out − what we paid in − fees on both sides.
+    const pnlUsd = roundUsd(sellProceedsUsd - buyCostUsd - buyFeeUsd - sellFeeUsd);
     const trade: Btc15mAutoCompletedTrade = {
       id: randomUUID(),
       marketSlug: market.slug,
       bettingSide: position.bettingSide,
       buyPrice: position.avgEntryPrice,
-      sellPrice,
-      shares: position.shares,
+      sellPrice: roundPrice(realSellPrice),
+      shares: realShares,
       pnlUsd,
       result: pnlUsd > 0 ? "win" : "loss",
       exitReason,
-      startedAt: this.state.cycle.cycleStartedAt ?? this.runtime.now(),
+      startedAt: cycle.cycleStartedAt ?? this.runtime.now(),
       closedAt: this.runtime.now(),
       dryRun: this.dryRun,
+      ...(this.dryRun ? {} : {
+        buyCostUsd,
+        sellProceedsUsd,
+        buyFeeUsd: roundUsd(buyFeeUsd),
+        sellFeeUsd: roundUsd(sellFeeUsd),
+      }),
     };
 
-    await this.runtime.budget.addFunds(roundUsd(sellPrice * position.shares), "btc15mAuto-sell-filled");
+    // Credit budget with NET proceeds (sell receipts minus sell fee).
+    await this.runtime.budget.addFunds(roundUsd(sellProceedsUsd - sellFeeUsd), `btc15mAuto-${side}-sell-filled`);
     if (this.dryRun) {
-      // SIM trade — track in-memory session counter only. Do NOT persist or pollute LIVE history.
       this.state.sessionTrades = [...this.state.sessionTrades, trade].slice(-500);
     } else {
       this.state.completedTrades = [...this.state.completedTrades, trade].slice(-500);
@@ -819,7 +991,7 @@ export class Btc15mAutoBot {
     }
     this.runtime.onMarketBookUnsubscribe(position.tokenId);
     this.subscribedTokens.delete(position.tokenId);
-    this.pushLog(`${this.dryRun ? "[SIM] " : ""}SELL filled. PnL ${pnlUsd.toFixed(2)} (${trade.result}).`, trade.result === "win" ? "success" : "warn");
+    this.pushLog(`${this.dryRun ? "[SIM] " : ""}[${side.toUpperCase()}] SELL filled. PnL ${pnlUsd.toFixed(2)} (${trade.result}).`, trade.result === "win" ? "success" : "warn");
     await this.refreshBudget();
     await this.persistRuntimeState();
   }
@@ -829,33 +1001,95 @@ export class Btc15mAutoBot {
       return;
     }
 
-    const buyOrder = this.state.cycle.buyOrder;
-    if (buyOrder && matchesOrder(message, buyOrder)) {
-      if (isFailureStatus(message.status)) {
-        await this.cancelBuy(`live-${message.status ?? "failed"}`);
-        this.state.cycle.cyclePhase = "waiting_direction";
-        return;
+    // The WS message could belong to either side's buy or sell order — check both cycles.
+    for (const side of Btc15mAutoBot.SIDES) {
+      const cycle = this.cycleFor(side);
+
+      const buyOrder = cycle.buyOrder;
+      if (buyOrder && matchesOrder(message, buyOrder)) {
+        if (isFailureStatus(message.status)) {
+          await this.cancelBuy(side, `live-${message.status ?? "failed"}`);
+          cycle.cyclePhase = "waiting_direction";
+          return;
+        }
+        if (isFilledStatus(message.status)) {
+          // VERIFY via REST before trusting the WS event. We've seen Polymarket WS deliver
+          // matched-like events when the order was only partially or not actually filled —
+          // that previously caused phantom positions (bot shows position, Polymarket doesn't).
+          // Now: only transition if getOrder confirms size_matched >= original_size, or the
+          // order is genuinely gone (status=matched and size matches). Otherwise log and wait
+          // — polling on the next tick will re-check.
+          const verified = await this.verifyOrderFilled(buyOrder.orderId, buyOrder.size, side, "BUY");
+          if (verified.filled) {
+            this.pushLog(`[${side.toUpperCase()}] BUY fill verified via WS+REST (matched ${verified.matched}/${verified.original}).`, "info");
+            await this.transitionBuyFilledToHolding(side, verified.matched > 0 ? verified.matched : buyOrder.size);
+          } else {
+            this.pushLog(`[${side.toUpperCase()}] WS said BUY matched, but REST shows ${verified.matched}/${verified.original} (status=${verified.status}). Ignoring — polling will retry.`, "warn");
+          }
+          return;
+        }
       }
-      if (isFilledStatus(message.status)) {
-        await this.transitionBuyFilledToHolding(extractMatchedSize(message) ?? buyOrder.size);
-        return;
+
+      const sellOrder = cycle.sellOrder;
+      if (sellOrder && matchesOrder(message, sellOrder)) {
+        if (isFailureStatus(message.status)) {
+          sellOrder.status = "failed";
+          sellOrder.errorMessage = message.status;
+          this.pushLog(`[${side.toUpperCase()}] SELL failed: ${message.status ?? "unknown"}.`, "error");
+          return;
+        }
+        if (isFilledStatus(message.status)) {
+          // Same verification for sells — phantom "matched" events on un-filled sells would
+          // close the position locally while Polymarket still holds the position (and the
+          // open sell order is still sitting on the book).
+          const verified = await this.verifyOrderFilled(sellOrder.orderId, sellOrder.size, side, "SELL");
+          if (verified.filled) {
+            this.pushLog(`[${side.toUpperCase()}] SELL fill verified via WS+REST (matched ${verified.matched}/${verified.original}).`, "info");
+            await this.handleSellFill(
+              side,
+              sellOrder.price,
+              cycle.cyclePhase === "force_selling" ? "force_sell" : "target_sell",
+            );
+          } else {
+            this.pushLog(`[${side.toUpperCase()}] WS said SELL matched, but REST shows ${verified.matched}/${verified.original} (status=${verified.status}). Ignoring — polling will retry.`, "warn");
+          }
+          return;
+        }
       }
     }
+  }
 
-    const sellOrder = this.state.cycle.sellOrder;
-    if (sellOrder && matchesOrder(message, sellOrder)) {
-      if (isFailureStatus(message.status)) {
-        sellOrder.status = "failed";
-        sellOrder.errorMessage = message.status;
-        this.pushLog(`SELL failed: ${message.status ?? "unknown"}.`, "error");
-        return;
+  /**
+   * Confirm via REST `getOrder` that an order is truly filled before we transition state.
+   * Returns `filled=true` only when size_matched >= original_size (full match) OR Polymarket
+   * explicitly returned a filled status. Treats `not_found` (404) as filled IF the matched-size
+   * arg suggests it was a real fill (positive original) — but we are conservative and require
+   * size_matched. Treats fetch errors as "not filled" (will retry next tick).
+   */
+  private async verifyOrderFilled(
+    orderId: string | null,
+    originalSize: number,
+    side: Btc15mAutoSide,
+    label: "BUY" | "SELL",
+  ): Promise<{ filled: boolean; matched: number; original: number; status: string }> {
+    if (!orderId || !this.runtime.getOrder) {
+      // Without verification capability, fall back to trusting the WS event (legacy behavior).
+      return { filled: true, matched: originalSize, original: originalSize, status: "unverifiable" };
+    }
+    try {
+      const data = await this.runtime.getOrder(orderId);
+      if (!data) {
+        return { filled: false, matched: 0, original: originalSize, status: "no-data" };
       }
-      if (isFilledStatus(message.status)) {
-        await this.handleSellFill(
-          sellOrder.price,
-          this.state.cycle.cyclePhase === "force_selling" ? "force_sell" : "target_sell",
-        );
-      }
+      const matched = parseFloat(data.size_matched) || 0;
+      const original = parseFloat(data.original_size ?? String(originalSize)) || originalSize;
+      const statusLower = (data.status ?? "").toLowerCase();
+      const fullyFilled = matched >= original - 1e-9 && matched > 0;
+      const explicit = isFilledStatus(statusLower);
+      return { filled: fullyFilled || explicit, matched, original, status: data.status ?? "" };
+    } catch (error) {
+      this.pushLog(`[${side.toUpperCase()}] ${label} verification getOrder failed: ${error instanceof Error ? error.message : String(error)}`, "warn");
+      return { filled: false, matched: 0, original: originalSize, status: "verify-error" };
     }
   }
 
@@ -879,7 +1113,8 @@ export class Btc15mAutoBot {
       market: this.state.market,
       marketStartBtcPrice: this.state.marketStartBtcPrice,
       currentBtcPrice: this.state.currentBtcPrice,
-      cycle: this.state.cycle,
+      upCycle: this.state.upCycle,
+      downCycle: this.state.downCycle,
       logs: this.state.logs,
       lastError: this.state.lastError,
     });
@@ -895,7 +1130,8 @@ export class Btc15mAutoBot {
       currentBtcPrice: null,
       upPrice: null,
       downPrice: null,
-      cycle: emptyCycle(),
+      upCycle: emptyCycle(),
+      downCycle: emptyCycle(),
       completedTrades: trades,
       analytics: computeAnalytics(trades, null),
       sessionTrades: [],
@@ -1032,4 +1268,13 @@ function formatPrice(value: number): string {
 
 function roundUsd(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function roundShares(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function roundPrice(value: number): number {
+  // 4-decimal precision so true avg fill prices (e.g. $0.4267) aren't lost in display rounding.
+  return Math.round(value * 10000) / 10000;
 }

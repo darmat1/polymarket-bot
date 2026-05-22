@@ -368,20 +368,20 @@ export class Btc15mBot {
             const statusLower = (orderData.status ?? "").toLowerCase();
             const matched = parseFloat(orderData.size_matched) || 0;
             const original = parseFloat(orderData.original_size ?? String(buyOrder.size)) || buyOrder.size;
-            // Polymarket sometimes keeps status="live" even after full match.
-            // Treat as filled if size_matched >= original_size, OR status is matched/filled,
-            // OR the order is gone (not_found sentinel from runtime).
+            // Treat as filled ONLY if size_matched >= original_size or explicit matched status.
+            // A 404 "not_found" response is ambiguous (could be archived-filled OR rejected) so
+            // we treat it as failure here — `success` validation at placement time guarantees
+            // accepted orders exist on Polymarket; if we now can't find one, something went wrong.
             const fullyFilled = matched >= original - 1e-9 && matched > 0;
             const statusFilled = isFilledStatus(statusLower);
-            const statusNotFound = statusLower === "not_found";
 
-            if (statusFilled || fullyFilled || statusNotFound) {
+            if (statusFilled || fullyFilled) {
               const filledSize = matched > 0 ? matched : buyOrder.size;
               this.pushLog(`Buy fill detected via polling (status: ${orderData.status}, matched: ${matched}/${original}).`, "info");
               await this.transitionBuyFilledToHolding(filledSize);
-              return; // Already transitioned — skip cancel checks below
-            } else if (isFailureStatus(statusLower)) {
-              this.pushLog(`Buy order failed via polling (status: ${orderData.status}).`, "warn");
+              return;
+            } else if (isFailureStatus(statusLower) || statusLower === "not_found") {
+              this.pushLog(`Buy order ${statusLower === "not_found" ? "not found on Polymarket" : "failed"} (status: ${orderData.status}). Cancelling local tracking.`, "warn");
               await this.cancelBuy(`poll-${orderData.status}`);
               this.state.cycle.cyclePhase = "waiting_direction";
               return;

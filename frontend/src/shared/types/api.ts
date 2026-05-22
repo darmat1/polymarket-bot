@@ -190,6 +190,14 @@ export type Btc15mCompletedTrade = {
   sellPrice: number;
   shares: number;
   pnlUsd: number;
+  /** LIVE-only: total USD paid on buy (avg fill × shares), excluding fees. */
+  buyCostUsd?: number;
+  /** LIVE-only: total USD received on sell (avg fill × shares), before fees. */
+  sellProceedsUsd?: number;
+  /** LIVE-only: total fees on buy side. */
+  buyFeeUsd?: number;
+  /** LIVE-only: total fees on sell side. */
+  sellFeeUsd?: number;
   result: "win" | "loss";
   exitReason: "target_sell" | "force_sell" | "resolved_unfilled";
   startedAt?: number;
@@ -293,16 +301,18 @@ export type Btc15mAutoStartConfig = {
 };
 export type Btc15mAutoCompletedTrade = Btc15mCompletedTrade;
 export type Btc15mAutoAnalyticsSummary = Btc15mAnalyticsSummary;
+export type Btc15mAutoCycle = Btc15mStatusPayload["cycle"] & {
+  plannedBuyPrice?: number | null;
+  buyBlockReason?: "low_range" | "high_wait_pullback" | null;
+  buyBlockReferencePrice?: number | null;
+  trailStopPrice?: number | null;
+};
 export type Btc15mAutoStatusPayload = Omit<Btc15mStatusPayload, "config" | "cycle"> & {
   config: Btc15mAutoStartConfig & {
     tickIntervalSec: number;
   };
-  cycle: Btc15mStatusPayload["cycle"] & {
-    plannedBuyPrice?: number | null;
-    buyBlockReason?: "low_range" | "high_wait_pullback" | null;
-    buyBlockReferencePrice?: number | null;
-    trailStopPrice?: number | null;
-  };
+  upCycle: Btc15mAutoCycle;
+  downCycle: Btc15mAutoCycle;
 };
 
 export type EventLogEntry = {

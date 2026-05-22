@@ -84,10 +84,19 @@ export class PolymarketService {
     }
 
     try {
-      return await client.placeLimitOrder({
+      const response = await client.placeLimitOrder({
         ...params,
         negRisk,
       });
+      // Polymarket CLOB returns { success: false, errorMsg: "..." } for REJECTED orders without
+      // throwing. Without this check the bot treated rejections as accepted orders → polling later
+      // got 404 (no such order on Polymarket) → "not_found" sentinel → bot faked a fill →
+      // phantom position in the UI with no real position on Polymarket. ALWAYS validate.
+      const r = response as { success?: boolean; errorMsg?: string; orderID?: string };
+      if (r && r.success === false) {
+        throw new Error(`Polymarket rejected order: ${r.errorMsg ?? "unknown reason"}`);
+      }
+      return response;
     } catch (error) {
       throw new Error(`Polymarket placeLimitOrder failed: ${stringifyError(error)}`);
     }
@@ -105,6 +114,22 @@ export class PolymarketService {
   async getOrder(orderId: string): Promise<OpenOrder> {
     const client = await getRuntimePolymarketService();
     return client.getOrder(orderId);
+  }
+
+  /**
+   * Fetch the actual settled trades for an order ID. A single limit order can match against
+   * multiple counterparties at different prices, so to compute the TRUE avg fill price + total
+   * fees we must aggregate across all trades, not just trust the limit price.
+   */
+  async getTradesForOrder(orderId: string): Promise<Array<{ price: number; size: number; feeRateBps: number; side: string }>> {
+    const client = await getRuntimePolymarketService();
+    const trades = await client.getTradesForOrder(orderId);
+    return trades.map((t) => ({
+      price: parseFloat(t.price) || 0,
+      size: parseFloat(t.size) || 0,
+      feeRateBps: parseFloat(t.fee_rate_bps) || 0,
+      side: String(t.side ?? ""),
+    }));
   }
 
   async getOrderBook(tokenId: string): Promise<{ bestBid: number | null; bestAsk: number | null }> {

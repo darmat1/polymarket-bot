@@ -46,6 +46,7 @@ import {
   startBtc15mAutoBot,
   stopBtc15mAutoBot,
   resetBtc15mAutoBudget,
+  hardResetBtc15mAutoBot,
   type Btc15mAutoBotConfig,
 } from "./btc15m-auto/index.js";
 import {
@@ -281,6 +282,15 @@ const server = createServer(async (req, res) => {
     if (requestUrl.pathname === "/api/btc15m-auto/reset-budget" && req.method === "POST") {
       try {
         const payload = await resetBtc15mAutoBudget(loadSettings());
+        return json(res, 200, payload);
+      } catch (error) {
+        return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    if (requestUrl.pathname === "/api/btc15m-auto/hard-reset" && req.method === "POST") {
+      try {
+        const payload = await hardResetBtc15mAutoBot(loadSettings());
         return json(res, 200, payload);
       } catch (error) {
         return json(res, 400, { error: error instanceof Error ? error.message : String(error) });

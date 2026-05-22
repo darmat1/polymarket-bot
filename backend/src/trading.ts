@@ -3,6 +3,7 @@ import {
   type OpenOrder,
   type OpenOrderParams,
   type OrderBookSummary,
+  type Trade,
 } from "@polymarket/clob-client-v2";
 
 import { type Settings } from "./config.js";
@@ -49,5 +50,11 @@ export class TradingClient extends BasePolymarketClient {
   async getOrderBook(tokenId: string): Promise<OrderBookSummary> {
     const client = this.buildAuthenticatedClient();
     return client.getOrderBook(tokenId);
+  }
+
+  /** Fetch all on-chain Trade records for a specific order ID (one limit may match multiple). */
+  async getTradesForOrder(orderId: string): Promise<Trade[]> {
+    const client = this.buildAuthenticatedClient();
+    return client.getTrades({ id: orderId }, false);
   }
 }

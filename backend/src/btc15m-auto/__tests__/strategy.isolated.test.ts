@@ -35,6 +35,7 @@ function makeHarness(overrides: Partial<{
   market: Btc15mAutoMarketView | null;
   reserveThrows: boolean;
   orderBook: { bestBid: number | null; bestAsk: number | null };
+  orderBookDown: { bestBid: number | null; bestAsk: number | null };
 }> = {}) {
   let now = overrides.now ?? market.startTimeMs + 60_000;
   let currentBtc = overrides.currentBtc ?? 100_000;
@@ -48,6 +49,10 @@ function makeHarness(overrides: Partial<{
   const trades: Btc15mAutoCompletedTrade[] = [];
   const listeners = new Map<string, BookListener>();
   let orderBook = overrides.orderBook;
+  // Default DOWN book to a non-triggering price (above maxBuyPrice 0.8) so existing UP-only
+  // tests are not disrupted by the new parallel DOWN cycle. Tests that exercise DOWN should
+  // supply orderBookDown explicitly.
+  let orderBookDown = overrides.orderBookDown ?? { bestBid: 0.94, bestAsk: 0.95 };
 
   const runtime: Btc15mAutoRuntime = {
     now: () => now,
@@ -104,7 +109,10 @@ function makeHarness(overrides: Partial<{
   };
 
   if (orderBook !== undefined) {
-    runtime.getOrderBook = async () => orderBook ?? { bestBid: null, bestAsk: null };
+    runtime.getOrderBook = async (tokenId: string) => {
+      if (tokenId === market.downTokenId) return orderBookDown ?? { bestBid: null, bestAsk: null };
+      return orderBook ?? { bestBid: null, bestAsk: null };
+    };
   }
 
   return {
@@ -121,6 +129,7 @@ function makeHarness(overrides: Partial<{
     setStartBtc(value: number) { startBtc = value; },
     setMarket(value: Btc15mAutoMarketView | null) { nextMarket = value; },
     setOrderBook(value: { bestBid: number | null; bestAsk: number | null }) { orderBook = value; },
+    setOrderBookDown(value: { bestBid: number | null; bestAsk: number | null }) { orderBookDown = value; },
   };
 }
 
@@ -140,9 +149,9 @@ async function armsVirtualBuyAboveCurrentUpPriceInsideBounds() {
   const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
   assert.equal(h.orders.length, 0);
-  assert.equal(bot.getStatus().cycle.cyclePhase, "waiting_direction");
-  assert.equal(bot.getStatus().cycle.buyOrder, null);
-  assert.equal(bot.getStatus().cycle.plannedBuyPrice, 0.42);
+  assert.equal(bot.getStatus().upCycle.cyclePhase, "waiting_direction");
+  assert.equal(bot.getStatus().upCycle.buyOrder, null);
+  assert.equal(bot.getStatus().upCycle.plannedBuyPrice, 0.42);
   bot.stop();
   console.log("arms virtual buy inside bounds: OK");
 }
@@ -151,17 +160,17 @@ async function plannedBuyTracksPriceDownWithinRange() {
   const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.39, bestAsk: 0.4 } });
   const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
-  assert.equal(bot.getStatus().cycle.plannedBuyPrice, 0.42);
+  assert.equal(bot.getStatus().upCycle.plannedBuyPrice, 0.42);
 
   h.setOrderBook({ bestBid: 0.3, bestAsk: 0.31 });
   await bot.runOneTick();
-  assert.equal(bot.getStatus().cycle.plannedBuyPrice, 0.33);
+  assert.equal(bot.getStatus().upCycle.plannedBuyPrice, 0.33);
 
   h.setOrderBook({ bestBid: 0.32, bestAsk: 0.33 });
   await bot.runOneTick();
   assert.equal(h.orders.length, 1);
-  assert.equal(bot.getStatus().cycle.plannedBuyPrice, null);
-  assert.equal(bot.getStatus().cycle.cyclePhase, "buy_pending");
+  assert.equal(bot.getStatus().upCycle.plannedBuyPrice, null);
+  assert.equal(bot.getStatus().upCycle.cyclePhase, "buy_pending");
   bot.stop();
   console.log("planned buy tracks down: OK");
 }
@@ -171,7 +180,7 @@ async function noOrderInsideNeutralZone() {
   const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
   assert.equal(h.orders.length, 0);
-  assert.equal(bot.getStatus().cycle.cyclePhase, "waiting_direction");
+  assert.equal(bot.getStatus().upCycle.cyclePhase, "waiting_direction");
   bot.stop();
   console.log("neutral zone: OK");
 }
@@ -201,21 +210,21 @@ async function simBuyAndTargetSellFillCompletesTrade() {
   h.listeners.get("tok-up")?.(null, 0.42);
 
   await bot.flushPendingActions();
-  assert.equal(bot.getStatus().cycle.cyclePhase, "holding");
-  assert.equal(bot.getStatus().cycle.sellOrder, null);
+  assert.equal(bot.getStatus().upCycle.cyclePhase, "holding");
+  assert.equal(bot.getStatus().upCycle.sellOrder, null);
   assert.equal(h.consumed, 2.1);
 
   h.setOrderBook({ bestBid: 0.47, bestAsk: 0.48 });
   h.listeners.get("tok-up")?.(0.47, null);
   await bot.flushPendingActions();
   await bot.runOneTick();
-  assert.equal(bot.getStatus().cycle.trailStopPrice, 0.46);
+  assert.equal(bot.getStatus().upCycle.trailStopPrice, 0.46);
 
   h.setOrderBook({ bestBid: 0.51, bestAsk: 0.52 });
   h.listeners.get("tok-up")?.(0.51, null);
   await bot.flushPendingActions();
   await bot.runOneTick();
-  assert.equal(bot.getStatus().cycle.trailStopPrice, 0.5);
+  assert.equal(bot.getStatus().upCycle.trailStopPrice, 0.5);
 
   h.setOrderBook({ bestBid: 0.49, bestAsk: 0.5 });
   h.listeners.get("tok-up")?.(0.49, null);
@@ -230,7 +239,7 @@ async function simBuyAndTargetSellFillCompletesTrade() {
   assert.equal(bot.getStatus().sessionTrades[0].pnlUsd, 0.4);
   assert.equal(h.trades.length, 0);
   assert.equal(h.added, 2.5);
-  assert.equal(["cycle_done", "waiting_direction"].includes(bot.getStatus().cycle.cyclePhase), true);
+  assert.equal(["cycle_done", "waiting_direction"].includes(bot.getStatus().upCycle.cyclePhase), true);
   bot.stop();
   console.log("sim buy/sell fills: OK");
 }
@@ -243,7 +252,7 @@ async function forceSellsAtBestBidWhenLate() {
   await bot.runOneTick();
   h.listeners.get("tok-up")?.(null, 0.42);
   await bot.flushPendingActions();
-  assert.equal(bot.getStatus().cycle.cyclePhase, "holding");
+  assert.equal(bot.getStatus().upCycle.cyclePhase, "holding");
   h.setOrderBook({ bestBid: 0.2, bestAsk: 0.21 });
   h.listeners.get("tok-up")?.(0.2, null);
   // Run tick at late time (within force-sell threshold)
@@ -251,7 +260,7 @@ async function forceSellsAtBestBidWhenLate() {
   await bot.runOneTick();
   // No existing sell to cancel; force sell placed at bestBid=0.2
   assert.equal(h.orders.at(-1)?.price, 0.2);
-  assert.equal(bot.getStatus().cycle.cyclePhase, "market_idle");
+  assert.equal(bot.getStatus().upCycle.cyclePhase, "market_idle");
   assert.equal(["force_sell", "target_sell"].includes(bot.getStatus().sessionTrades.at(-1)?.exitReason ?? ""), true);
   assert.equal(bot.getStatus().sessionTrades.at(-1)?.result, "loss");
   bot.stop();
@@ -272,9 +281,9 @@ async function repeatsAndSwitchesMarket() {
   h.setOrderBook({ bestBid: 0.49, bestAsk: 0.5 });
   h.listeners.get("tok-up")?.(0.49, null);
   await bot.runOneTick();
-  assert.equal(["cycle_done", "waiting_direction"].includes(bot.getStatus().cycle.cyclePhase), true);
+  assert.equal(["cycle_done", "waiting_direction"].includes(bot.getStatus().upCycle.cyclePhase), true);
   await bot.runOneTick();
-  assert.equal(["waiting_direction", "buy_pending"].includes(bot.getStatus().cycle.cyclePhase), true);
+  assert.equal(["waiting_direction", "buy_pending"].includes(bot.getStatus().upCycle.cyclePhase), true);
 
   const nextMarket = { ...market, slug: "btc-updown-15m-1779221700", startTimeMs: market.endTimeMs, endTimeMs: market.endTimeMs + 900_000 };
   h.setNow(market.endTimeMs + 1_000);
@@ -289,16 +298,19 @@ async function repeatsAndSwitchesMarket() {
   console.log("repeat/switch market: OK");
 }
 
-async function autoStopsWhenBudgetReserveThrows() {
+async function skipsBuyWhenBudgetReserveThrows() {
+  // With parallel UP+DOWN cycles sharing one budget, a reserve failure no longer auto-stops the
+  // bot (that forced manual restarts on every contention). Instead we skip the buy this tick,
+  // log a warning, and stay running — next tick retries.
   const h = makeHarness({ currentBtc: 100_100, reserveThrows: true, orderBook: { bestBid: 0.39, bestAsk: 0.4 } });
   const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
   h.setOrderBook({ bestBid: 0.41, bestAsk: 0.42 });
   await bot.runOneTick();
-  assert.equal(bot.getStatus().enginePhase, "auto_stopped");
-  assert.match(bot.getStatus().lastError ?? "", /budget/i);
+  assert.equal(bot.getStatus().enginePhase, "running");
+  assert.equal(h.orders.length, 0);
   bot.stop();
-  console.log("budget auto-stop: OK");
+  console.log("budget skip-not-stop: OK");
 }
 
 async function buysUpWhenMarketRisesToArmedVirtualTarget() {
@@ -323,13 +335,13 @@ async function cancelsStaleBuyOrderAfterSharpPriceJump() {
   h.setOrderBook({ bestBid: 0.41, bestAsk: 0.42 });
   await bot.runOneTick();
   assert.equal(h.orders.length, 1);
-  assert.equal(bot.getStatus().cycle.cyclePhase, "buy_pending");
+  assert.equal(bot.getStatus().upCycle.cyclePhase, "buy_pending");
 
   h.setOrderBook({ bestBid: 0.6, bestAsk: 0.61 });
   await bot.runOneTick();
   assert.deepEqual(h.cancelled, ["buy-1"]);
-  assert.equal(bot.getStatus().cycle.cyclePhase, "waiting_direction");
-  assert.equal(bot.getStatus().cycle.buyOrder, null);
+  assert.equal(bot.getStatus().upCycle.cyclePhase, "waiting_direction");
+  assert.equal(bot.getStatus().upCycle.buyOrder, null);
   bot.stop();
   console.log("cancels stale jumped buy: OK");
 }
@@ -356,7 +368,7 @@ async function plannedBuyNeverIncreasesDuringActiveCycle() {
   const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.3, bestAsk: 0.31 } });
   const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
-  const currentPlannedBuy = bot.getStatus().cycle.plannedBuyPrice;
+  const currentPlannedBuy = bot.getStatus().upCycle.plannedBuyPrice;
   assert.equal(currentPlannedBuy, 0.33);
 
   h.setOrderBook({ bestBid: 0.35, bestAsk: 0.36 });
@@ -380,7 +392,7 @@ async function trailStopNeverDecreasesOnPullback() {
   h.listeners.get("tok-up")?.(0.51, null);
   await bot.flushPendingActions();
   await bot.runOneTick();
-  const currentStop = bot.getStatus().cycle.trailStopPrice;
+  const currentStop = bot.getStatus().upCycle.trailStopPrice;
   assert.equal(currentStop, 0.5);
 
   h.setOrderBook({ bestBid: 0.46, bestAsk: 0.47 });
@@ -402,7 +414,7 @@ async function main() {
   await simBuyAndTargetSellFillCompletesTrade();
   await forceSellsAtBestBidWhenLate();
   await repeatsAndSwitchesMarket();
-  await autoStopsWhenBudgetReserveThrows();
+  await skipsBuyWhenBudgetReserveThrows();
   await buysUpWhenMarketRisesToArmedVirtualTarget();
   await cancelsStaleBuyOrderAfterSharpPriceJump();
   await rearmsBuyAfterHighPricePullbackReentersRange();

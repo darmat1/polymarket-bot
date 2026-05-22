@@ -712,6 +712,16 @@ button.button-clear {
   color: var(--gold);
 }
 
+.btc15m-value-planned {
+  color: var(--mint);
+  font-weight: 700;
+}
+
+.btc15m-value-stop {
+  color: var(--rose);
+  font-weight: 700;
+}
+
 .refreshing-pulse {
   position: relative;
   border-color: var(--mint) !important;

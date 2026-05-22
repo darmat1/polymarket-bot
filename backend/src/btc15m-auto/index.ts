@@ -5,7 +5,7 @@ import { createBudgetManager } from "../budget-manager.js";
 import type { Settings } from "../config.js";
 
 import { resolveCurrentMarket } from "./market-resolver.js";
-import { createBtc15mAutoStateStore } from "./state-store.js";
+import { createBtc15mAutoStateStore, emptyCycle } from "./state-store.js";
 import { Btc15mAutoBot, type Btc15mAutoRuntime } from "./strategy.js";
 import type {
   Btc15mAutoBotConfig,
@@ -53,8 +53,9 @@ export async function startBtc15mAutoBot(
   //  (b) bot is idle (no open buy/sell order, no live position) and availableBudget is exhausted.
   // This is what the user expects when clicking Start after a prior session drained the budget
   // through losses — refill from working budget so the bot can place a fresh order.
-  const hasActiveOrder = persisted.cycle.buyOrder !== null || persisted.cycle.sellOrder !== null;
-  const hasPosition = persisted.cycle.position !== null;
+  const cyclesIdle = [persisted.upCycle, persisted.downCycle];
+  const hasActiveOrder = cyclesIdle.some((c) => c.buyOrder !== null || c.sellOrder !== null);
+  const hasPosition = cyclesIdle.some((c) => c.position !== null);
   const isIdle = !hasActiveOrder && !hasPosition;
   const totalBudgetInPlay = persisted.budget.availableBudget + persisted.budget.lockedBudget;
   const budgetDepleted = totalBudgetInPlay < config.workingBudgetUsd;
@@ -137,6 +138,13 @@ export async function startBtc15mAutoBot(
       }
     },
     getOrderBook: async (tokenId) => service.getOrderBook(tokenId),
+    getTradesForOrder: async (orderId) => {
+      try {
+        return await service.getTradesForOrder(orderId);
+      } catch {
+        return [];
+      }
+    },
   };
 
   const latestPersisted = await store.readState();
@@ -164,6 +172,48 @@ export async function startBtc15mAutoBot(
  * an active position/order — resetting then would orphan budget reservations tracking the
  * still-open Polymarket order. Caller must Stop first.
  */
+/**
+ * HARD-RESET — wipes EVERYTHING for the btc15m-auto bot:
+ *  - both cycles (UP & DOWN): buy/sell orders, positions, planned-buy, trail stops
+ *  - completed trade history (LIVE)
+ *  - market & price state, logs, lastError
+ *  - budget back to workingBudget
+ *
+ * Use when state on disk is out of sync with reality (user sold on Polymarket directly,
+ * a rejected order left phantom local tracking, etc). Bot must be stopped first.
+ *
+ * Does NOT cancel anything on Polymarket — only wipes local tracking. If you want a clean exit,
+ * call /stop FIRST (which cancels open orders), then hard-reset.
+ */
+export async function hardResetBtc15mAutoBot(settings: Settings): Promise<Btc15mAutoBotStatus> {
+  if (activeBot?.getStatus().enginePhase === "running") {
+    throw new Error("Cannot hard-reset while bot is running. Stop the bot first.");
+  }
+  const config = configFromSettings(settings);
+  const store = createBtc15mAutoStateStore({
+    filePath: settings.btc15mAuto.stateFile,
+    defaultConfig: config,
+  });
+  await store.updateRuntimeState({
+    enginePhase: "stopped",
+    market: null,
+    marketStartBtcPrice: null,
+    currentBtcPrice: null,
+    upCycle: emptyCycle(),
+    downCycle: emptyCycle(),
+    logs: [],
+    lastError: null,
+  });
+  await store.clearCompletedTrades();
+  await store.updateBudget((budget) => {
+    budget.initialBudget = config.workingBudgetUsd;
+    budget.availableBudget = config.workingBudgetUsd;
+    budget.lockedBudget = 0;
+    budget.lastBalanceCheck = null;
+  });
+  return getBtc15mAutoBotStatus(settings);
+}
+
 export async function resetBtc15mAutoBudget(settings: Settings): Promise<Btc15mAutoBotStatus> {
   if (activeBot?.getStatus().enginePhase === "running") {
     throw new Error("Cannot reset budget while bot is running. Stop the bot first.");
@@ -174,7 +224,7 @@ export async function resetBtc15mAutoBudget(settings: Settings): Promise<Btc15mA
     defaultConfig: config,
   });
   const persisted = await store.readState();
-  if (persisted.cycle.buyOrder !== null || persisted.cycle.sellOrder !== null || persisted.cycle.position !== null) {
+  if ([persisted.upCycle, persisted.downCycle].some((c) => c.buyOrder !== null || c.sellOrder !== null || c.position !== null)) {
     throw new Error("Cannot reset budget with active order/position on disk. Stop the bot and let it cancel/close first.");
   }
   await store.updateBudget((budget) => {
@@ -219,7 +269,20 @@ export async function stopBtc15mAutoBot(settings?: Settings): Promise<Btc15mAuto
     currentBtcPrice: null,
     upPrice: null,
     downPrice: null,
-    cycle: {
+    upCycle: {
+      cyclePhase: "waiting_market",
+      cycleStartedAt: null,
+      buyOrder: null,
+      sellOrder: null,
+      position: null,
+      plannedBuyPrice: null,
+      plannedBuyAnchorPrice: null,
+      buyBlockReason: null,
+      buyBlockReferencePrice: null,
+      highWaterMark: null,
+      trailStopPrice: null,
+    },
+    downCycle: {
       cyclePhase: "waiting_market",
       cycleStartedAt: null,
       buyOrder: null,
@@ -279,7 +342,8 @@ export async function getBtc15mAutoBotStatus(settings: Settings): Promise<Btc15m
   status.sessionAnalytics.remainingBudgetUsd = status.analytics.remainingBudgetUsd;
   status.marketStartBtcPrice = persisted.marketStartBtcPrice;
   status.currentBtcPrice = persisted.currentBtcPrice;
-  status.cycle = persisted.cycle;
+  status.upCycle = persisted.upCycle;
+  status.downCycle = persisted.downCycle;
   status.logs = settings.dryRun ? [] : persisted.logs;
   status.lastError = settings.dryRun ? null : persisted.lastError;
   return status;
@@ -328,7 +392,20 @@ function createIdleStatus(
     currentBtcPrice: null,
     upPrice: null,
     downPrice: null,
-    cycle: {
+    upCycle: {
+      cyclePhase: "waiting_market",
+      cycleStartedAt: null,
+      buyOrder: null,
+      sellOrder: null,
+      position: null,
+      plannedBuyPrice: null,
+      plannedBuyAnchorPrice: null,
+      buyBlockReason: null,
+      buyBlockReferencePrice: null,
+      highWaterMark: null,
+      trailStopPrice: null,
+    },
+    downCycle: {
       cyclePhase: "waiting_market",
       cycleStartedAt: null,
       buyOrder: null,

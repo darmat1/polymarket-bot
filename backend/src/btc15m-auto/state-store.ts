@@ -52,7 +52,8 @@ export class Btc15mAutoStateStore {
       state.market = update.market;
       state.marketStartBtcPrice = update.marketStartBtcPrice;
       state.currentBtcPrice = update.currentBtcPrice;
-      state.cycle = update.cycle;
+      state.upCycle = update.upCycle;
+      state.downCycle = update.downCycle;
       state.logs = update.logs.slice(0, MAX_LOGS);
       state.lastError = update.lastError;
       state.updatedAt = Date.now();
@@ -64,6 +65,16 @@ export class Btc15mAutoStateStore {
     await this.enqueue(async () => {
       const state = await this.loadState();
       state.completedTrades = [...state.completedTrades, trade].slice(-MAX_TRADES);
+      state.updatedAt = Date.now();
+      await this.persistState(state);
+    });
+  }
+
+  /** Wipe persisted trade history. Used by hard-reset to clear stale/phantom trades. */
+  async clearCompletedTrades(): Promise<void> {
+    await this.enqueue(async () => {
+      const state = await this.loadState();
+      state.completedTrades = [];
       state.updatedAt = Date.now();
       await this.persistState(state);
     });
@@ -149,7 +160,9 @@ export class Btc15mAutoStateStore {
       market: normalizeMarket(input.market),
       marketStartBtcPrice: nullableNumber(input.marketStartBtcPrice),
       currentBtcPrice: nullableNumber(input.currentBtcPrice),
-      cycle: normalizeCycle(input.cycle),
+      // Migrate legacy single-cycle persisted state: fall back to `cycle` for the UP slot.
+      upCycle: normalizeCycle(input.upCycle ?? (input as { cycle?: unknown }).cycle),
+      downCycle: normalizeCycle(input.downCycle),
       logs: Array.isArray(input.logs) ? input.logs.slice(0, MAX_LOGS) : [],
       lastError: typeof input.lastError === "string" ? input.lastError : null,
     };
@@ -178,7 +191,8 @@ export class Btc15mAutoStateStore {
       market: null,
       marketStartBtcPrice: null,
       currentBtcPrice: null,
-      cycle: emptyCycle(),
+      upCycle: emptyCycle(),
+      downCycle: emptyCycle(),
       logs: [],
       lastError: null,
     };
