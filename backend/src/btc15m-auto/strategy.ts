@@ -4,19 +4,19 @@ import type { ScalperUserWsMessage } from "../scalper-user-ws.js";
 import type { BudgetSnapshot } from "../budget-manager.js";
 import { emptyCycle } from "./state-store.js";
 import type {
-  Btc15mAnalyticsSummary,
-  Btc15mBotConfig,
-  Btc15mBotStatus,
-  Btc15mCompletedTrade,
-  Btc15mCycleState,
-  Btc15mLogEntry,
-  Btc15mMarketView,
-  Btc15mRuntimeStateUpdate,
-  Btc15mSide,
-  Btc15mTrackedOrder,
+  Btc15mAutoAnalyticsSummary,
+  Btc15mAutoBotConfig,
+  Btc15mAutoBotStatus,
+  Btc15mAutoCompletedTrade,
+  Btc15mAutoCycleState,
+  Btc15mAutoLogEntry,
+  Btc15mAutoMarketView,
+  Btc15mAutoRuntimeStateUpdate,
+  Btc15mAutoSide,
+  Btc15mAutoTrackedOrder,
 } from "./types.js";
 
-export interface Btc15mBudgetPort {
+export interface Btc15mAutoBudgetPort {
   reserve(amount: number, reason?: string): Promise<void>;
   release(amount: number, reason?: string): Promise<void>;
   consume(amount: number, reason?: string): Promise<void>;
@@ -31,9 +31,9 @@ export interface PlaceOrderArgs {
   size: number;
 }
 
-export interface Btc15mRuntime {
+export interface Btc15mAutoRuntime {
   now: () => number;
-  resolveMarket: () => Promise<Btc15mMarketView | null>;
+  resolveMarket: () => Promise<Btc15mAutoMarketView | null>;
   fetchBtcPrice: (atMs: number) => Promise<number | null>;
   placeLimitOrder: (args: PlaceOrderArgs) => Promise<unknown>;
   cancelOrder: (orderId: string) => Promise<unknown>;
@@ -44,34 +44,34 @@ export interface Btc15mRuntime {
   onMarketBookUnsubscribe: (tokenId: string) => void;
   startUserWs: (handler: (msg: ScalperUserWsMessage) => void) => Promise<void>;
   stopUserWs: () => void;
-  budget: Btc15mBudgetPort;
-  persistTrade: (trade: Btc15mCompletedTrade) => Promise<void>;
-  persistConfig: (config: Btc15mBotConfig) => Promise<void>;
-  persistRuntimeState?: (state: Btc15mRuntimeStateUpdate) => Promise<void>;
+  budget: Btc15mAutoBudgetPort;
+  persistTrade: (trade: Btc15mAutoCompletedTrade) => Promise<void>;
+  persistConfig: (config: Btc15mAutoBotConfig) => Promise<void>;
+  persistRuntimeState?: (state: Btc15mAutoRuntimeStateUpdate) => Promise<void>;
   setIntervalFn?: typeof setInterval;
   clearIntervalFn?: typeof clearInterval;
   getOrder?: (orderId: string) => Promise<{ status: string; size_matched: string; original_size?: string } | null>;
   getOrderBook?: (tokenId: string) => Promise<{ bestBid: number | null; bestAsk: number | null }>;
 }
 
-export interface Btc15mBotStartOptions {
+export interface Btc15mAutoBotStartOptions {
   runImmediateTick?: boolean;
   scheduleLoop?: boolean;
 }
 
-export interface Btc15mBotOptions {
-  config: Btc15mBotConfig;
+export interface Btc15mAutoBotOptions {
+  config: Btc15mAutoBotConfig;
   dryRun: boolean;
-  runtime: Btc15mRuntime;
-  initialTrades?: Btc15mCompletedTrade[];
-  initialRuntimeState?: Partial<Btc15mRuntimeStateUpdate>;
+  runtime: Btc15mAutoRuntime;
+  initialTrades?: Btc15mAutoCompletedTrade[];
+  initialRuntimeState?: Partial<Btc15mAutoRuntimeStateUpdate>;
 }
 
 const MAX_LOG_ENTRIES = 60;
 
-export class Btc15mBot {
-  private readonly runtime: Btc15mRuntime;
-  private readonly config: Btc15mBotConfig;
+export class Btc15mAutoBot {
+  private readonly runtime: Btc15mAutoRuntime;
+  private readonly config: Btc15mAutoBotConfig;
   private readonly dryRun: boolean;
   private tickTimer: ReturnType<typeof setInterval> | null = null;
   private tickInProgress = false;
@@ -83,9 +83,9 @@ export class Btc15mBot {
   // Poll every tick (effectively ~1-2s) — Polymarket WS misses fills, so we need fast polling
   // for instant phase transitions. The API call is cheap (single REST GET).
   private readonly orderPollIntervalMs = 1000;
-  private state: Btc15mBotStatus;
+  private state: Btc15mAutoBotStatus;
 
-  constructor(options: Btc15mBotOptions) {
+  constructor(options: Btc15mAutoBotOptions) {
     this.runtime = options.runtime;
     this.config = options.config;
     this.dryRun = options.dryRun;
@@ -103,18 +103,18 @@ export class Btc15mBot {
     }
   }
 
-  getStatus(): Btc15mBotStatus {
+  getStatus(): Btc15mAutoBotStatus {
     return cloneStatus(this.state);
   }
 
-  async start(options: Btc15mBotStartOptions = {}): Promise<void> {
+  async start(options: Btc15mAutoBotStartOptions = {}): Promise<void> {
     if (this.state.enginePhase === "running") {
       return;
     }
 
     this.state.enginePhase = "running";
     this.state.lastError = null;
-    this.pushLog(`BTC 15m bot started (${this.dryRun ? "SIM" : "LIVE"}).`, "success");
+    this.pushLog(`BTC 15m Auto bot started (${this.dryRun ? "SIM" : "LIVE"}).`, "success");
     await this.runtime.persistConfig(this.config);
     if (!this.dryRun) {
       await this.runtime.startUserWs((msg) => {
@@ -154,7 +154,7 @@ export class Btc15mBot {
       this.runtime.stopUserWs();
     }
     this.state.enginePhase = "stopped";
-    this.pushLog("BTC 15m bot stopped.", "info");
+    this.pushLog("BTC 15m Auto bot stopped.", "info");
     this.touch();
     await this.persistRuntimeState();
   }
@@ -241,14 +241,14 @@ export class Btc15mBot {
       await this.refreshBudget();
       await this.persistRuntimeState();
     } catch (error) {
-      this.fail(error, "BTC 15m bot tick failed");
+      this.fail(error, "BTC 15m Auto bot tick failed");
       await this.persistRuntimeState();
     } finally {
       this.tickInProgress = false;
     }
   }
 
-  private async switchMarket(market: Btc15mMarketView): Promise<void> {
+  private async switchMarket(market: Btc15mAutoMarketView): Promise<void> {
     await this.cancelOpenOrders("market-switch");
     this.state.market = market;
     this.state.marketStartBtcPrice = await this.runtime.fetchBtcPrice(market.startTimeMs);
@@ -289,7 +289,7 @@ export class Btc15mBot {
       return;
     }
 
-    const bettingSide: Btc15mSide = sideForDelta(delta, this.config.buyPrice);
+    const bettingSide: Btc15mAutoSide = sideForDelta(delta, this.config.buyPrice);
     const tokenId = bettingSide === "down" ? market.downTokenId : market.upTokenId;
     const stake = roundUsd(this.config.shares * this.config.buyPrice);
 
@@ -309,7 +309,7 @@ export class Btc15mBot {
     }
 
     try {
-      await this.runtime.budget.reserve(stake, "btc15m-cycle-buy");
+      await this.runtime.budget.reserve(stake, "btc15mAuto-cycle-buy");
     } catch (error) {
       this.state.enginePhase = "auto_stopped";
       this.state.lastError = `Budget exhausted. Stopping. ${error instanceof Error ? error.message : String(error)}`;
@@ -324,7 +324,7 @@ export class Btc15mBot {
       price: this.config.buyPrice,
       size: this.config.shares,
     });
-    const orderId = extractOrderId(response) ?? `btc15m-buy:${market.slug}:${now}`;
+    const orderId = extractOrderId(response) ?? `btc15mAuto-buy:${market.slug}:${now}`;
     this.state.cycle = {
       ...this.state.cycle,
       cyclePhase: "buy_pending",
@@ -408,7 +408,7 @@ export class Btc15mBot {
     }
 
     const delta = current - start;
-    const expectedSide: Btc15mSide | null = Math.abs(delta) <= this.config.neutralZoneUsd
+    const expectedSide: Btc15mAutoSide | null = Math.abs(delta) <= this.config.neutralZoneUsd
       ? null
       : sideForDelta(delta, this.config.buyPrice);
     if (expectedSide !== buyOrder.bettingSide) {
@@ -643,10 +643,10 @@ export class Btc15mBot {
     this.state.cycle.highWaterMark = buyOrder.price;
     this.state.cycle.trailStopPrice = roundUsd(Math.max(0.01, buyOrder.price - this.config.trailDist));
 
-    await this.runtime.budget.consume(consumed, "btc15m-buy-filled");
+    await this.runtime.budget.consume(consumed, "btc15mAuto-buy-filled");
     const unfilledBudget = roundUsd(Math.max(0, buyOrder.size - shares) * buyOrder.price);
     if (unfilledBudget > 0) {
-      await this.runtime.budget.release(unfilledBudget, "btc15m-partial-unfilled");
+      await this.runtime.budget.release(unfilledBudget, "btc15mAuto-partial-unfilled");
     }
 
     // Re-register the book listener with mode="sell" — old listener was mode="buy" (captured in closure)
@@ -686,7 +686,7 @@ export class Btc15mBot {
       size: position.shares,
     });
     const now = this.runtime.now();
-    const orderId = extractOrderId(response) ?? `btc15m-sell:${market.slug}:${now}`;
+    const orderId = extractOrderId(response) ?? `btc15mAuto-sell:${market.slug}:${now}`;
     this.state.cycle.sellOrder = {
       id: randomUUID(),
       orderId,
@@ -710,7 +710,7 @@ export class Btc15mBot {
 
   private async handleSellFill(
     sellPrice: number,
-    exitReason: Btc15mCompletedTrade["exitReason"],
+    exitReason: Btc15mAutoCompletedTrade["exitReason"],
   ): Promise<void> {
     // Atomic capture-and-clear BEFORE any await. Multiple WS fill events can fire concurrently
     // for the same order (replays, partial-then-full, polling races) — without this guard each
@@ -728,7 +728,7 @@ export class Btc15mBot {
     this.state.cycle.cyclePhase = "cycle_done";
 
     const pnlUsd = roundUsd((sellPrice - position.avgEntryPrice) * position.shares);
-    const trade: Btc15mCompletedTrade = {
+    const trade: Btc15mAutoCompletedTrade = {
       id: randomUUID(),
       marketSlug: market.slug,
       bettingSide: position.bettingSide,
@@ -743,7 +743,7 @@ export class Btc15mBot {
       dryRun: this.dryRun,
     };
 
-    await this.runtime.budget.addFunds(roundUsd(sellPrice * position.shares), "btc15m-sell-filled");
+    await this.runtime.budget.addFunds(roundUsd(sellPrice * position.shares), "btc15mAuto-sell-filled");
     if (this.dryRun) {
       // SIM trade — track in-memory session counter only. Do NOT persist or pollute LIVE history.
       this.state.sessionTrades = [...this.state.sessionTrades, trade].slice(-500);
@@ -819,7 +819,7 @@ export class Btc15mBot {
     });
   }
 
-  private buildIdleStatus(trades: Btc15mCompletedTrade[]): Btc15mBotStatus {
+  private buildIdleStatus(trades: Btc15mAutoCompletedTrade[]): Btc15mAutoBotStatus {
     return {
       enginePhase: "stopped",
       dryRun: this.dryRun,
@@ -860,8 +860,8 @@ export class Btc15mBot {
     }
   }
 
-  private pushLog(message: string, type: Btc15mLogEntry["type"]): void {
-    const entry: Btc15mLogEntry = {
+  private pushLog(message: string, type: Btc15mAutoLogEntry["type"]): void {
+    const entry: Btc15mAutoLogEntry = {
       timestamp: this.runtime.now(),
       message,
       type,
@@ -889,9 +889,9 @@ export class Btc15mBot {
 }
 
 function computeAnalytics(
-  trades: Btc15mCompletedTrade[],
+  trades: Btc15mAutoCompletedTrade[],
   budget: BudgetSnapshot | null,
-): Btc15mAnalyticsSummary {
+): Btc15mAutoAnalyticsSummary {
   const wins = trades.filter((trade) => trade.result === "win").length;
   const totalPnlUsd = roundUsd(trades.reduce((sum, trade) => sum + trade.pnlUsd, 0));
   const grossProfitUsd = roundUsd(trades.reduce((sum, trade) => sum + (trade.pnlUsd > 0 ? trade.pnlUsd : 0), 0));
@@ -909,11 +909,11 @@ function computeAnalytics(
   };
 }
 
-function cloneStatus(status: Btc15mBotStatus): Btc15mBotStatus {
-  return JSON.parse(JSON.stringify(status)) as Btc15mBotStatus;
+function cloneStatus(status: Btc15mAutoBotStatus): Btc15mAutoBotStatus {
+  return JSON.parse(JSON.stringify(status)) as Btc15mAutoBotStatus;
 }
 
-function matchesOrder(message: ScalperUserWsMessage, order: Btc15mTrackedOrder): boolean {
+function matchesOrder(message: ScalperUserWsMessage, order: Btc15mAutoTrackedOrder): boolean {
   return message.orderId === order.orderId || message.assetIds.includes(order.tokenId);
 }
 
@@ -953,7 +953,7 @@ function extractMatchedSize(message: ScalperUserWsMessage): number | null {
  * - buyPrice >= 0.50: TREND-FOLLOWING. We're trying to buy the expected-winner side that's
  *   trading near our entry price. If BTC went UP (delta>0), UP is the likely winner → bet UP.
  */
-function sideForDelta(delta: number, buyPrice: number): Btc15mSide {
+function sideForDelta(delta: number, buyPrice: number): Btc15mAutoSide {
   if (buyPrice >= 0.5) {
     // Trend-following: bet WITH the move.
     return delta > 0 ? "up" : "down";

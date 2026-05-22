@@ -3,15 +3,15 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createBtc15mStateStore } from "../state-store.js";
+import { createBtc15mAutoStateStore } from "../state-store.js";
 import type {
-  Btc15mBotConfig,
-  Btc15mCompletedTrade,
-  Btc15mCycleState,
-  Btc15mMarketView,
+  Btc15mAutoBotConfig,
+  Btc15mAutoCompletedTrade,
+  Btc15mAutoCycleState,
+  Btc15mAutoMarketView,
 } from "../types.js";
 
-const defaultConfig: Btc15mBotConfig = {
+const defaultConfig: Btc15mAutoBotConfig = {
   workingBudgetUsd: 5,
   shares: 5,
   buyPrice: 0.25,
@@ -25,10 +25,10 @@ const defaultConfig: Btc15mBotConfig = {
 };
 
 async function main() {
-  const dir = await mkdtemp(join(tmpdir(), "btc15m-store-"));
+  const dir = await mkdtemp(join(tmpdir(), "btc15mAuto-store-"));
   try {
     const filePath = join(dir, "state.json");
-    const store = createBtc15mStateStore({ filePath, defaultConfig });
+    const store = createBtc15mAutoStateStore({ filePath, defaultConfig });
 
     const initial = await store.readState();
     assert.equal(initial.version, 1);
@@ -44,7 +44,7 @@ async function main() {
     const reloaded = await store.readState();
     assert.equal(reloaded.config.workingBudgetUsd, 10);
 
-    const market: Btc15mMarketView = {
+    const market: Btc15mAutoMarketView = {
       slug: "btc-updown-15m-1779220800",
       question: "BTC up/down 15m",
       startTimeMs: 1_779_220_800_000,
@@ -52,7 +52,7 @@ async function main() {
       upTokenId: "tok-up",
       downTokenId: "tok-down",
     };
-    const cycle: Btc15mCycleState = {
+    const cycle: Btc15mAutoCycleState = {
       cyclePhase: "holding",
       cycleStartedAt: 1,
       buyOrder: null,
@@ -82,7 +82,7 @@ async function main() {
     assert.equal(runtime.cycle.position?.tokenId, "tok-down");
     assert.equal(runtime.logs.length, 1);
 
-    const trade: Btc15mCompletedTrade = {
+    const trade: Btc15mAutoCompletedTrade = {
       id: "t1",
       marketSlug: "btc-updown-15m-1779220800",
       bettingSide: "down",

@@ -8,7 +8,6 @@ import {
   getAccountSummary,
   getOpenPositions,
   getRuntimeAuthDebug,
-  getScalperOpenOrders,
   getUserWebSocketAuth,
   placeLimitOrder,
   scanMarkets,
@@ -23,7 +22,7 @@ import {
   initializeRuntimeApiCreds,
   forceReloadApiCreds,
 } from "./runtime-auth.js";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, WebSocket } from "ws";
 import { initBotManager, activateBot, deactivateBot, getBotStatus, getAllActiveBots, getOrFetchStationHistory, type BotTask } from "./bot-manager.js";
 import { getEventLog, clearEventLog, logEvent } from "./event-log.js";
 import { loadSettings } from "./config.js";
@@ -39,14 +38,22 @@ import {
   getBtc15mBotStatus,
   startBtc15mBot,
   stopBtc15mBot,
+  resetBtc15mBudget,
   type Btc15mBotConfig,
 } from "./btc15m/index.js";
 import {
-  getScalperStatus,
-  reconcileScalperState,
-  startScalperStrategy,
-  stopScalperStrategy,
-} from "./scalper/scalper-strategy.js";
+  getBtc15mAutoBotStatus,
+  startBtc15mAutoBot,
+  stopBtc15mAutoBot,
+  resetBtc15mAutoBudget,
+  type Btc15mAutoBotConfig,
+} from "./btc15m-auto/index.js";
+import {
+  getBtc15mHedgeBotStatus,
+  startBtc15mHedgeBot,
+  stopBtc15mHedgeBot,
+  type Btc15mHedgeBotConfig,
+} from "./btc15m-hedge/index.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const FRONTEND_DIST = join(__dirname, "..", "..", "frontend", "dist");
@@ -66,6 +73,9 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 const port = Number(process.env.PORT ?? "3001");
+let appWss: WebSocketServer | null = null;
+let btc15mBroadcastInterval: NodeJS.Timeout | null = null;
+let btc15mAutoBroadcastInterval: NodeJS.Timeout | null = null;
 
 const server = createServer(async (req, res) => {
   try {
@@ -212,29 +222,6 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { slugs: getAllActiveBots() });
     }
 
-    if (requestUrl.pathname === "/api/scalper/status" && req.method === "GET") {
-      await reconcileScalperState(loadSettings());
-      return json(res, 200, getScalperStatus());
-    }
-
-    if (requestUrl.pathname === "/api/scalper/open-orders" && req.method === "GET") {
-      await reconcileScalperState(loadSettings());
-      const payload = await getScalperOpenOrders();
-      return json(res, 200, payload);
-    }
-
-    if (requestUrl.pathname === "/api/scalper/start" && req.method === "POST") {
-      const settings = loadSettings();
-      await startScalperStrategy(settings);
-      return json(res, 200, { ok: true, active: true });
-    }
-
-    if (requestUrl.pathname === "/api/scalper/stop" && req.method === "POST") {
-      stopScalperStrategy();
-      await reconcileScalperState(loadSettings());
-      return json(res, 200, { ok: true, active: false });
-    }
-
     if (requestUrl.pathname === "/api/btc5m/status" && req.method === "GET") {
       const payload = await getBtc5mBotStatus(loadSettings());
       return json(res, 200, payload);
@@ -262,7 +249,57 @@ const server = createServer(async (req, res) => {
     }
 
     if (requestUrl.pathname === "/api/btc15m/stop" && req.method === "POST") {
-      const payload = stopBtc15mBot(loadSettings());
+      const payload = await stopBtc15mBot(loadSettings());
+      return json(res, 200, payload);
+    }
+
+    if (requestUrl.pathname === "/api/btc15m/reset-budget" && req.method === "POST") {
+      try {
+        const payload = await resetBtc15mBudget(loadSettings());
+        return json(res, 200, payload);
+      } catch (error) {
+        return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    if (requestUrl.pathname === "/api/btc15m-auto/status" && req.method === "GET") {
+      const payload = await getBtc15mAutoBotStatus(loadSettings());
+      return json(res, 200, payload);
+    }
+
+    if (requestUrl.pathname === "/api/btc15m-auto/start" && req.method === "POST") {
+      const body = await readJsonBody(req) as { config?: Partial<Btc15mAutoBotConfig> };
+      const payload = await startBtc15mAutoBot(loadSettings(), { configOverrides: body.config });
+      return json(res, 200, payload);
+    }
+
+    if (requestUrl.pathname === "/api/btc15m-auto/stop" && req.method === "POST") {
+      const payload = await stopBtc15mAutoBot(loadSettings());
+      return json(res, 200, payload);
+    }
+
+    if (requestUrl.pathname === "/api/btc15m-auto/reset-budget" && req.method === "POST") {
+      try {
+        const payload = await resetBtc15mAutoBudget(loadSettings());
+        return json(res, 200, payload);
+      } catch (error) {
+        return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    if (requestUrl.pathname === "/api/btc15m-hedge/status" && req.method === "GET") {
+      const payload = await getBtc15mHedgeBotStatus(loadSettings());
+      return json(res, 200, payload);
+    }
+
+    if (requestUrl.pathname === "/api/btc15m-hedge/start" && req.method === "POST") {
+      const body = await readJsonBody(req) as { config?: Partial<Btc15mHedgeBotConfig> };
+      const payload = await startBtc15mHedgeBot(loadSettings(), { configOverrides: body.config });
+      return json(res, 200, payload);
+    }
+
+    if (requestUrl.pathname === "/api/btc15m-hedge/stop" && req.method === "POST") {
+      const payload = await stopBtc15mHedgeBot(loadSettings());
       return json(res, 200, payload);
     }
 
@@ -353,10 +390,12 @@ async function start(): Promise<void> {
   const authState = getRuntimeAuthState();
 
   const wss = new WebSocketServer({ server });
+  appWss = wss;
   initBotManager(wss);
+  startBtc15mBroadcastLoop();
+  startBtc15mAutoBroadcastLoop();
 
   if (settings.enableScalper) {
-    await startScalperStrategy(settings);
     console.log("Scalper runtime enabled.");
   }
 
@@ -405,11 +444,59 @@ async function readJsonBody(
 }
 
 function json(res: ServerResponse, statusCode: number, payload: unknown): void {
-  res.writeHead(statusCode, {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Content-Type": "application/json; charset=utf-8",
-  });
-  res.end(payload === null ? "" : JSON.stringify(payload));
+  res.writeHead(statusCode, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(payload));
 }
+
+function broadcast(payload: unknown): void {
+  if (!appWss) {
+    return;
+  }
+  const message = JSON.stringify(payload);
+  for (const client of appWss.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(message);
+    }
+  }
+}
+
+function startBtc15mBroadcastLoop(): void {
+  if (btc15mBroadcastInterval) {
+    return;
+  }
+  btc15mBroadcastInterval = setInterval(() => {
+    void publishBtc15mStatus();
+  }, 500);
+}
+
+function startBtc15mAutoBroadcastLoop(): void {
+  if (btc15mAutoBroadcastInterval) {
+    return;
+  }
+  btc15mAutoBroadcastInterval = setInterval(() => {
+    void publishBtc15mAutoStatus();
+  }, 500);
+}
+
+async function publishBtc15mStatus(): Promise<void> {
+  try {
+    const payload = await getBtc15mBotStatus(loadSettings());
+    if (!payload.market) {
+      return;
+    }
+    broadcast({ type: "btc15m_status", payload });
+  } catch {
+  }
+}
+
+async function publishBtc15mAutoStatus(): Promise<void> {
+  try {
+    const payload = await getBtc15mAutoBotStatus(loadSettings());
+    if (!payload.market) {
+      return;
+    }
+    broadcast({ type: "btc15m_auto_status", payload });
+  } catch {
+  }
+}
+

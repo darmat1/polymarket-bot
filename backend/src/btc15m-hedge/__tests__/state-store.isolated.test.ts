@@ -150,7 +150,8 @@ async function main() {
         unpairedUpShares: "bad-data",
       },
     };
-    await writeFile(filePath, `${JSON.stringify(malformedState, null, 2)}\n`, "utf8");
+    await writeFile(filePath, `${JSON.stringify(malformedState, null, 2)}
+`, "utf8");
     const normalized = await store.readState();
     assert.equal(normalized.config.targetCombinedPrice, null);
     assert.equal(normalized.cycle.pairedShares, 0);

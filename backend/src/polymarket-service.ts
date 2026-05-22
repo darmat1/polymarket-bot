@@ -107,6 +107,23 @@ export class PolymarketService {
     return client.getOrder(orderId);
   }
 
+  async getOrderBook(tokenId: string): Promise<{ bestBid: number | null; bestAsk: number | null }> {
+    const client = await getRuntimePolymarketService();
+    const book = await client.getOrderBook(tokenId);
+    // bids sorted desc by price, asks asc — but be defensive: scan for max bid / min ask.
+    let bestBid: number | null = null;
+    for (const b of book.bids ?? []) {
+      const p = parseFloat(b.price);
+      if (Number.isFinite(p) && (bestBid === null || p > bestBid)) bestBid = p;
+    }
+    let bestAsk: number | null = null;
+    for (const a of book.asks ?? []) {
+      const p = parseFloat(a.price);
+      if (Number.isFinite(p) && (bestAsk === null || p < bestAsk)) bestAsk = p;
+    }
+    return { bestBid, bestAsk };
+  }
+
   async cancelOrder(orderId: string): Promise<unknown> {
     const client = await getRuntimePolymarketService();
     return client.cancelOrder(orderId);

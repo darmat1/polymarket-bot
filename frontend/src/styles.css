@@ -513,12 +513,23 @@ select:focus {
   line-height: 1.45;
 }
 
-.positions-panel .positions-table-wrap {
+.positions-table-wrap {
   margin-top: 10px;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
   border-radius: 12px;
   border: 1px solid var(--line);
   background: rgba(8, 10, 12, 0.7);
+}
+
+/* On mobile, keep table columns from squishing — let the user swipe horizontally. */
+@media (max-width: 768px) {
+  .positions-table-wrap .positions-table {
+    min-width: 720px;
+  }
+  .btc15m-trade-table {
+    min-width: 820px;
+  }
 }
 
 .scalper-open-orders-card {
@@ -1100,16 +1111,23 @@ input:checked ~ .toggle-label {
   gap: 16px;
 }
 
-.btc15m-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
+ .btc15m-actions {
+   display: flex;
+   flex-direction: column;
+   gap: 8px;
+   align-items: stretch;
+ }
+
 
 .btc15m-summary-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+}
+
+.btc15m-summary-grid .btc15m-stat-card:nth-child(5),
+.btc15m-summary-grid .btc15m-stat-card:nth-child(6) {
+  grid-column: span 1;
 }
 
 .btc15m-stat-card,
@@ -1243,6 +1261,12 @@ input:checked ~ .toggle-label {
   color: var(--rose);
 }
 
+@media (max-width: 1580px) {
+  .positions-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 980px) {
   .btc15m-summary-grid,
   .btc15m-cycle-grid {
@@ -1251,10 +1275,5 @@ input:checked ~ .toggle-label {
 
   .btc15m-actions {
     width: 100%;
-    justify-content: stretch;
-  }
-
-  .btc15m-actions .button {
-    flex: 1;
   }
 }

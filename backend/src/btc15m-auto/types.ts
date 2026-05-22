@@ -3,9 +3,9 @@ import type {
   BudgetSnapshot,
 } from "../budget-manager.js";
 
-export type Btc15mEnginePhase = "stopped" | "running" | "auto_stopped";
+export type Btc15mAutoEnginePhase = "stopped" | "running" | "auto_stopped";
 
-export type Btc15mCyclePhase =
+export type Btc15mAutoCyclePhase =
   | "waiting_market"
   | "waiting_direction"
   | "buy_pending"
@@ -14,9 +14,9 @@ export type Btc15mCyclePhase =
   | "cycle_done"
   | "market_idle";
 
-export type Btc15mSide = "up" | "down";
+export type Btc15mAutoSide = "up" | "down";
 
-export interface Btc15mMarketView {
+export interface Btc15mAutoMarketView {
   slug: string;
   question: string;
   startTimeMs: number;
@@ -25,12 +25,12 @@ export interface Btc15mMarketView {
   downTokenId: string;
 }
 
-export interface Btc15mTrackedOrder {
+export interface Btc15mAutoTrackedOrder {
   id: string;
   orderId: string | null;
   side: "buy" | "sell";
   tokenId: string;
-  bettingSide: Btc15mSide;
+  bettingSide: Btc15mAutoSide;
   price: number;
   size: number;
   filledSize: number;
@@ -49,18 +49,18 @@ export interface Btc15mTrackedOrder {
   errorMessage?: string | null;
 }
 
-export interface Btc15mPosition {
-  bettingSide: Btc15mSide;
+export interface Btc15mAutoPosition {
+  bettingSide: Btc15mAutoSide;
   tokenId: string;
   shares: number;
   avgEntryPrice: number;
   costBasisUsd: number;
 }
 
-export interface Btc15mCompletedTrade {
+export interface Btc15mAutoCompletedTrade {
   id: string;
   marketSlug: string;
-  bettingSide: Btc15mSide;
+  bettingSide: Btc15mAutoSide;
   buyPrice: number;
   sellPrice: number;
   shares: number;
@@ -73,7 +73,7 @@ export interface Btc15mCompletedTrade {
   dryRun?: boolean;
 }
 
-export interface Btc15mAnalyticsSummary {
+export interface Btc15mAutoAnalyticsSummary {
   totalTrades: number;
   wins: number;
   losses: number;
@@ -85,7 +85,7 @@ export interface Btc15mAnalyticsSummary {
   remainingBudgetUsd: number;
 }
 
-export interface Btc15mBotConfig {
+export interface Btc15mAutoBotConfig {
   workingBudgetUsd: number;
   shares: number;
   buyPrice: number;
@@ -98,45 +98,45 @@ export interface Btc15mBotConfig {
   tickIntervalSec: number;
 }
 
-export interface Btc15mLogEntry {
+export interface Btc15mAutoLogEntry {
   timestamp: number;
   message: string;
   type: "info" | "warn" | "error" | "success";
 }
 
-export interface Btc15mCycleState {
-  cyclePhase: Btc15mCyclePhase;
+export interface Btc15mAutoCycleState {
+  cyclePhase: Btc15mAutoCyclePhase;
   cycleStartedAt: number | null;
-  buyOrder: Btc15mTrackedOrder | null;
-  sellOrder: Btc15mTrackedOrder | null;
-  position: Btc15mPosition | null;
+  buyOrder: Btc15mAutoTrackedOrder | null;
+  sellOrder: Btc15mAutoTrackedOrder | null;
+  position: Btc15mAutoPosition | null;
   highWaterMark: number | null;
   trailStopPrice: number | null;
 }
 
-export interface Btc15mBotStatus {
-  enginePhase: Btc15mEnginePhase;
+export interface Btc15mAutoBotStatus {
+  enginePhase: Btc15mAutoEnginePhase;
   dryRun: boolean;
-  config: Btc15mBotConfig;
-  market: Btc15mMarketView | null;
+  config: Btc15mAutoBotConfig;
+  market: Btc15mAutoMarketView | null;
   marketStartBtcPrice: number | null;
   currentBtcPrice: number | null;
   upPrice: number | null;
   downPrice: number | null;
-  cycle: Btc15mCycleState;
+  cycle: Btc15mAutoCycleState;
   /** LIVE trades — persisted across restarts. */
-  completedTrades: Btc15mCompletedTrade[];
-  analytics: Btc15mAnalyticsSummary;
+  completedTrades: Btc15mAutoCompletedTrade[];
+  analytics: Btc15mAutoAnalyticsSummary;
   /** SIM trades — in-memory only, cleared on bot restart. Populated when dryRun=true. */
-  sessionTrades: Btc15mCompletedTrade[];
-  sessionAnalytics: Btc15mAnalyticsSummary;
+  sessionTrades: Btc15mAutoCompletedTrade[];
+  sessionAnalytics: Btc15mAutoAnalyticsSummary;
   budget: BudgetSnapshot | null;
-  logs: Btc15mLogEntry[];
+  logs: Btc15mAutoLogEntry[];
   updatedAt: number;
   lastError: string | null;
 }
 
-export interface Btc15mPersistedBudgetState {
+export interface Btc15mAutoPersistedBudgetState {
   initialBudget: number;
   availableBudget: number;
   lockedBudget: number;
@@ -144,25 +144,25 @@ export interface Btc15mPersistedBudgetState {
   lastBalanceCheck: BudgetBalanceCheck | null;
 }
 
-export interface Btc15mRuntimeStateUpdate {
-  enginePhase: Btc15mEnginePhase;
-  market: Btc15mMarketView | null;
+export interface Btc15mAutoRuntimeStateUpdate {
+  enginePhase: Btc15mAutoEnginePhase;
+  market: Btc15mAutoMarketView | null;
   marketStartBtcPrice: number | null;
   currentBtcPrice: number | null;
-  cycle: Btc15mCycleState;
-  logs: Btc15mLogEntry[];
+  cycle: Btc15mAutoCycleState;
+  logs: Btc15mAutoLogEntry[];
   lastError: string | null;
 }
 
-export interface Btc15mPersistentState extends Btc15mRuntimeStateUpdate {
+export interface Btc15mAutoPersistentState extends Btc15mAutoRuntimeStateUpdate {
   version: 1;
   updatedAt: number;
-  config: Btc15mBotConfig;
-  completedTrades: Btc15mCompletedTrade[];
-  budget: Btc15mPersistedBudgetState;
+  config: Btc15mAutoBotConfig;
+  completedTrades: Btc15mAutoCompletedTrade[];
+  budget: Btc15mAutoPersistedBudgetState;
 }
 
-export interface Btc15mStateStoreOptions {
+export interface Btc15mAutoStateStoreOptions {
   filePath: string;
-  defaultConfig: Btc15mBotConfig;
+  defaultConfig: Btc15mAutoBotConfig;
 }

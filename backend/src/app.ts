@@ -9,7 +9,6 @@ import {
   type WeatherProbabilityResult,
 } from "./models.js";
 import { getRuntimeAuthState, getRuntimeTradingClient, initializeRuntimeApiCreds } from "./runtime-auth.js";
-import { createScalperStateStore } from "./scalper/state-store.js";
 import { TradingClient } from "./trading.js";
 import { fetchForecastPoints, fetchHourlyForecast } from "./weather/forecasts.js";
 import { parseWeatherMarket } from "./weather/parser.js";
@@ -581,40 +580,6 @@ export async function getUserWebSocketAuth(): Promise<UserWebSocketAuthPayload> 
     key_preview: runtime.keyPreview,
     passphrase_preview: runtime.passphrasePreview,
     last_error: runtime.lastError,
-  };
-}
-
-export async function getScalperOpenOrders(): Promise<ScalperOpenOrdersResponse> {
-  const client = await getRuntimeTradingClient();
-  const liveOrders = await client.getOpenOrders();
-  const stateStore = createScalperStateStore({
-    filePath: loadSettings().scalper.stateFile,
-    maxBotBudget: loadSettings().scalper.maxBotBudget,
-  });
-  const state = await stateStore.readState();
-
-  const orders = liveOrders.map((order) => {
-    const tracked = state.trackedOrders[order.id];
-    const marketSlug = tracked?.marketSlug ?? null;
-
-    return {
-      orderId: order.id,
-      marketSlug,
-      marketUrl: marketSlug ? `https://polymarket.com/event/${marketSlug}` : null,
-      outcome: tracked?.outcome ?? order.outcome ?? null,
-      tokenId: order.asset_id,
-      side: order.side,
-      price: order.price,
-      originalSize: order.original_size,
-      matchedSize: order.size_matched,
-      status: order.status,
-      createdAt: order.created_at,
-    } satisfies ScalperOpenOrderPayload;
-  });
-
-  return {
-    active: orders.length > 0,
-    orders,
   };
 }
 

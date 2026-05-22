@@ -5,33 +5,33 @@ import { createBudgetManager } from "../budget-manager.js";
 import type { Settings } from "../config.js";
 
 import { resolveCurrentMarket } from "./market-resolver.js";
-import { createBtc15mStateStore } from "./state-store.js";
-import { Btc15mBot, type Btc15mRuntime } from "./strategy.js";
+import { createBtc15mAutoStateStore } from "./state-store.js";
+import { Btc15mAutoBot, type Btc15mAutoRuntime } from "./strategy.js";
 import type {
-  Btc15mBotConfig,
-  Btc15mBotStatus,
-  Btc15mCompletedTrade,
-  Btc15mPersistentState,
+  Btc15mAutoBotConfig,
+  Btc15mAutoBotStatus,
+  Btc15mAutoCompletedTrade,
+  Btc15mAutoPersistentState,
 } from "./types.js";
 
 export type {
-  Btc15mBotConfig,
-  Btc15mBotStatus,
-  Btc15mCompletedTrade,
+  Btc15mAutoBotConfig,
+  Btc15mAutoBotStatus,
+  Btc15mAutoCompletedTrade,
 } from "./types.js";
 
-export interface StartBtc15mBotOptions {
-  configOverrides?: Partial<Btc15mBotConfig>;
+export interface StartBtc15mAutoBotOptions {
+  configOverrides?: Partial<Btc15mAutoBotConfig>;
 }
 
-let activeBot: Btc15mBot | null = null;
+let activeBot: Btc15mAutoBot | null = null;
 let marketWs: PolymarketMarketWs | null = null;
 const bookListeners = new Map<string, Set<(bestBid: number | null, bestAsk: number | null) => void>>();
 
-export async function startBtc15mBot(
+export async function startBtc15mAutoBot(
   settings: Settings,
-  options: StartBtc15mBotOptions = {},
-): Promise<Btc15mBotStatus> {
+  options: StartBtc15mAutoBotOptions = {},
+): Promise<Btc15mAutoBotStatus> {
   if (activeBot) {
     if (activeBot.getStatus().enginePhase === "running") {
       return activeBot.getStatus();
@@ -40,9 +40,9 @@ export async function startBtc15mBot(
   }
 
   const baseConfig = configFromSettings(settings);
-  const config: Btc15mBotConfig = { ...baseConfig, ...sanitizeConfigOverrides(options.configOverrides) };
-  const store = createBtc15mStateStore({
-    filePath: settings.btc15m.stateFile,
+  const config: Btc15mAutoBotConfig = { ...baseConfig, ...sanitizeConfigOverrides(options.configOverrides) };
+  const store = createBtc15mAutoStateStore({
+    filePath: settings.btc15mAuto.stateFile,
     defaultConfig: baseConfig,
   });
   await store.updateConfig(config);
@@ -84,7 +84,7 @@ export async function startBtc15mBot(
   await budgetManager.initialize();
 
   let userWsInstance: ScalperUserWs | null = null;
-  const runtime: Btc15mRuntime = {
+  const runtime: Btc15mAutoRuntime = {
     now: () => Date.now(),
     resolveMarket: () => resolveCurrentMarket(settings.gammaHost),
     fetchBtcPrice,
@@ -140,7 +140,7 @@ export async function startBtc15mBot(
   };
 
   const latestPersisted = await store.readState();
-  const bot = new Btc15mBot({
+  const bot = new Btc15mAutoBot({
     config,
     dryRun: settings.dryRun,
     runtime,
@@ -157,13 +157,13 @@ export async function startBtc15mBot(
  * an active position/order — resetting then would orphan budget reservations tracking the
  * still-open Polymarket order. Caller must Stop first.
  */
-export async function resetBtc15mBudget(settings: Settings): Promise<Btc15mBotStatus> {
+export async function resetBtc15mAutoBudget(settings: Settings): Promise<Btc15mAutoBotStatus> {
   if (activeBot?.getStatus().enginePhase === "running") {
     throw new Error("Cannot reset budget while bot is running. Stop the bot first.");
   }
   const config = configFromSettings(settings);
-  const store = createBtc15mStateStore({
-    filePath: settings.btc15m.stateFile,
+  const store = createBtc15mAutoStateStore({
+    filePath: settings.btc15mAuto.stateFile,
     defaultConfig: config,
   });
   const persisted = await store.readState();
@@ -176,10 +176,10 @@ export async function resetBtc15mBudget(settings: Settings): Promise<Btc15mBotSt
     budget.lockedBudget = 0;
     budget.lastBalanceCheck = null;
   });
-  return getBtc15mBotStatus(settings);
+  return getBtc15mAutoBotStatus(settings);
 }
 
-export async function stopBtc15mBot(settings?: Settings): Promise<Btc15mBotStatus> {
+export async function stopBtc15mAutoBot(settings?: Settings): Promise<Btc15mAutoBotStatus> {
   if (activeBot) {
     await activeBot.stop();
     const status = activeBot.getStatus();
@@ -251,13 +251,13 @@ export async function stopBtc15mBot(settings?: Settings): Promise<Btc15mBotStatu
   };
 }
 
-export async function getBtc15mBotStatus(settings: Settings): Promise<Btc15mBotStatus> {
+export async function getBtc15mAutoBotStatus(settings: Settings): Promise<Btc15mAutoBotStatus> {
   if (activeBot) {
     return activeBot.getStatus();
   }
 
-  const store = createBtc15mStateStore({
-    filePath: settings.btc15m.stateFile,
+  const store = createBtc15mAutoStateStore({
+    filePath: settings.btc15mAuto.stateFile,
     defaultConfig: configFromSettings(settings),
   });
   const persisted = await store.readState();
@@ -272,27 +272,27 @@ export async function getBtc15mBotStatus(settings: Settings): Promise<Btc15mBotS
   return status;
 }
 
-export function configFromSettings(settings: Settings): Btc15mBotConfig {
+export function configFromSettings(settings: Settings): Btc15mAutoBotConfig {
   return {
-    workingBudgetUsd: settings.btc15m.workingBudgetUsd,
-    shares: settings.btc15m.orderSize,
-    buyPrice: settings.btc15m.buyPriceLimit,
-    trailStep: settings.btc15m.trailStep,
-    trailDist: settings.btc15m.trailDist,
-    trailUpdateIntervalSec: settings.btc15m.trailUpdateIntervalSec,
-    repeatThresholdMin: settings.btc15m.repeatThresholdMin,
-    forceSellThresholdMin: settings.btc15m.forceSellThresholdMin,
-    neutralZoneUsd: settings.btc15m.neutralZoneUsd,
-    tickIntervalSec: settings.btc15m.tickIntervalSec,
+    workingBudgetUsd: settings.btc15mAuto.workingBudgetUsd,
+    shares: settings.btc15mAuto.orderSize,
+    buyPrice: settings.btc15mAuto.buyPriceLimit,
+    trailStep: settings.btc15mAuto.trailStep,
+    trailDist: settings.btc15mAuto.trailDist,
+    trailUpdateIntervalSec: settings.btc15mAuto.trailUpdateIntervalSec,
+    repeatThresholdMin: settings.btc15mAuto.repeatThresholdMin,
+    forceSellThresholdMin: settings.btc15mAuto.forceSellThresholdMin,
+    neutralZoneUsd: settings.btc15mAuto.neutralZoneUsd,
+    tickIntervalSec: settings.btc15mAuto.tickIntervalSec,
   };
 }
 
 function createIdleStatus(
   settings: Settings,
-  config: Btc15mBotConfig,
-  trades: Btc15mCompletedTrade[],
-  persisted: Btc15mPersistentState | null,
-): Btc15mBotStatus {
+  config: Btc15mAutoBotConfig,
+  trades: Btc15mAutoCompletedTrade[],
+  persisted: Btc15mAutoPersistentState | null,
+): Btc15mAutoBotStatus {
   const wins = trades.filter((trade) => trade.result === "win").length;
   const budget = persisted?.budget
     ? {
@@ -354,13 +354,13 @@ function createIdleStatus(
   };
 }
 
-function sanitizeConfigOverrides(overrides: Partial<Btc15mBotConfig> | undefined): Partial<Btc15mBotConfig> {
+function sanitizeConfigOverrides(overrides: Partial<Btc15mAutoBotConfig> | undefined): Partial<Btc15mAutoBotConfig> {
   if (!overrides) {
     return {};
   }
   return Object.fromEntries(
     Object.entries(overrides).filter(([, value]) => typeof value === "number" && Number.isFinite(value) && value > 0),
-  ) as Partial<Btc15mBotConfig>;
+  ) as Partial<Btc15mAutoBotConfig>;
 }
 
 function subscribeMarketBook(

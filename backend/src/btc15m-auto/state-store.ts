@@ -7,36 +7,36 @@ import type {
   BudgetSnapshot,
 } from "../budget-manager.js";
 import type {
-  Btc15mBotConfig,
-  Btc15mCompletedTrade,
-  Btc15mCycleState,
-  Btc15mPersistedBudgetState,
-  Btc15mPersistentState,
-  Btc15mRuntimeStateUpdate,
-  Btc15mStateStoreOptions,
+  Btc15mAutoBotConfig,
+  Btc15mAutoCompletedTrade,
+  Btc15mAutoCycleState,
+  Btc15mAutoPersistedBudgetState,
+  Btc15mAutoPersistentState,
+  Btc15mAutoRuntimeStateUpdate,
+  Btc15mAutoStateStoreOptions,
 } from "./types.js";
 
 const PROJECT_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const MAX_TRADES = 500;
 const MAX_LOGS = 100;
 
-export class Btc15mStateStore {
+export class Btc15mAutoStateStore {
   private readonly filePath: string;
-  private readonly defaultConfig: Btc15mBotConfig;
+  private readonly defaultConfig: Btc15mAutoBotConfig;
   private updateQueue: Promise<void> = Promise.resolve();
 
-  constructor(options: Btc15mStateStoreOptions) {
+  constructor(options: Btc15mAutoStateStoreOptions) {
     this.filePath = isAbsolute(options.filePath)
       ? options.filePath
       : resolve(PROJECT_ROOT, options.filePath);
     this.defaultConfig = options.defaultConfig;
   }
 
-  async readState(): Promise<Btc15mPersistentState> {
+  async readState(): Promise<Btc15mAutoPersistentState> {
     return this.loadState();
   }
 
-  async updateConfig(config: Btc15mBotConfig): Promise<void> {
+  async updateConfig(config: Btc15mAutoBotConfig): Promise<void> {
     await this.enqueue(async () => {
       const state = await this.loadState();
       state.config = config;
@@ -45,7 +45,7 @@ export class Btc15mStateStore {
     });
   }
 
-  async updateRuntimeState(update: Btc15mRuntimeStateUpdate): Promise<void> {
+  async updateRuntimeState(update: Btc15mAutoRuntimeStateUpdate): Promise<void> {
     await this.enqueue(async () => {
       const state = await this.loadState();
       state.enginePhase = update.enginePhase;
@@ -60,7 +60,7 @@ export class Btc15mStateStore {
     });
   }
 
-  async appendCompletedTrade(trade: Btc15mCompletedTrade): Promise<void> {
+  async appendCompletedTrade(trade: Btc15mAutoCompletedTrade): Promise<void> {
     await this.enqueue(async () => {
       const state = await this.loadState();
       state.completedTrades = [...state.completedTrades, trade].slice(-MAX_TRADES);
@@ -87,7 +87,7 @@ export class Btc15mStateStore {
   }
 
   async updateBudget(
-    updater: (budget: Btc15mPersistedBudgetState) => void | Promise<void>,
+    updater: (budget: Btc15mAutoPersistedBudgetState) => void | Promise<void>,
   ): Promise<BudgetSnapshot> {
     return this.enqueue(async () => {
       const state = await this.loadState();
@@ -106,10 +106,10 @@ export class Btc15mStateStore {
     });
   }
 
-  private async loadState(): Promise<Btc15mPersistentState> {
+  private async loadState(): Promise<Btc15mAutoPersistentState> {
     try {
       const raw = await readFile(this.filePath, "utf8");
-      return this.normalize(JSON.parse(raw) as Partial<Btc15mPersistentState>);
+      return this.normalize(JSON.parse(raw) as Partial<Btc15mAutoPersistentState>);
     } catch (error) {
       if (isMissingFileError(error)) {
         return this.createDefaultState();
@@ -118,7 +118,7 @@ export class Btc15mStateStore {
     }
   }
 
-  private async persistState(state: Btc15mPersistentState): Promise<void> {
+  private async persistState(state: Btc15mAutoPersistentState): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
     const tempPath = `${this.filePath}.tmp`;
     await writeFile(tempPath, `${JSON.stringify(state, null, 2)}
@@ -135,9 +135,9 @@ export class Btc15mStateStore {
     return result;
   }
 
-  private normalize(input: Partial<Btc15mPersistentState>): Btc15mPersistentState {
+  private normalize(input: Partial<Btc15mAutoPersistentState>): Btc15mAutoPersistentState {
     const fallback = this.createDefaultState();
-    const state: Btc15mPersistentState = {
+    const state: Btc15mAutoPersistentState = {
       version: 1,
       updatedAt: numberOr(input.updatedAt, fallback.updatedAt),
       config: normalizeConfig(input.config, fallback.config),
@@ -160,7 +160,7 @@ export class Btc15mStateStore {
     return state;
   }
 
-  private createDefaultState(): Btc15mPersistentState {
+  private createDefaultState(): Btc15mAutoPersistentState {
     const now = Date.now();
     return {
       version: 1,
@@ -185,11 +185,11 @@ export class Btc15mStateStore {
   }
 }
 
-export function createBtc15mStateStore(options: Btc15mStateStoreOptions): Btc15mStateStore {
-  return new Btc15mStateStore(options);
+export function createBtc15mAutoStateStore(options: Btc15mAutoStateStoreOptions): Btc15mAutoStateStore {
+  return new Btc15mAutoStateStore(options);
 }
 
-export function emptyCycle(): Btc15mCycleState {
+export function emptyCycle(): Btc15mAutoCycleState {
   return {
     cyclePhase: "waiting_market",
     cycleStartedAt: null,
@@ -202,9 +202,9 @@ export function emptyCycle(): Btc15mCycleState {
 }
 
 function normalizeConfig(
-  input: Partial<Btc15mBotConfig> | undefined,
-  fallback: Btc15mBotConfig,
-): Btc15mBotConfig {
+  input: Partial<Btc15mAutoBotConfig> | undefined,
+  fallback: Btc15mAutoBotConfig,
+): Btc15mAutoBotConfig {
   return {
     workingBudgetUsd: numberOr(input?.workingBudgetUsd, fallback.workingBudgetUsd),
     shares: numberOr(input?.shares, fallback.shares),
@@ -220,10 +220,10 @@ function normalizeConfig(
 }
 
 function normalizeBudgetInput(
-  input: Partial<Btc15mPersistedBudgetState> | undefined,
-  fallback: Btc15mPersistedBudgetState,
+  input: Partial<Btc15mAutoPersistedBudgetState> | undefined,
+  fallback: Btc15mAutoPersistedBudgetState,
   maxBudget: number,
-): Btc15mPersistedBudgetState {
+): Btc15mAutoPersistedBudgetState {
   const budget = {
     initialBudget: numberOr(input?.initialBudget, fallback.initialBudget),
     availableBudget: numberOr(input?.availableBudget, fallback.availableBudget),
@@ -235,14 +235,14 @@ function normalizeBudgetInput(
   return budget;
 }
 
-function normalizeBudget(budget: Btc15mPersistedBudgetState, maxBudget: number): void {
+function normalizeBudget(budget: Btc15mAutoPersistedBudgetState, maxBudget: number): void {
   budget.initialBudget = Math.max(0, roundBudget(budget.initialBudget || maxBudget));
   budget.availableBudget = Math.max(0, roundBudget(budget.availableBudget));
   budget.lockedBudget = Math.max(0, roundBudget(budget.lockedBudget));
   budget.updatedAt = Number.isFinite(budget.updatedAt) ? budget.updatedAt : Date.now();
 }
 
-function toBudgetSnapshot(budget: Btc15mPersistedBudgetState): BudgetSnapshot {
+function toBudgetSnapshot(budget: Btc15mAutoPersistedBudgetState): BudgetSnapshot {
   return {
     initialBudget: budget.initialBudget,
     availableBudget: budget.availableBudget,
@@ -253,7 +253,7 @@ function toBudgetSnapshot(budget: Btc15mPersistedBudgetState): BudgetSnapshot {
   };
 }
 
-function normalizeMarket(value: unknown): Btc15mPersistentState["market"] {
+function normalizeMarket(value: unknown): Btc15mAutoPersistentState["market"] {
   if (!value || typeof value !== "object") {
     return null;
   }
@@ -278,14 +278,14 @@ function normalizeMarket(value: unknown): Btc15mPersistentState["market"] {
   };
 }
 
-function normalizeCycle(value: unknown): Btc15mCycleState {
+function normalizeCycle(value: unknown): Btc15mAutoCycleState {
   if (!value || typeof value !== "object") {
     return emptyCycle();
   }
-  const cycle = value as Partial<Btc15mCycleState>;
+  const cycle = value as Partial<Btc15mAutoCycleState>;
   return {
     cyclePhase: typeof cycle.cyclePhase === "string"
-      ? cycle.cyclePhase as Btc15mCycleState["cyclePhase"]
+      ? cycle.cyclePhase as Btc15mAutoCycleState["cyclePhase"]
       : "waiting_market",
     cycleStartedAt: nullableNumber(cycle.cycleStartedAt),
     buyOrder: cycle.buyOrder ?? null,

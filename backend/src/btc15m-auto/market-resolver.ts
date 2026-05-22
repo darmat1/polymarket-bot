@@ -1,19 +1,19 @@
 import { GammaClient } from "../gamma.js";
-import type { Btc15mMarketView } from "./types.js";
+import type { Btc15mAutoMarketView } from "./types.js";
 
-export const BTC15M_WINDOW_SEC = 900;
-export const BTC15M_SLUG_PREFIX = "btc-updown-15m-";
+export const BTC15M_AUTO_WINDOW_SEC = 900;
+export const BTC15M_AUTO_SLUG_PREFIX = "btc-updown-15m-";
 
 export function currentWindowStartSec(nowMs: number): number {
-  return Math.floor(nowMs / 1000 / BTC15M_WINDOW_SEC) * BTC15M_WINDOW_SEC;
+  return Math.floor(nowMs / 1000 / BTC15M_AUTO_WINDOW_SEC) * BTC15M_AUTO_WINDOW_SEC;
 }
 
 export function nextWindowStartSec(nowMs: number): number {
-  return currentWindowStartSec(nowMs) + BTC15M_WINDOW_SEC;
+  return currentWindowStartSec(nowMs) + BTC15M_AUTO_WINDOW_SEC;
 }
 
 export function slugForWindow(startSec: number): string {
-  return `${BTC15M_SLUG_PREFIX}${startSec}`;
+  return `${BTC15M_AUTO_SLUG_PREFIX}${startSec}`;
 }
 
 export interface ResolveCurrentMarketOptions {
@@ -24,7 +24,7 @@ export interface ResolveCurrentMarketOptions {
 export async function resolveCurrentMarket(
   gammaHost: string,
   options: ResolveCurrentMarketOptions = {},
-): Promise<Btc15mMarketView | null> {
+): Promise<Btc15mAutoMarketView | null> {
   const gamma = options.gamma ?? new GammaClient(gammaHost);
   const slug = slugForWindow(currentWindowStartSec(options.now?.() ?? Date.now()));
   try {
@@ -38,7 +38,7 @@ export async function resolveCurrentMarket(
 export function parseMarketView(
   raw: Record<string, unknown>,
   fallbackSlug: string,
-): Btc15mMarketView | null {
+): Btc15mAutoMarketView | null {
   const slug = typeof raw.slug === "string" && raw.slug.trim() ? raw.slug : fallbackSlug;
   const question = typeof raw.question === "string" && raw.question.trim() ? raw.question : slug;
   // IMPORTANT: Polymarket's `raw.startDate` is the MARKET LISTING DATE, not the 15-minute
@@ -54,7 +54,7 @@ export function parseMarketView(
   const slugStartSec = extractSlugStartSec(slug);
   const startTimeMs = slugStartSec !== null
     ? slugStartSec * 1000
-    : endTimeMs - BTC15M_WINDOW_SEC * 1000;
+    : endTimeMs - BTC15M_AUTO_WINDOW_SEC * 1000;
 
   const tokens = parseOutcomeTokens(raw);
   if (!tokens) {
@@ -72,8 +72,8 @@ export function parseMarketView(
 }
 
 function extractSlugStartSec(slug: string): number | null {
-  if (!slug.startsWith(BTC15M_SLUG_PREFIX)) return null;
-  const suffix = slug.slice(BTC15M_SLUG_PREFIX.length);
+  if (!slug.startsWith(BTC15M_AUTO_SLUG_PREFIX)) return null;
+  const suffix = slug.slice(BTC15M_AUTO_SLUG_PREFIX.length);
   const parsed = Number(suffix);
   return Number.isFinite(parsed) && parsed > 1_000_000_000 ? parsed : null;
 }

@@ -235,29 +235,6 @@ type EventLogEntry = {
   message: string;
 };
 
-type ScalperStatusPayload = {
-  active: boolean;
-};
-
-type ScalperOpenOrder = {
-  orderId: string;
-  marketSlug: string | null;
-  marketUrl: string | null;
-  outcome: string | null;
-  tokenId: string;
-  side: string;
-  price: string;
-  originalSize: string;
-  matchedSize: string;
-  status: string;
-  createdAt: number;
-};
-
-type ScalperOpenOrdersPayload = {
-  active: boolean;
-  orders: ScalperOpenOrder[];
-};
-
 type Toast = {
   id: number;
   type: "info" | "success" | "warn" | "error";
@@ -293,10 +270,6 @@ export function App() {
   const [loadingPositions, setLoadingPositions] = useState(false);
   const [positionsError, setPositionsError] = useState<string | null>(null);
   const [activeBotSlugs, setActiveBotSlugs] = useState<string[]>([]);
-  const [scalperActive, setScalperActive] = useState(false);
-  const [scalperLoading, setScalperLoading] = useState(false);
-  const [scalperOrders, setScalperOrders] = useState<ScalperOpenOrder[]>([]);
-  const [scalperOrdersLoading, setScalperOrdersLoading] = useState(false);
   const [btc5mStatus, setBtc5mStatus] = useState<Btc5mBotStatus | null>(null);
   const [btc5mLoading, setBtc5mLoading] = useState(false);
   const [btc15mStatus, setBtc15mStatus] = useState<Btc15mStatusPayload | null>(null);
@@ -1036,7 +1009,6 @@ export function App() {
   async function loadPositions() {
     setIsRefreshing(true);
     setLoadingPositions(true);
-    setScalperOrdersLoading(true);
     setPositionsError(null);
     try {
       const response = await fetch("/api/positions");
@@ -1054,10 +1026,8 @@ export function App() {
       setPositionsPayload(null);
     } finally {
       setLoadingPositions(false);
-      // Keep isRefreshing true for a bit longer to show the "pulse"
       setTimeout(() => setIsRefreshing(false), 800);
 
-      // Also fetch active bots
       try {
         const res = await fetch("/api/bot/active-slugs");
         const data = await res.json();
@@ -1065,48 +1035,6 @@ export function App() {
       } catch (e) {
         console.error("Failed to fetch active bots", e);
       }
-
-      try {
-        const res = await fetch("/api/scalper/status");
-        const data = (await res.json()) as ScalperStatusPayload;
-        setScalperActive(Boolean(data.active));
-      } catch (e) {
-        console.error("Failed to fetch scalper status", e);
-      }
-
-      try {
-        const res = await fetch("/api/scalper/open-orders");
-        const data = (await res.json()) as ScalperOpenOrdersPayload;
-        setScalperOrders(data.orders || []);
-      } catch (e) {
-        console.error("Failed to fetch scalper open orders", e);
-        setScalperOrders([]);
-      } finally {
-        setScalperOrdersLoading(false);
-      }
-    }
-  }
-
-  async function toggleScalper() {
-    setScalperLoading(true);
-    try {
-      const endpoint = scalperActive ? "/api/scalper/stop" : "/api/scalper/start";
-      const response = await fetch(endpoint, { method: "POST" });
-      const payload = (await response.json()) as { ok?: boolean; active?: boolean; error?: string };
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to toggle scalper");
-      }
-      setScalperActive(Boolean(payload.active));
-      void loadPositions();
-      addToast(
-        "success",
-        scalperActive ? "Scalper stopped" : "Scalper started",
-        scalperActive ? "Scalper strategy stopped." : "Scalper strategy started.",
-      );
-    } catch (error) {
-      addToast("error", "Scalper toggle failed", error instanceof Error ? error.message : "Unknown error");
-    } finally {
-      setScalperLoading(false);
     }
   }
 
@@ -1163,6 +1091,24 @@ export function App() {
       addToast("error", "BTC 15m status failed", error instanceof Error ? error.message : "Unknown error");
     } finally {
       setBtc15mLoading(false);
+    }
+  }
+
+  async function resetBtc15mBudget() {
+    setBtc15mLoading(true);
+    try {
+      const response = await fetch("/api/btc15m/reset-budget", { method: "POST" });
+      const payload = (await response.json()) as Btc15mStatusPayload & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Failed to reset BTC 15m budget");
+      }
+      setBtc15mStatus(payload);
+      addToast("success", "BTC 15m budget reset", "Working budget restored.");
+    } catch (error) {
+      addToast("error", "BTC 15m budget reset failed", error instanceof Error ? error.message : "Unknown error");
+    } finally {
+      setBtc15mLoading(false);
+      void loadBtc15mStatus();
     }
   }
 
@@ -1563,20 +1509,6 @@ export function App() {
         </div>
 
         <div className="topbar-side">
-          <div className="scalper-controls">
-            <span className={`status-badge ${scalperActive ? "on" : "off"}`}>
-              <span className={`indicator-dot ${scalperActive ? "pulse" : ""}`} />
-              SCALPER {scalperActive ? "ON" : "OFF"}
-            </span>
-            <button
-              type="button"
-              className={`button button-small ${scalperActive ? "button-secondary" : "button-primary"}`}
-              onClick={() => void toggleScalper()}
-              disabled={scalperLoading}
-            >
-              {scalperLoading ? "..." : scalperActive ? "Stop Scalper" : "Start Scalper"}
-            </button>
-          </div>
           <span className="topbar-meta">
             {accountSummary?.address
               ? shortenAddress(accountSummary.address)
@@ -2098,69 +2030,6 @@ export function App() {
                     })`
                   : "Set POLYMARKET_PRIVATE_KEY or POLYMARKET_FUNDER_ADDRESS in backend .env to load positions."}
               </p>
-              <article className="scalper-open-orders-card">
-                <div className="panel-head">
-                  <div>
-                    <p className="section-kicker">Scalper</p>
-                    <h2>Real Open Orders</h2>
-                  </div>
-                  <button
-                    className="button button-secondary"
-                    type="button"
-                    onClick={() => void loadPositions()}
-                    disabled={scalperOrdersLoading}
-                  >
-                    {scalperOrdersLoading ? "..." : "Refresh Orders"}
-                  </button>
-                </div>
-                {scalperOrders.length === 0 ? (
-                  <p className="status status-muted">
-                    No real open orders found on Polymarket CLOB.
-                  </p>
-                ) : (
-                  <div className="positions-table-wrap">
-                    <table className="positions-table">
-                      <thead>
-                        <tr>
-                          <th>Market</th>
-                          <th>Outcome</th>
-                          <th>Side</th>
-                          <th>Price</th>
-                          <th>Size</th>
-                          <th>Matched</th>
-                          <th>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {scalperOrders.map((order) => (
-                          <tr key={order.orderId}>
-                            <td>
-                              {order.marketUrl ? (
-                                <a
-                                  className="positions-link"
-                                  href={order.marketUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  {order.marketSlug ?? order.orderId}
-                                </a>
-                              ) : (
-                                order.marketSlug ?? order.orderId
-                              )}
-                            </td>
-                            <td>{order.outcome ?? "—"}</td>
-                            <td>{order.side}</td>
-                            <td>{order.price}</td>
-                            <td>{order.originalSize}</td>
-                            <td>{order.matchedSize}</td>
-                            <td>{order.status}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </article>
               {positionsError ? (
                 <p className="status">{positionsError}</p>
               ) : null}
@@ -2576,6 +2445,9 @@ export function App() {
                 <button className="button button-secondary" onClick={() => void loadBtc15mStatus()} type="button" disabled={btc15mLoading}>
                   {btc15mLoading ? "..." : "Refresh"}
                 </button>
+                <button className="button button-secondary" onClick={() => void resetBtc15mBudget()} type="button" disabled={btc15mLoading}>
+                  {btc15mLoading ? "..." : "Clear budget"}
+                </button>
                 <button
                   className={`button ${btc15mStatus?.enginePhase === "running" ? "button-secondary" : "button-primary"}`}
                   onClick={() => void toggleBtc15mBot()}
@@ -2590,8 +2462,10 @@ export function App() {
             <div className="btc15m-summary-grid">
               <article className="btc15m-stat-card"><span>Engine</span><strong className={btc15mStatus?.enginePhase === "running" ? "pnl-pos" : "pnl-neg"}>{btc15mStatus?.enginePhase?.toUpperCase() ?? "STOPPED"}</strong></article>
               <article className="btc15m-stat-card"><span>Mode</span><strong>{btc15mStatus?.dryRun === false ? "LIVE" : "SIM"}</strong></article>
-              <article className="btc15m-stat-card"><span>Trail step / dist</span><strong>${btc15mStatus?.config.trailStep.toFixed(2)} / ${btc15mStatus?.config.trailDist.toFixed(2)}</strong></article>
-              <article className="btc15m-stat-card"><span>Budget Left</span><strong>{formatUsd(btc15mStatus?.analytics.remainingBudgetUsd ?? btc15mStatus?.budget?.availableBudget)}</strong></article>
+              <article className="btc15m-stat-card"><span>Session Start</span><strong>{formatUsd((btc15mStatus as any)?.analytics?.sessionStartBudgetUsd ?? btc15mStatus?.budget?.initialBudget)}</strong></article>
+              <article className="btc15m-stat-card"><span>Profit Sum</span><strong className="pnl-pos">{formatUsd((btc15mStatus as any)?.analytics?.grossProfitUsd)}</strong></article>
+              <article className="btc15m-stat-card"><span>Loss Sum</span><strong className="pnl-neg">{formatUsd((btc15mStatus as any)?.analytics?.grossLossUsd)}</strong></article>
+              <article className="btc15m-stat-card"><span>Balance Now</span><strong>{formatUsd(btc15mStatus?.analytics?.remainingBudgetUsd ?? btc15mStatus?.budget?.availableBudget)}</strong></article>
             </div>
 
             <article className="btc15m-card">
@@ -2649,6 +2523,8 @@ export function App() {
                 <span><em>Time left</em><strong>{btc15mStatus?.market ? formatTimeRemaining(btc15mStatus.market.endTimeMs) : "—"}</strong></span>
                 <span><em>Start BTC</em><strong>{formatBtcPrice(btc15mStatus?.marketStartBtcPrice)}</strong></span>
                 <span><em>Current BTC</em><strong>{formatBtcPrice(btc15mStatus?.currentBtcPrice)}</strong></span>
+                <span><em>Up Price</em><strong>{formatUsdPrice((btc15mStatus as any)?.upPrice)}</strong></span>
+                <span><em>Down Price</em><strong>{formatUsdPrice((btc15mStatus as any)?.downPrice)}</strong></span>
                 <span><em>Delta</em><strong>{formatBtcDelta(btc15mStatus)}</strong></span>
                 <span><em>Cycle</em><strong>{btc15mStatus?.cycle.cyclePhase ?? "—"}</strong></span>
               </div>
@@ -2722,12 +2598,12 @@ export function App() {
                 <p className="section-kicker">{tabTitle} Scan</p>
                 <h2>{tabTitle} Discovery</h2>
               </div>
-                <button
-                  className="button button-secondary"
-                  onClick={() => void loadEvents(search)}
-                  type="button"
-                >
-                  Refresh
+              <button
+                className="button button-secondary"
+                onClick={() => void loadEvents(search)}
+                type="button"
+              >
+                Refresh
               </button>
             </div>
 
@@ -2839,13 +2715,13 @@ export function App() {
               <strong>highest available price on the market</strong>.
             </p>
             <div className="modal-actions">
-              <button 
+              <button
                 className="button button-secondary"
                 onClick={() => setSellConfirmation(null)}
               >
                 Cancel
               </button>
-              <button 
+              <button
                 className="button button-primary sell-btn"
                 onClick={() => void handleManualSell()}
               >

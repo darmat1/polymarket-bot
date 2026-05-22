@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { ScalperUserWsMessage } from "../scalper-user-ws.js";
-import type { BudgetSnapshot } from "../scalper/types.js";
+import type { BudgetSnapshot } from "../budget-manager.js";
 import { emptyHedgeCycle } from "./state-store.js";
 import type {
   Btc15mHedgeBotConfig,
@@ -64,6 +64,7 @@ export class Btc15mHedgeBot {
   private readonly orderMatchedTotals = new Map<string, number>();
   private readonly orderReservedUsd = new Map<string, number>();
   private readonly fillLots: Record<Btc15mHedgeSide, FillLot[]> = { up: [], down: [] };
+  private unwindRealizedPnlUsd = 0;
   private tickInProgress = false;
   private tickTimer: ReturnType<typeof setInterval> | null = null;
   private state: Btc15mHedgeBotStatus;
@@ -133,10 +134,12 @@ export class Btc15mHedgeBot {
       const now = this.runtime.now();
       const resolvedMarket = await this.runtime.resolveMarket();
       if (!resolvedMarket) {
-        await this.cancelAllLiveOrders("no-market");
-        await this.finalizeCurrentCycle("market-switch");
-        this.state.market = null;
-        this.state.cycle = emptyHedgeCycle();
+        if (!this.state.market) {
+          this.state.market = null;
+          this.state.cycle = emptyHedgeCycle();
+        } else {
+          this.pushLog("Market resolver returned no market. Keeping current hedge state.", "warn");
+        }
         this.touch();
         await this.persistRuntimeState();
         return;
@@ -509,7 +512,9 @@ export class Btc15mHedgeBot {
       avgUpPrice: this.state.cycle.pairedAvgUp,
       avgDownPrice: this.state.cycle.pairedAvgDown,
       combinedAverage: this.state.cycle.combinedAverage,
-      unpairedUnwindPnlUsd: this.computeUnpairedUnwindPnl(),
+      unpairedUnwindPnlUsd: result === "partial_unwind" || result === "failed_to_pair"
+        ? this.computeUnpairedUnwindPnl()
+        : 0,
       result,
       startedAt: this.state.cycle.cycleStartedAt ?? this.runtime.now(),
       closedAt: this.runtime.now(),
@@ -521,6 +526,9 @@ export class Btc15mHedgeBot {
   }
 
   private computeUnpairedUnwindPnl(): number {
+    if (this.unwindRealizedPnlUsd !== 0) {
+      return roundPrice(this.unwindRealizedPnlUsd);
+    }
     const up = computeLegMarketValue(this.state.cycle.upLeg, this.state.cycle.unpairedUpShares);
     const down = computeLegMarketValue(this.state.cycle.downLeg, this.state.cycle.unpairedDownShares);
     return roundPrice(up + down);
@@ -570,7 +578,9 @@ export class Btc15mHedgeBot {
   private applySellFill(side: Btc15mHedgeSide, delta: number): void {
     const leg = this.getLeg(side);
     const fillSize = Math.min(delta, leg.orderSize > 0 ? leg.orderSize : delta, leg.filledShares);
-    consumeLotSharesFromTail(this.fillLots[side], fillSize);
+    const fillPrice = leg.orderPrice ?? 0;
+    const removedCost = consumeLotSharesFromTail(this.fillLots[side], fillSize);
+    this.unwindRealizedPnlUsd = roundPrice(this.unwindRealizedPnlUsd + (fillSize * fillPrice) - removedCost);
     leg.filledShares = roundShares(Math.max(0, leg.filledShares - fillSize));
     leg.filledCostUsd = roundPrice(totalLotCost(this.fillLots[side]));
     leg.avgEntryPrice = leg.filledShares > 0
@@ -701,6 +711,7 @@ export class Btc15mHedgeBot {
     this.liveOrderSides.clear();
     this.orderMatchedTotals.clear();
     this.orderReservedUsd.clear();
+    this.unwindRealizedPnlUsd = 0;
     this.pushLog(`Switched to market ${market.slug}.`, "info");
   }
 
@@ -763,7 +774,7 @@ export class Btc15mHedgeBot {
         continue;
       }
       this.liveOrderSides.set(leg.orderId, orderKind);
-      this.orderMatchedTotals.set(leg.orderId, 0);
+      this.orderMatchedTotals.set(leg.orderId, orderKind === "buy" ? leg.filledShares : 0);
       if (orderKind === "buy" && leg.orderPrice !== null && leg.orderSize > 0) {
         this.orderReservedUsd.set(leg.orderId, roundPrice(leg.orderPrice * leg.orderSize));
       }
@@ -852,21 +863,25 @@ function averageLotPriceForSegment(
   return filled > 0 ? roundPrice(cost / filled) : null;
 }
 
-function consumeLotSharesFromTail(lots: FillLot[], shares: number): void {
+function consumeLotSharesFromTail(lots: FillLot[], shares: number): number {
   let remaining = roundShares(shares);
+  let removedCost = 0;
   while (remaining > 0 && lots.length > 0) {
     const last = lots[lots.length - 1];
     if (!last) {
       break;
     }
     if (last.shares <= remaining) {
+      removedCost += last.shares * last.price;
       remaining = roundShares(remaining - last.shares);
       lots.pop();
       continue;
     }
+    removedCost += remaining * last.price;
     last.shares = roundShares(last.shares - remaining);
     remaining = 0;
   }
+  return roundPrice(removedCost);
 }
 
 function isFailureStatus(status: string | null): boolean {

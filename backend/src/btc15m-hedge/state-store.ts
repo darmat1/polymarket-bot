@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import type {
   BudgetBalanceCheck,
   BudgetSnapshot,
-} from "../scalper/types.js";
+} from "../budget-manager.js";
 import type {
   Btc15mHedgeBotConfig,
   Btc15mHedgeCompletedCycle,
@@ -123,7 +123,8 @@ export class Btc15mHedgeStateStore {
   private async persistState(state: Btc15mHedgePersistentState): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
     const tempPath = `${this.filePath}.tmp`;
-    await writeFile(tempPath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    await writeFile(tempPath, `${JSON.stringify(state, null, 2)}
+`, "utf8");
     await rename(tempPath, this.filePath);
   }
 

@@ -1,7 +1,7 @@
 import type {
   BudgetBalanceCheck,
   BudgetSnapshot,
-} from "../scalper/types.js";
+} from "../budget-manager.js";
 
 export type Btc15mHedgeEnginePhase = "stopped" | "running" | "auto_stopped";
 

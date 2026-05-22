@@ -106,6 +106,7 @@ export interface Settings {
   scalper: ScalperSettings;
   btc5m: Btc5mSettings;
   btc15m: Btc15mSettings;
+  btc15mAuto: Btc15mSettings;
   btc15mHedge: Btc15mHedgeSettings;
 }
 
@@ -143,6 +144,20 @@ export function loadSettings(): Settings {
     stateFile: process.env.BTC15M_STATE_FILE?.trim() || "data/btc15m-trader-state.json",
   };
 
+  const btc15mAuto: Btc15mSettings = {
+    buyPriceLimit: parseNumber(process.env.BTC15M_AUTO_BUY_PRICE_LIMIT, btc15m.buyPriceLimit),
+    trailStep: parseNumber(process.env.BTC15M_AUTO_TRAIL_STEP, btc15m.trailStep),
+    trailDist: parseNumber(process.env.BTC15M_AUTO_TRAIL_DIST, btc15m.trailDist),
+    trailUpdateIntervalSec: parseNumber(process.env.BTC15M_AUTO_TRAIL_UPDATE_SEC, btc15m.trailUpdateIntervalSec),
+    orderSize: parseNumber(process.env.BTC15M_AUTO_ORDER_SIZE, btc15m.orderSize),
+    workingBudgetUsd: parseNumber(process.env.BTC15M_AUTO_WORKING_BUDGET, btc15m.workingBudgetUsd),
+    repeatThresholdMin: parseNumber(process.env.BTC15M_AUTO_REPEAT_MIN, btc15m.repeatThresholdMin),
+    forceSellThresholdMin: parseNumber(process.env.BTC15M_AUTO_FORCE_SELL_MIN, btc15m.forceSellThresholdMin),
+    neutralZoneUsd: parseNumber(process.env.BTC15M_AUTO_NEUTRAL_ZONE_USD, btc15m.neutralZoneUsd),
+    tickIntervalSec: parseNumber(process.env.BTC15M_AUTO_TICK_INTERVAL_SEC, btc15m.tickIntervalSec),
+    stateFile: process.env.BTC15M_AUTO_STATE_FILE?.trim() || "data/btc15m-auto-trader-state.json",
+  };
+
   const btc15mHedge: Btc15mHedgeSettings = {
     workingBudgetUsd: parseNumber(process.env.BTC15M_HEDGE_WORKING_BUDGET, 3),
     orderSize: parseNumber(process.env.BTC15M_HEDGE_ORDER_SIZE, 5),
@@ -156,6 +171,7 @@ export function loadSettings(): Settings {
   validateScalperSettings(scalper);
   validateBtc5mSettings(btc5m);
   validateBtc15mSettings(btc15m);
+  validateBtc15mSettings(btc15mAuto);
   validateBtc15mHedgeSettings(btc15mHedge);
 
   return {
@@ -188,6 +204,7 @@ export function loadSettings(): Settings {
     scalper,
     btc5m,
     btc15m,
+    btc15mAuto,
     btc15mHedge,
   };
 }

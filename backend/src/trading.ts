@@ -2,6 +2,7 @@ import {
   type ApiKeyCreds,
   type OpenOrder,
   type OpenOrderParams,
+  type OrderBookSummary,
 } from "@polymarket/clob-client-v2";
 
 import { type Settings } from "./config.js";
@@ -43,5 +44,10 @@ export class TradingClient extends BasePolymarketClient {
   async cancelOrders(orderIds: string[]): Promise<unknown> {
     const client = this.buildAuthenticatedClient();
     return client.cancelOrders(orderIds);
+  }
+
+  async getOrderBook(tokenId: string): Promise<OrderBookSummary> {
+    const client = this.buildAuthenticatedClient();
+    return client.getOrderBook(tokenId);
   }
 }

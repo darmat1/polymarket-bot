@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 
-import { Btc15mBot, type Btc15mRuntime, type PlaceOrderArgs } from "../strategy.js";
-import type { Btc15mBotConfig, Btc15mCompletedTrade, Btc15mMarketView } from "../types.js";
+import { Btc15mAutoBot, type Btc15mAutoRuntime, type PlaceOrderArgs } from "../strategy.js";
+import type { Btc15mAutoBotConfig, Btc15mAutoCompletedTrade, Btc15mAutoMarketView } from "../types.js";
 
-const config: Btc15mBotConfig = {
+const config: Btc15mAutoBotConfig = {
   workingBudgetUsd: 5,
   shares: 5,
   buyPrice: 0.25,
@@ -16,7 +16,7 @@ const config: Btc15mBotConfig = {
   tickIntervalSec: 2,
 };
 
-const market: Btc15mMarketView = {
+const market: Btc15mAutoMarketView = {
   slug: "btc-updown-15m-1779220800",
   question: "BTC up/down 15m",
   startTimeMs: 1_779_220_800_000,
@@ -31,24 +31,24 @@ function makeHarness(overrides: Partial<{
   now: number;
   currentBtc: number;
   startBtc: number;
-  market: Btc15mMarketView | null;
+  market: Btc15mAutoMarketView | null;
   reserveThrows: boolean;
   orderBook: { bestBid: number | null; bestAsk: number | null };
 }> = {}) {
   let now = overrides.now ?? market.startTimeMs + 60_000;
   let currentBtc = overrides.currentBtc ?? 100_000;
   let startBtc = overrides.startBtc ?? 100_000;
-  let nextMarket: Btc15mMarketView | null = overrides.market === undefined ? market : overrides.market;
+  let nextMarket: Btc15mAutoMarketView | null = overrides.market === undefined ? market : overrides.market;
   let reserved = 0;
   let consumed = 0;
   let added = 0;
   const orders: PlaceOrderArgs[] = [];
   const cancelled: string[] = [];
-  const trades: Btc15mCompletedTrade[] = [];
+  const trades: Btc15mAutoCompletedTrade[] = [];
   const listeners = new Map<string, BookListener>();
   let orderBook = overrides.orderBook;
 
-  const runtime: Btc15mRuntime = {
+  const runtime: Btc15mAutoRuntime = {
     now: () => now,
     resolveMarket: async () => nextMarket,
     fetchBtcPrice: async (atMs) => atMs === market.startTimeMs ? startBtc : currentBtc,
@@ -118,14 +118,14 @@ function makeHarness(overrides: Partial<{
     setNow(value: number) { now = value; },
     setCurrentBtc(value: number) { currentBtc = value; },
     setStartBtc(value: number) { startBtc = value; },
-    setMarket(value: Btc15mMarketView | null) { nextMarket = value; },
+    setMarket(value: Btc15mAutoMarketView | null) { nextMarket = value; },
     setOrderBook(value: { bestBid: number | null; bestAsk: number | null }) { orderBook = value; },
   };
 }
 
 async function startStopTest() {
   const h = makeHarness();
-  const bot = new Btc15mBot({ config, dryRun: true, runtime: h.runtime });
+  const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   assert.equal(bot.getStatus().enginePhase, "stopped");
   await bot.start({ scheduleLoop: false });
   assert.equal(bot.getStatus().enginePhase, "running");
@@ -136,7 +136,7 @@ async function startStopTest() {
 
 async function placesBuyOnDownWhenBtcAboveStart() {
   const h = makeHarness({ currentBtc: 100_000 });
-  const bot = new Btc15mBot({ config, dryRun: true, runtime: h.runtime });
+  const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
   h.setCurrentBtc(100_100);
   await bot.runOneTick();
@@ -152,7 +152,7 @@ async function placesBuyOnDownWhenBtcAboveStart() {
 
 async function noOrderInsideNeutralZone() {
   const h = makeHarness({ currentBtc: 100_002 });
-  const bot = new Btc15mBot({ config, dryRun: true, runtime: h.runtime });
+  const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
   assert.equal(h.orders.length, 0);
   assert.equal(bot.getStatus().cycle.cyclePhase, "waiting_direction");
@@ -162,7 +162,7 @@ async function noOrderInsideNeutralZone() {
 
 async function cancelsBuyOnReturnToNeutralZone() {
   const h = makeHarness({ currentBtc: 100_100 });
-  const bot = new Btc15mBot({ config, dryRun: true, runtime: h.runtime });
+  const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
   assert.equal(h.orders.length, 1);
   h.setCurrentBtc(100_002);
@@ -176,7 +176,7 @@ async function cancelsBuyOnReturnToNeutralZone() {
 
 async function simBuyAndTargetSellFillCompletesTrade() {
   const h = makeHarness({ currentBtc: 100_100 });
-  const bot = new Btc15mBot({ config, dryRun: true, runtime: h.runtime });
+  const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
 
   // Buy fills → HOLDING, no sell placed yet (trailing stop, not immediate sell)
@@ -212,7 +212,7 @@ async function simBuyAndTargetSellFillCompletesTrade() {
 
 async function forceSellsAtBestBidWhenLate() {
   const h = makeHarness({ currentBtc: 100_100 });
-  const bot = new Btc15mBot({ config, dryRun: true, runtime: h.runtime });
+  const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
   // Buy fills → HOLDING, no sell placed yet
   h.listeners.get("tok-down")?.(null, 0.24);
@@ -234,7 +234,7 @@ async function forceSellsAtBestBidWhenLate() {
 
 async function repeatsAndSwitchesMarket() {
   const h = makeHarness({ currentBtc: 100_100 });
-  const bot = new Btc15mBot({ config, dryRun: true, runtime: h.runtime });
+  const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
   h.listeners.get("tok-down")?.(null, 0.24);
   await bot.flushPendingActions();
@@ -263,7 +263,7 @@ async function repeatsAndSwitchesMarket() {
 
 async function autoStopsWhenBudgetReserveThrows() {
   const h = makeHarness({ currentBtc: 100_100, reserveThrows: true });
-  const bot = new Btc15mBot({ config, dryRun: true, runtime: h.runtime });
+  const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
   assert.equal(bot.getStatus().enginePhase, "auto_stopped");
   assert.match(bot.getStatus().lastError ?? "", /budget/i);
@@ -273,7 +273,7 @@ async function autoStopsWhenBudgetReserveThrows() {
 
 async function trendBuyAboveFiftyRequiresRisingPriceWithinRange() {
   const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.54, bestAsk: 0.55 } });
-  const bot = new Btc15mBot({ config: { ...config, buyPrice: 0.6 }, dryRun: true, runtime: h.runtime });
+  const bot = new Btc15mAutoBot({ config: { ...config, buyPrice: 0.6 }, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
   assert.equal(h.orders.length, 0);
 
@@ -288,7 +288,7 @@ async function trendBuyAboveFiftyRequiresRisingPriceWithinRange() {
 
 async function trendBuyAboveFiftySkipsWhenPriceAtOrBelowFiftyOrAboveTarget() {
   const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.49, bestAsk: 0.5 } });
-  const bot = new Btc15mBot({ config: { ...config, buyPrice: 0.6 }, dryRun: true, runtime: h.runtime });
+  const bot = new Btc15mAutoBot({ config: { ...config, buyPrice: 0.6 }, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
   assert.equal(h.orders.length, 0);
 

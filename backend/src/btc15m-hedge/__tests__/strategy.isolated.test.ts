@@ -214,6 +214,18 @@ async function forceUnwindCancelsBuysAndSellsOnlyUnpairedRemainder() {
   assert.equal(sellOrders[0]?.price, 0.32);
   assert.equal(bot.getStatus().cycle.phase, "unwinding");
   assert.ok(runtime.budgetReleased.length >= 2);
+
+  await bot.handleUserWsMessage(fillMessage({
+    orderId: sellOrders[0]!.orderId,
+    assetId: market.upTokenId,
+    side: "sell",
+    status: "filled",
+    matchedSize: 1,
+  }));
+
+  assert.equal(runtime.completedCycles.length, 1);
+  assert.equal(runtime.completedCycles[0]?.result, "partial_unwind");
+  assert.equal(runtime.completedCycles[0]?.unpairedUnwindPnlUsd, -0.03);
 }
 
 async function noReentryAfterPairedHoldingAndCompletionAppendsOnce() {
@@ -337,9 +349,9 @@ async function nullMarketFinalizesProgressInsteadOfDroppingCycle() {
   runtime.market = null;
   await bot.runOneTick();
 
-  assert.equal(runtime.completedCycles.length, 1);
-  assert.equal(runtime.completedCycles[0]?.result, "failed_to_pair");
-  assert.equal(bot.getStatus().market, null);
+  assert.equal(runtime.completedCycles.length, 0);
+  assert.equal(bot.getStatus().market?.slug, market.slug);
+  assert.equal(bot.getStatus().cycle.upLeg.filledShares, 1);
 }
 
 async function persistedOpenBuyOrderHydratesAndAcceptsWsFill() {
@@ -399,7 +411,7 @@ async function persistedOpenBuyOrderHydratesAndAcceptsWsFill() {
     matchedSize: 2,
   }));
 
-  assert.equal(bot.getStatus().cycle.upLeg.filledShares, 3);
+  assert.equal(bot.getStatus().cycle.upLeg.filledShares, 2);
 }
 
 function makeMarket(slug: string, durationMin: number, startTimeMs = Date.UTC(2026, 4, 21, 12, 0, 0)): Btc15mHedgeMarketView {
