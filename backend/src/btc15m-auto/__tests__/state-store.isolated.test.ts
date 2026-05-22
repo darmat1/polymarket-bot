@@ -14,7 +14,8 @@ import type {
 const defaultConfig: Btc15mAutoBotConfig = {
   workingBudgetUsd: 5,
   shares: 5,
-  buyPrice: 0.25,
+  minBuyPrice: 0.2,
+  maxBuyPrice: 0.8,
   trailStep: 0.05,
   trailDist: 0.02,
   trailUpdateIntervalSec: 3,
@@ -58,12 +59,16 @@ async function main() {
       buyOrder: null,
       sellOrder: null,
       position: {
-        bettingSide: "down",
-        tokenId: "tok-down",
+        bettingSide: "up",
+        tokenId: "tok-up",
         shares: 5,
         avgEntryPrice: 0.25,
         costBasisUsd: 1.25,
       },
+      plannedBuyPrice: null,
+      plannedBuyAnchorPrice: null,
+      buyBlockReason: null,
+      buyBlockReferencePrice: null,
       highWaterMark: 0.25,
       trailStopPrice: 0.2,
     };
@@ -79,7 +84,7 @@ async function main() {
     const runtime = await store.readState();
     assert.equal(runtime.enginePhase, "stopped");
     assert.equal(runtime.market?.slug, market.slug);
-    assert.equal(runtime.cycle.position?.tokenId, "tok-down");
+    assert.equal(runtime.cycle.position?.tokenId, "tok-up");
     assert.equal(runtime.logs.length, 1);
 
     const trade: Btc15mAutoCompletedTrade = {

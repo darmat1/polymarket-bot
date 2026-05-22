@@ -6,7 +6,8 @@ import type { Btc15mAutoBotConfig, Btc15mAutoCompletedTrade, Btc15mAutoMarketVie
 const config: Btc15mAutoBotConfig = {
   workingBudgetUsd: 5,
   shares: 5,
-  buyPrice: 0.25,
+  minBuyPrice: 0.2,
+  maxBuyPrice: 0.8,
   trailStep: 0.05,
   trailDist: 0.02,
   trailUpdateIntervalSec: 3,
@@ -134,20 +135,29 @@ async function startStopTest() {
   console.log("strategy start/stop: OK");
 }
 
-async function placesBuyOnDownWhenBtcAboveStart() {
-  const h = makeHarness({ currentBtc: 100_000 });
+async function armsVirtualBuyAboveCurrentUpPriceInsideBounds() {
+  const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.39, bestAsk: 0.4 } });
   const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
-  h.setCurrentBtc(100_100);
-  await bot.runOneTick();
-  assert.equal(h.orders.length, 1);
-  assert.equal(h.orders[0].tokenId, "tok-down");
-  assert.equal(h.orders[0].side, "buy");
-  assert.equal(h.orders[0].price, 0.25);
-  assert.equal(h.reserved, 1.25);
-  assert.equal(bot.getStatus().cycle.cyclePhase, "buy_pending");
+  assert.equal(h.orders.length, 0);
+  assert.equal(bot.getStatus().cycle.cyclePhase, "waiting_direction");
+  assert.equal(bot.getStatus().cycle.buyOrder, null);
+  assert.equal(bot.getStatus().cycle.plannedBuyPrice, 0.42);
   bot.stop();
-  console.log("placeBuy on DOWN: OK");
+  console.log("arms virtual buy inside bounds: OK");
+}
+
+async function plannedBuyTracksPriceDownWithinRange() {
+  const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.39, bestAsk: 0.4 } });
+  const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
+  await bot.start({ scheduleLoop: false });
+  assert.equal(bot.getStatus().cycle.plannedBuyPrice, 0.42);
+
+  h.setOrderBook({ bestBid: 0.3, bestAsk: 0.31 });
+  await bot.runOneTick();
+  assert.equal(bot.getStatus().cycle.plannedBuyPrice, 0.33);
+  bot.stop();
+  console.log("planned buy tracks down: OK");
 }
 
 async function noOrderInsideNeutralZone() {
@@ -160,66 +170,70 @@ async function noOrderInsideNeutralZone() {
   console.log("neutral zone: OK");
 }
 
-async function cancelsBuyOnReturnToNeutralZone() {
-  const h = makeHarness({ currentBtc: 100_100 });
+async function blocksBuyWhenUpPriceAboveUpperBoundUntilPullback() {
+  const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.84, bestAsk: 0.85 } });
   const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
-  assert.equal(h.orders.length, 1);
-  h.setCurrentBtc(100_002);
+  assert.equal(h.orders.length, 0);
+
+  h.setOrderBook({ bestBid: 0.8, bestAsk: 0.81 });
   await bot.runOneTick();
-  assert.deepEqual(h.cancelled, ["buy-1"]);
-  assert.equal(h.reserved, 0);
-  assert.equal(bot.getStatus().cycle.cyclePhase, "waiting_direction");
+  assert.equal(h.orders.length, 0);
   bot.stop();
-  console.log("cancel neutral buy: OK");
+  console.log("blocks buy above upper bound: OK");
 }
 
 async function simBuyAndTargetSellFillCompletesTrade() {
-  const h = makeHarness({ currentBtc: 100_100 });
+  const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.39, bestAsk: 0.4 } });
   const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
 
-  // Buy fills → HOLDING, no sell placed yet (trailing stop, not immediate sell)
-  h.listeners.get("tok-down")?.(null, 0.24);
-  await bot.flushPendingActions();
-  assert.equal(bot.getStatus().cycle.cyclePhase, "holding");
-  assert.equal(h.orders.length, 1); // only the buy order so far
-  assert.equal(bot.getStatus().cycle.sellOrder, null);
-  assert.equal(h.consumed, 1.25);
-
-  h.listeners.get("tok-down")?.(0.38, null);
-  await bot.flushPendingActions();
+  h.setOrderBook({ bestBid: 0.41, bestAsk: 0.42 });
   await bot.runOneTick();
   assert.equal(h.orders.length, 1);
-  assert.equal(bot.getStatus().cycle.trailStopPrice, 0.36);
 
-  h.listeners.get("tok-down")?.(0.36, null);
+  h.listeners.get("tok-up")?.(null, 0.42);
+
+  await bot.flushPendingActions();
+  assert.equal(bot.getStatus().cycle.cyclePhase, "holding");
+  assert.equal(bot.getStatus().cycle.sellOrder, null);
+  assert.equal(h.consumed, 2.1);
+
+  h.setOrderBook({ bestBid: 0.51, bestAsk: 0.52 });
+  h.listeners.get("tok-up")?.(0.51, null);
+  await bot.flushPendingActions();
+  await bot.runOneTick();
+  assert.equal(bot.getStatus().cycle.trailStopPrice, 0.49);
+
+  h.setOrderBook({ bestBid: 0.49, bestAsk: 0.5 });
+  h.listeners.get("tok-up")?.(0.49, null);
   await bot.flushPendingActions();
   await bot.runOneTick();
   assert.equal(h.orders.length, 2);
   assert.equal(h.orders[1].side, "sell");
-  assert.equal(h.orders[1].price, 0.36);
+  assert.equal(h.orders[1].price, 0.49);
   assert.equal(bot.getStatus().sessionTrades.length, 1);
   assert.equal(bot.getStatus().sessionTrades[0].result, "win");
   assert.equal(bot.getStatus().sessionTrades[0].exitReason, "target_sell");
-  assert.equal(bot.getStatus().sessionTrades[0].pnlUsd, 0.55); // (0.36 - 0.25) * 5
+  assert.equal(bot.getStatus().sessionTrades[0].pnlUsd, 0.35);
   assert.equal(h.trades.length, 0);
-  assert.equal(h.added, 1.8); // 0.36 * 5
+  assert.equal(h.added, 2.45);
   assert.equal(["cycle_done", "waiting_direction"].includes(bot.getStatus().cycle.cyclePhase), true);
   bot.stop();
   console.log("sim buy/sell fills: OK");
 }
 
 async function forceSellsAtBestBidWhenLate() {
-  const h = makeHarness({ currentBtc: 100_100 });
+  const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.39, bestAsk: 0.4 } });
   const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
-  // Buy fills → HOLDING, no sell placed yet
-  h.listeners.get("tok-down")?.(null, 0.24);
+  h.setOrderBook({ bestBid: 0.41, bestAsk: 0.42 });
+  await bot.runOneTick();
+  h.listeners.get("tok-up")?.(null, 0.42);
   await bot.flushPendingActions();
   assert.equal(bot.getStatus().cycle.cyclePhase, "holding");
-  // Update book snapshot with bestBid=0.2 (below trailStep threshold, so no trailing sell)
-  h.listeners.get("tok-down")?.(0.2, null);
+  h.setOrderBook({ bestBid: 0.2, bestAsk: 0.21 });
+  h.listeners.get("tok-up")?.(0.2, null);
   // Run tick at late time (within force-sell threshold)
   h.setNow(market.endTimeMs - 60_000);
   await bot.runOneTick();
@@ -233,16 +247,18 @@ async function forceSellsAtBestBidWhenLate() {
 }
 
 async function repeatsAndSwitchesMarket() {
-  const h = makeHarness({ currentBtc: 100_100 });
+  const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.39, bestAsk: 0.4 } });
   const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
-  h.listeners.get("tok-down")?.(null, 0.24);
-  await bot.flushPendingActions();
-  h.listeners.get("tok-down")?.(0.38, null);
+  h.setOrderBook({ bestBid: 0.41, bestAsk: 0.42 });
   await bot.runOneTick();
-  assert.equal(bot.getStatus().cycle.trailStopPrice, 0.36);
-  h.listeners.get("tok-down")?.(0.36, null);
+  h.listeners.get("tok-up")?.(null, 0.42);
   await bot.flushPendingActions();
+  h.setOrderBook({ bestBid: 0.51, bestAsk: 0.52 });
+  h.listeners.get("tok-up")?.(0.51, null);
+  await bot.runOneTick();
+  h.setOrderBook({ bestBid: 0.49, bestAsk: 0.5 });
+  h.listeners.get("tok-up")?.(0.49, null);
   await bot.runOneTick();
   assert.equal(["cycle_done", "waiting_direction"].includes(bot.getStatus().cycle.cyclePhase), true);
   await bot.runOneTick();
@@ -262,54 +278,81 @@ async function repeatsAndSwitchesMarket() {
 }
 
 async function autoStopsWhenBudgetReserveThrows() {
-  const h = makeHarness({ currentBtc: 100_100, reserveThrows: true });
+  const h = makeHarness({ currentBtc: 100_100, reserveThrows: true, orderBook: { bestBid: 0.39, bestAsk: 0.4 } });
   const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
+  h.setOrderBook({ bestBid: 0.41, bestAsk: 0.42 });
+  await bot.runOneTick();
   assert.equal(bot.getStatus().enginePhase, "auto_stopped");
   assert.match(bot.getStatus().lastError ?? "", /budget/i);
   bot.stop();
   console.log("budget auto-stop: OK");
 }
 
-async function trendBuyAboveFiftyRequiresRisingPriceWithinRange() {
-  const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.54, bestAsk: 0.55 } });
-  const bot = new Btc15mAutoBot({ config: { ...config, buyPrice: 0.6 }, dryRun: true, runtime: h.runtime });
+async function buysUpWhenMarketRisesToArmedVirtualTarget() {
+  const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.39, bestAsk: 0.4 } });
+  const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
   assert.equal(h.orders.length, 0);
 
-  h.setOrderBook({ bestBid: 0.57, bestAsk: 0.58 });
+  h.setOrderBook({ bestBid: 0.41, bestAsk: 0.42 });
   await bot.runOneTick();
   assert.equal(h.orders.length, 1);
   assert.equal(h.orders[0].tokenId, "tok-up");
-  assert.equal(h.orders[0].price, 0.6);
+  assert.equal(h.orders[0].price, 0.42);
   bot.stop();
-  console.log("trend buy requires rising price: OK");
+  console.log("buys up at virtual target: OK");
 }
 
-async function trendBuyAboveFiftySkipsWhenPriceAtOrBelowFiftyOrAboveTarget() {
-  const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.49, bestAsk: 0.5 } });
-  const bot = new Btc15mAutoBot({ config: { ...config, buyPrice: 0.6 }, dryRun: true, runtime: h.runtime });
+async function cancelsStaleBuyOrderAfterSharpPriceJump() {
+  const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.39, bestAsk: 0.4 } });
+  const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
+  await bot.start({ scheduleLoop: false });
+  h.setOrderBook({ bestBid: 0.41, bestAsk: 0.42 });
+  await bot.runOneTick();
+  assert.equal(h.orders.length, 1);
+  assert.equal(bot.getStatus().cycle.cyclePhase, "buy_pending");
+
+  h.setOrderBook({ bestBid: 0.6, bestAsk: 0.61 });
+  await bot.runOneTick();
+  assert.deepEqual(h.cancelled, ["buy-1"]);
+  assert.equal(bot.getStatus().cycle.cyclePhase, "waiting_direction");
+  assert.equal(bot.getStatus().cycle.buyOrder, null);
+  bot.stop();
+  console.log("cancels stale jumped buy: OK");
+}
+
+async function rearmsBuyAfterHighPricePullbackReentersRange() {
+  const h = makeHarness({ currentBtc: 100_100, orderBook: { bestBid: 0.84, bestAsk: 0.85 } });
+  const bot = new Btc15mAutoBot({ config, dryRun: true, runtime: h.runtime });
   await bot.start({ scheduleLoop: false });
   assert.equal(h.orders.length, 0);
 
-  h.setOrderBook({ bestBid: 0.61, bestAsk: 0.62 });
+  h.setOrderBook({ bestBid: 0.74, bestAsk: 0.75 });
   await bot.runOneTick();
-  assert.equal(h.orders.length, 0);
+  h.setOrderBook({ bestBid: 0.76, bestAsk: 0.77 });
+  await bot.runOneTick();
+
+  assert.equal(h.orders.length, 1);
+  assert.equal(h.orders[0].tokenId, "tok-up");
+  assert.equal(h.orders[0].price, 0.77);
   bot.stop();
-  console.log("trend buy range guard: OK");
+  console.log("rearms after pullback: OK");
 }
 
 async function main() {
   await startStopTest();
-  await placesBuyOnDownWhenBtcAboveStart();
+  await armsVirtualBuyAboveCurrentUpPriceInsideBounds();
+  await plannedBuyTracksPriceDownWithinRange();
   await noOrderInsideNeutralZone();
-  await cancelsBuyOnReturnToNeutralZone();
+  await blocksBuyWhenUpPriceAboveUpperBoundUntilPullback();
   await simBuyAndTargetSellFillCompletesTrade();
   await forceSellsAtBestBidWhenLate();
   await repeatsAndSwitchesMarket();
   await autoStopsWhenBudgetReserveThrows();
-  await trendBuyAboveFiftyRequiresRisingPriceWithinRange();
-  await trendBuyAboveFiftySkipsWhenPriceAtOrBelowFiftyOrAboveTarget();
+  await buysUpWhenMarketRisesToArmedVirtualTarget();
+  await cancelsStaleBuyOrderAfterSharpPriceJump();
+  await rearmsBuyAfterHighPricePullbackReentersRange();
 }
 
 void main().catch((error) => {

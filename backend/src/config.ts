@@ -57,9 +57,10 @@ export interface Btc5mSettings {
 
 export interface Btc15mSettings {
   buyPriceLimit: number;
-  trailStep: number;            // BTC15M_TRAIL_STEP, default 0.05
-  trailDist: number;            // BTC15M_TRAIL_DIST, default 0.02
-  trailUpdateIntervalSec: number; // BTC15M_TRAIL_UPDATE_SEC, default 3
+  maxBuyPriceLimit?: number;
+  trailStep: number;
+  trailDist: number;
+  trailUpdateIntervalSec: number;
   orderSize: number;
   workingBudgetUsd: number;
   repeatThresholdMin: number;
@@ -145,7 +146,8 @@ export function loadSettings(): Settings {
   };
 
   const btc15mAuto: Btc15mSettings = {
-    buyPriceLimit: parseNumber(process.env.BTC15M_AUTO_BUY_PRICE_LIMIT, btc15m.buyPriceLimit),
+    buyPriceLimit: parseNumber(process.env.BTC15M_AUTO_MIN_BUY_PRICE_LIMIT, 0.2),
+    maxBuyPriceLimit: parseNumber(process.env.BTC15M_AUTO_MAX_BUY_PRICE_LIMIT, 0.8),
     trailStep: parseNumber(process.env.BTC15M_AUTO_TRAIL_STEP, btc15m.trailStep),
     trailDist: parseNumber(process.env.BTC15M_AUTO_TRAIL_DIST, btc15m.trailDist),
     trailUpdateIntervalSec: parseNumber(process.env.BTC15M_AUTO_TRAIL_UPDATE_SEC, btc15m.trailUpdateIntervalSec),
@@ -291,6 +293,18 @@ function validateBtc5mSettings(settings: Btc5mSettings): void {
 function validateBtc15mSettings(settings: Btc15mSettings): void {
   if (!(settings.buyPriceLimit > 0 && settings.buyPriceLimit < 1)) {
     throw new Error("BTC15M_BUY_PRICE_LIMIT must be between 0 and 1.");
+  }
+  if (
+    settings.maxBuyPriceLimit !== undefined &&
+    !(settings.maxBuyPriceLimit > 0 && settings.maxBuyPriceLimit < 1)
+  ) {
+    throw new Error("BTC15M_MAX_BUY_PRICE_LIMIT must be between 0 and 1.");
+  }
+  if (
+    settings.maxBuyPriceLimit !== undefined &&
+    settings.maxBuyPriceLimit <= settings.buyPriceLimit
+  ) {
+    throw new Error("BTC15M_MAX_BUY_PRICE_LIMIT must be greater than BTC15M_BUY_PRICE_LIMIT.");
   }
 
   for (const [name, value] of [

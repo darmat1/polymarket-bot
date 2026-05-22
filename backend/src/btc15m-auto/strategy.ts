@@ -289,25 +289,51 @@ export class Btc15mAutoBot {
       return;
     }
 
-    const bettingSide: Btc15mAutoSide = sideForDelta(delta, this.config.buyPrice);
-    const tokenId = bettingSide === "down" ? market.downTokenId : market.upTokenId;
-    const stake = roundUsd(this.config.shares * this.config.buyPrice);
+    const bettingSide: Btc15mAutoSide = "up";
+    const tokenId = market.upTokenId;
 
-    if (this.config.buyPrice > 0.5) {
-      const { previous, current: book } = await this.getFreshBookSnapshot(tokenId);
-      const marketPrice = book.bestAsk ?? book.bestBid;
-      const previousMarketPrice = previous?.bestAsk ?? previous?.bestBid ?? null;
-      const priceRising = previousMarketPrice !== null && marketPrice !== null && marketPrice > previousMarketPrice;
-      const priceInRange = marketPrice !== null && marketPrice > 0.5 && marketPrice < this.config.buyPrice;
-      if (!priceInRange || !priceRising) {
-        this.pushLog(
-          `Skipping trend entry ${bettingSide.toUpperCase()}: market=${marketPrice?.toFixed(2) ?? "n/a"}, prev=${previousMarketPrice?.toFixed(2) ?? "n/a"}, target=${this.config.buyPrice.toFixed(2)}.`,
-          "info",
-        );
+    const marketPrice = this.state.upPrice;
+    if (marketPrice === null) {
+      return;
+    }
+
+    if (marketPrice < this.config.minBuyPrice) {
+      this.state.cycle.plannedBuyPrice = null;
+      this.state.cycle.plannedBuyAnchorPrice = null;
+      this.state.cycle.buyBlockReason = "low_range";
+      this.state.cycle.buyBlockReferencePrice = null;
+      return;
+    }
+
+    if (marketPrice > this.config.maxBuyPrice) {
+      const highRef = Math.max(this.state.cycle.buyBlockReferencePrice ?? marketPrice, marketPrice);
+      this.state.cycle.buyBlockReason = "high_wait_pullback";
+      this.state.cycle.buyBlockReferencePrice = highRef;
+      this.state.cycle.plannedBuyPrice = null;
+      this.state.cycle.plannedBuyAnchorPrice = null;
+      if (highRef - marketPrice < this.config.trailStep) {
+        return;
+      }
+      if (marketPrice > this.config.maxBuyPrice) {
         return;
       }
     }
 
+    const previousAnchor = this.state.cycle.plannedBuyAnchorPrice;
+    const nextAnchor = previousAnchor === null || previousAnchor === undefined || marketPrice < previousAnchor
+      ? marketPrice
+      : previousAnchor;
+    const plannedBuyPrice = roundUsd(nextAnchor + this.config.trailDist);
+
+    if (marketPrice < plannedBuyPrice) {
+      this.state.cycle.plannedBuyAnchorPrice = nextAnchor;
+      this.state.cycle.plannedBuyPrice = plannedBuyPrice;
+      this.state.cycle.buyBlockReason = null;
+      this.state.cycle.buyBlockReferencePrice = null;
+      return;
+    }
+
+    const stake = roundUsd(this.config.shares * plannedBuyPrice);
     try {
       await this.runtime.budget.reserve(stake, "btc15mAuto-cycle-buy");
     } catch (error) {
@@ -321,7 +347,7 @@ export class Btc15mAutoBot {
     const response = await this.runtime.placeLimitOrder({
       tokenId,
       side: "buy",
-      price: this.config.buyPrice,
+      price: plannedBuyPrice,
       size: this.config.shares,
     });
     const orderId = extractOrderId(response) ?? `btc15mAuto-buy:${market.slug}:${now}`;
@@ -335,7 +361,7 @@ export class Btc15mAutoBot {
         side: "buy",
         tokenId,
         bettingSide,
-        price: this.config.buyPrice,
+        price: plannedBuyPrice,
         size: this.config.shares,
         filledSize: 0,
         status: "open",
@@ -343,8 +369,12 @@ export class Btc15mAutoBot {
         createdAt: now,
         updatedAt: now,
       },
+      plannedBuyPrice: null,
+      plannedBuyAnchorPrice: null,
+      buyBlockReason: null,
+      buyBlockReferencePrice: null,
     };
-    this.pushLog(`BUY ${bettingSide.toUpperCase()} @ ${formatPrice(this.config.buyPrice)} submitted (${orderId}).`, "info");
+    this.pushLog(`BUY ${bettingSide.toUpperCase()} @ ${formatPrice(plannedBuyPrice)} submitted (${orderId}).`, "info");
     if (this.dryRun) {
       this.subscribeBook(tokenId, "buy");
     }
@@ -394,6 +424,13 @@ export class Btc15mAutoBot {
       }
     }
 
+    const liveUpPrice = this.state.upPrice;
+    if (liveUpPrice !== null && liveUpPrice > buyOrder.price) {
+      await this.cancelBuy(`missed-breakout (${liveUpPrice.toFixed(2)} > ${buyOrder.price.toFixed(2)})`);
+      this.state.cycle.cyclePhase = "waiting_direction";
+      return;
+    }
+
     const timeToEndMs = market.endTimeMs - now;
     if (timeToEndMs < this.config.forceSellThresholdMin * 60_000 && !this.state.cycle.position) {
       await this.cancelBuy("late-market");
@@ -410,7 +447,7 @@ export class Btc15mAutoBot {
     const delta = current - start;
     const expectedSide: Btc15mAutoSide | null = Math.abs(delta) <= this.config.neutralZoneUsd
       ? null
-      : sideForDelta(delta, this.config.buyPrice);
+      : "up";
     if (expectedSide !== buyOrder.bettingSide) {
       const flipReason = expectedSide === null
         ? `neutral-zone (Δ=${delta.toFixed(2)})`
@@ -418,6 +455,10 @@ export class Btc15mAutoBot {
       this.pushLog(`Direction reset: ${flipReason}.`, "warn");
       await this.cancelBuy(flipReason);
       this.state.cycle.cyclePhase = "waiting_direction";
+      this.state.cycle.plannedBuyPrice = null;
+      this.state.cycle.plannedBuyAnchorPrice = null;
+      this.state.cycle.buyBlockReason = null;
+      this.state.cycle.buyBlockReferencePrice = null;
     }
   }
 
@@ -942,24 +983,6 @@ function extractMatchedSize(message: ScalperUserWsMessage): number | null {
     }
   }
   return null;
-}
-
-/**
- * Pick the side to bet on based on BTC movement relative to start, AND the configured buyPrice.
- *
- * - buyPrice < 0.50: CONTRARIAN. We're trying to buy the cheap (unlikely) side hoping for a
- *   mean-reversion. If BTC went UP (delta>0), the market is pricing UP as the winner → UP is
- *   expensive, DOWN is cheap → bet DOWN.
- * - buyPrice >= 0.50: TREND-FOLLOWING. We're trying to buy the expected-winner side that's
- *   trading near our entry price. If BTC went UP (delta>0), UP is the likely winner → bet UP.
- */
-function sideForDelta(delta: number, buyPrice: number): Btc15mAutoSide {
-  if (buyPrice >= 0.5) {
-    // Trend-following: bet WITH the move.
-    return delta > 0 ? "up" : "down";
-  }
-  // Contrarian: bet AGAINST the move.
-  return delta > 0 ? "down" : "up";
 }
 
 function isFilledStatus(status: string | null): boolean {

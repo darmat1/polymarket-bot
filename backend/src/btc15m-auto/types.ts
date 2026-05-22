@@ -88,10 +88,11 @@ export interface Btc15mAutoAnalyticsSummary {
 export interface Btc15mAutoBotConfig {
   workingBudgetUsd: number;
   shares: number;
-  buyPrice: number;
-  trailStep: number;            // min bestBid rise above highWaterMark to trigger sell update (default 0.05)
-  trailDist: number;            // limit sell placed at highWaterMark - trailDist (default 0.02)
-  trailUpdateIntervalSec: number; // LIVE mode throttle in seconds (default 3)
+  minBuyPrice: number;
+  maxBuyPrice: number;
+  trailStep: number;
+  trailDist: number;
+  trailUpdateIntervalSec: number;
   repeatThresholdMin: number;
   forceSellThresholdMin: number;
   neutralZoneUsd: number;
@@ -110,6 +111,10 @@ export interface Btc15mAutoCycleState {
   buyOrder: Btc15mAutoTrackedOrder | null;
   sellOrder: Btc15mAutoTrackedOrder | null;
   position: Btc15mAutoPosition | null;
+  plannedBuyPrice: number | null;
+  plannedBuyAnchorPrice: number | null;
+  buyBlockReason: "low_range" | "high_wait_pullback" | null;
+  buyBlockReferencePrice: number | null;
   highWaterMark: number | null;
   trailStopPrice: number | null;
 }

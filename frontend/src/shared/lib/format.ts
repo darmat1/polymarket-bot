@@ -1,4 +1,4 @@
-import type { Btc15mStatusPayload, Btc5mBotStatus } from "../types/api";
+import type { Btc15mAutoStatusPayload, Btc15mStatusPayload, Btc5mBotStatus } from "../types/api";
 
 export function formatMaybeNumber(value: number | null) {
   return typeof value === "number" ? value.toFixed(2) : "-";
@@ -147,7 +147,7 @@ export function formatUsdPrice(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(2)}` : "—";
 }
 
-export function formatBtcDelta(status: Btc15mStatusPayload | null) {
+export function formatBtcDelta(status: Btc15mStatusPayload | Btc15mAutoStatusPayload | null) {
   if (!status || status.currentBtcPrice === null || status.marketStartBtcPrice === null) {
     return "—";
   }

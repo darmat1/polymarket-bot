@@ -279,10 +279,31 @@ export type Btc15mStatusPayload = {
   updatedAt: number;
 };
 
-export type Btc15mAutoStartConfig = Btc15mStartConfig;
+export type Btc15mAutoStartConfig = {
+  workingBudgetUsd: number;
+  shares: number;
+  minBuyPrice: number;
+  maxBuyPrice: number;
+  trailStep: number;
+  trailDist: number;
+  trailUpdateIntervalSec: number;
+  repeatThresholdMin: number;
+  forceSellThresholdMin: number;
+  neutralZoneUsd: number;
+};
 export type Btc15mAutoCompletedTrade = Btc15mCompletedTrade;
 export type Btc15mAutoAnalyticsSummary = Btc15mAnalyticsSummary;
-export type Btc15mAutoStatusPayload = Btc15mStatusPayload;
+export type Btc15mAutoStatusPayload = Omit<Btc15mStatusPayload, "config" | "cycle"> & {
+  config: Btc15mAutoStartConfig & {
+    tickIntervalSec: number;
+  };
+  cycle: Btc15mStatusPayload["cycle"] & {
+    plannedBuyPrice?: number | null;
+    buyBlockReason?: "low_range" | "high_wait_pullback" | null;
+    buyBlockReferencePrice?: number | null;
+    trailStopPrice?: number | null;
+  };
+};
 
 export type EventLogEntry = {
   id: number;

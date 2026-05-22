@@ -196,6 +196,10 @@ export function emptyCycle(): Btc15mAutoCycleState {
     buyOrder: null,
     sellOrder: null,
     position: null,
+    plannedBuyPrice: null,
+    plannedBuyAnchorPrice: null,
+    buyBlockReason: null,
+    buyBlockReferencePrice: null,
     highWaterMark: null,
     trailStopPrice: null,
   };
@@ -208,7 +212,8 @@ function normalizeConfig(
   return {
     workingBudgetUsd: numberOr(input?.workingBudgetUsd, fallback.workingBudgetUsd),
     shares: numberOr(input?.shares, fallback.shares),
-    buyPrice: numberOr(input?.buyPrice, fallback.buyPrice),
+    minBuyPrice: numberOr(input?.minBuyPrice, fallback.minBuyPrice),
+    maxBuyPrice: numberOr(input?.maxBuyPrice, fallback.maxBuyPrice),
     trailStep: numberOr(input?.trailStep, fallback.trailStep),
     trailDist: numberOr(input?.trailDist, fallback.trailDist),
     trailUpdateIntervalSec: numberOr(input?.trailUpdateIntervalSec, fallback.trailUpdateIntervalSec),
@@ -291,6 +296,12 @@ function normalizeCycle(value: unknown): Btc15mAutoCycleState {
     buyOrder: cycle.buyOrder ?? null,
     sellOrder: cycle.sellOrder ?? null,
     position: cycle.position ?? null,
+    plannedBuyPrice: nullableNumber(cycle.plannedBuyPrice),
+    plannedBuyAnchorPrice: nullableNumber(cycle.plannedBuyAnchorPrice),
+    buyBlockReason: cycle.buyBlockReason === "low_range" || cycle.buyBlockReason === "high_wait_pullback"
+      ? cycle.buyBlockReason
+      : null,
+    buyBlockReferencePrice: nullableNumber(cycle.buyBlockReferencePrice),
     highWaterMark: nullableNumber(cycle.highWaterMark),
     trailStopPrice: nullableNumber(cycle.trailStopPrice),
   };

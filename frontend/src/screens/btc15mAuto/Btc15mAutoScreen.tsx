@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   getBtc15mAutoStatus,
@@ -32,7 +32,8 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
   const [formConfig, setFormConfig] = useState({
     workingBudgetUsd: 5,
     shares: 5,
-    buyPrice: 0.25,
+    minBuyPrice: 0.2,
+    maxBuyPrice: 0.8,
     trailStep: 0.05,
     trailDist: 0.02,
     trailUpdateIntervalSec: 3,
@@ -45,6 +46,15 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
   const trades: Btc15mAutoCompletedTrade[] = status?.dryRun
     ? (status.sessionTrades ?? [])
     : (status?.completedTrades ?? []);
+  const showPositionStop = Boolean(status?.cycle.position && status.cycle.trailStopPrice !== null && status.cycle.trailStopPrice !== undefined);
+  const showPositionPlannedBuy = useMemo(() => {
+    if (!status || status.cycle.position || status.cycle.plannedBuyPrice === null || status.cycle.plannedBuyPrice === undefined) {
+      return false;
+    }
+    return status.upPrice !== null
+      && status.upPrice > status.config.minBuyPrice
+      && status.upPrice < status.config.maxBuyPrice;
+  }, [status]);
 
   useEffect(() => {
     let cancelled = false;
@@ -91,7 +101,8 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
     setFormConfig({
       workingBudgetUsd: status.config.workingBudgetUsd,
       shares: status.config.shares,
-      buyPrice: status.config.buyPrice,
+      minBuyPrice: status.config.minBuyPrice,
+      maxBuyPrice: status.config.maxBuyPrice,
       trailStep: status.config.trailStep,
       trailDist: status.config.trailDist,
       trailUpdateIntervalSec: status.config.trailUpdateIntervalSec,
@@ -137,11 +148,11 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
     try {
       const payload = await toggleBtc15mAutoBotRequest(isActive, formConfig);
       setStatus(payload);
-      addToast(
-        "success",
-        isActive ? "BTC 15m Auto stopped" : "BTC 15m Auto started",
-        isActive ? "Bot stopped." : "Mean-reversion cycle is watching the current 15m market.",
-      );
+        addToast(
+          "success",
+          isActive ? "BTC 15m Auto stopped" : "BTC 15m Auto started",
+          isActive ? "Bot stopped." : "UP trailing buy cycle is watching the current 15m market.",
+        );
     } catch (error) {
       addToast("error", "BTC 15m Auto toggle failed", error instanceof Error ? error.message : "Unknown error");
     } finally {
@@ -151,12 +162,12 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
   }
 
   return (
-    <main className="layout layout-single btc15m-tab">
+    <main className="layout layout-single btc15m-tab panel-density-compact">
       <section className="panel btc15m-panel">
         <div className="panel-head">
           <div>
             <p className="section-kicker">Bitcoin 15-minute auto markets</p>
-            <h2>Contrarian 25c → 40c bot</h2>
+            <h2>UP trailing buy bot</h2>
           </div>
           <div className="btc15m-actions">
             <button className="button button-secondary" onClick={() => void loadStatus()} type="button" disabled={loading}>
@@ -194,7 +205,8 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
             {([
               ["Working budget ($)", "workingBudgetUsd", 0.5],
               ["Shares per cycle", "shares", 1],
-              ["Buy price ($)", "buyPrice", 0.01],
+              ["Min buy ($)", "minBuyPrice", 0.01],
+              ["Max buy ($)", "maxBuyPrice", 0.01],
               ["Trail step ($)", "trailStep", 0.01],
               ["Trail distance ($)", "trailDist", 0.01],
               ["Trail update (sec)", "trailUpdateIntervalSec", 1],
@@ -236,7 +248,8 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
             <span><em>Start BTC</em><strong>{formatBtcPrice(status?.marketStartBtcPrice)}</strong></span>
             <span><em>Current BTC</em><strong>{formatBtcPrice(status?.currentBtcPrice)}</strong></span>
             <span><em>Up Price</em><strong>{formatUsdPrice(status?.upPrice)}</strong></span>
-            <span><em>Down Price</em><strong>{formatUsdPrice(status?.downPrice)}</strong></span>
+            <span><em>Planned Buy</em><strong>{formatUsdPrice(status?.cycle.plannedBuyPrice ?? null)}</strong></span>
+            <span><em>Buy State</em><strong>{status?.cycle.buyBlockReason ?? "armed"}</strong></span>
             <span><em>Delta</em><strong>{formatBtcDelta(status)}</strong></span>
             <span><em>Cycle</em><strong>{status?.cycle.cyclePhase ?? "—"}</strong></span>
           </div>
@@ -250,7 +263,9 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
             <div>
               <h3>Position</h3>
               {status?.cycle.position ? (
-                <dl><dt>Side</dt><dd>{status.cycle.position.bettingSide.toUpperCase()}</dd><dt>Shares</dt><dd>{formatPosNum(status.cycle.position.shares)}</dd><dt>Avg</dt><dd>{formatUsdPrice(status.cycle.position.avgEntryPrice)}</dd><dt>Cost</dt><dd>{formatUsd(status.cycle.position.costBasisUsd)}</dd></dl>
+                <dl><dt>Side</dt><dd>{status.cycle.position.bettingSide.toUpperCase()}</dd><dt>Shares</dt><dd>{formatPosNum(status.cycle.position.shares)}</dd><dt>Avg</dt><dd>{formatUsdPrice(status.cycle.position.avgEntryPrice)}</dd><dt>Cost</dt><dd>{formatUsd(status.cycle.position.costBasisUsd)}</dd>{showPositionStop ? <><dt>Stop</dt><dd className="pnl-neg">{formatUsdPrice(status.cycle.trailStopPrice ?? null)}</dd></> : null}</dl>
+              ) : showPositionPlannedBuy ? (
+                <dl><dt>Planned Buy</dt><dd className="btc15m-value-gold">{formatUsdPrice(status?.cycle.plannedBuyPrice ?? null)}</dd></dl>
               ) : <p className="status status-muted">none</p>}
             </div>
             <div>

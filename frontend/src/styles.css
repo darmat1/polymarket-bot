@@ -708,6 +708,10 @@ button.button-clear {
   color: var(--rose);
 }
 
+.btc15m-value-gold {
+  color: var(--gold);
+}
+
 .refreshing-pulse {
   position: relative;
   border-color: var(--mint) !important;
@@ -1283,6 +1287,110 @@ input:checked ~ .toggle-label {
   .positions-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.panel-density-compact,
+.panel-density-compact button,
+.panel-density-compact input,
+.panel-density-compact select,
+.panel-density-compact textarea {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.panel-density-compact .panel {
+  padding: 10px;
+}
+
+.panel-density-compact .panel-head {
+  margin-bottom: 6px;
+  gap: 8px;
+}
+
+.panel-density-compact .section-kicker {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
+.panel-density-compact h2,
+.panel-density-compact h3,
+.panel-density-compact strong,
+.panel-density-compact dt,
+.panel-density-compact dd,
+.panel-density-compact span,
+.panel-density-compact p,
+.panel-density-compact a,
+.panel-density-compact label,
+.panel-density-compact em,
+.panel-density-compact th,
+.panel-density-compact td {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.panel-density-compact .btc15m-summary-grid,
+.panel-density-compact .btc15m-settings-grid,
+.panel-density-compact .btc15m-monitor-grid,
+.panel-density-compact .btc15m-cycle-grid {
+  gap: 8px;
+}
+
+.panel-density-compact .btc15m-stat-card,
+.panel-density-compact .btc15m-card {
+  padding: 10px;
+}
+
+.panel-density-compact .btc15m-stat-card {
+  gap: 4px;
+  min-height: 56px;
+}
+
+.panel-density-compact .btc15m-settings-grid {
+  margin-top: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.panel-density-compact .btc15m-settings-field {
+  gap: 4px;
+}
+
+.panel-density-compact .btc15m-settings-field input {
+  padding: 5px 8px;
+}
+
+.panel-density-compact .btc15m-monitor-grid {
+  margin: 8px 0;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.panel-density-compact .btc15m-monitor-grid span {
+  gap: 4px;
+  padding: 8px;
+}
+
+.panel-density-compact .btc15m-cycle-grid > div {
+  padding: 9px;
+  min-height: 110px;
+}
+
+.panel-density-compact .btc15m-cycle-grid h3 {
+  margin: 0 0 6px;
+}
+
+.panel-density-compact .btc15m-cycle-grid dl {
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 4px 8px;
+}
+
+.panel-density-compact .btc15m-analytics-row {
+  gap: 6px 10px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.panel-density-compact .button {
+  padding: 7px 10px;
+  min-height: 32px;
 }
 
 @media (max-width: 980px) {
