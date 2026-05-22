@@ -105,6 +105,10 @@ select {
   min-width: 0;
 }
 
+.topbar-side .button {
+  flex-shrink: 0;
+}
+
 .scalper-controls {
   display: flex;
   align-items: center;
@@ -338,6 +342,14 @@ select:focus {
 
 .status-muted {
   color: var(--muted);
+}
+
+.status-warn {
+  color: var(--gold);
+}
+
+.status-error {
+  color: var(--rose);
 }
 
 .markets {

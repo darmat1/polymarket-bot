@@ -1,7 +1,6 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import {
   getUserWebSocketAuth,
-  getAccountSummary,
 } from "./shared/api/account";
 import {
   getBtc15mStatus,
@@ -55,13 +54,16 @@ import {
   formatUsdPrice,
   formatUsdSigned,
   formatUsdValue,
-  formatUsdcValue,
   shortenAddress,
 } from "./shared/lib/format";
+import { useToasts } from "./shared/hooks/useToasts";
 import { isWeatherEvent } from "./shared/lib/guards";
+import { EmptyState } from "./shared/ui/EmptyState";
+import { Panel } from "./shared/ui/Panel";
+import { StatusMessage } from "./shared/ui/StatusMessage";
+import type { AppShellRenderProps } from "./app/AppShell";
 import type { AppTab } from "./shared/types/app";
 import type {
-  AccountSummaryPayload,
   ActivateMarketBotPayload,
   Btc15mCompletedTrade,
   Btc15mStatusPayload,
@@ -75,13 +77,6 @@ import type {
   StationHistoryEntry,
 } from "./shared/types/api";
 
-type Toast = {
-  id: number;
-  type: "info" | "success" | "warn" | "error";
-  title: string;
-  message: string;
-};
-
 type PendingSellState = {
   tokenId: string;
   marketSlug: string;
@@ -94,17 +89,19 @@ type PendingSellState = {
   updatedAt: number;
 };
 
-export function App() {
-  const [activeTab, setActiveTab] = useState<AppTab>("positions");
+type AppProps = AppShellRenderProps;
+
+export function App({
+  activeTab,
+  setTabsVisible,
+  shellControls,
+}: AppProps) {
   const [search, setSearch] = useState("");
   const [events, setEvents] = useState<SearchEventSummary[]>([]);
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [eventsError, setEventsError] = useState<string | null>(null);
   const [selectedEventSlug, setSelectedEventSlug] = useState<string>("");
   const [selectedSlug, setSelectedSlug] = useState<string>("");
-  const [accountSummary, setAccountSummary] =
-    useState<AccountSummaryPayload | null>(null);
-  const [accountError, setAccountError] = useState<string | null>(null);
   const [positionsPayload, setPositionsPayload] =
     useState<OpenPositionsPayload | null>(null);
   const [loadingPositions, setLoadingPositions] = useState(false);
@@ -126,10 +123,9 @@ export function App() {
     forceSellThresholdMin: 2,
     neutralZoneUsd: 5,
   });
-  const [toasts, setToasts] = useState<Toast[]>([]);
+  const { addToast, removeToast, toasts } = useToasts();
   const [eventLog, setEventLog] = useState<EventLogEntry[]>([]);
   const [eventLogLoading, setEventLogLoading] = useState(false);
-  const toastIdRef = useRef(0);
   const [sellingTokenId, setSellingTokenId] = useState<string | null>(null);
   const [pendingSells, setPendingSells] = useState<Record<string, PendingSellState>>({});
   const [sellConfirmation, setSellConfirmation] = useState<{
@@ -142,6 +138,7 @@ export function App() {
   const [viewingMarketSlug, setViewingMarketSlug] = useState<string | null>(
     null,
   );
+  const previousActiveTabRef = useRef<AppTab>(activeTab);
   const [marketDetails, setMarketDetails] = useState<MarketDetailsPayload | null>(null);
   const [loadingMarketDetails, setLoadingMarketDetails] = useState(false);
   const [marketDetailsError, setMarketDetailsError] = useState<string | null>(
@@ -266,6 +263,14 @@ export function App() {
     activeTabRef.current = activeTab;
   }, [activeTab]);
 
+  useEffect(() => {
+    setTabsVisible(!viewingMarketSlug);
+
+    return () => {
+      setTabsVisible(true);
+    };
+  }, [setTabsVisible, viewingMarketSlug]);
+
   const [botActive, setBotActive] = useState(false);
   const [botLoading, setBotLoading] = useState(false);
   const [lastPollTime, setLastPollTime] = useState<number | null>(null);
@@ -360,18 +365,6 @@ export function App() {
     });
   }, [positionsPayload]);
 
-  const addToast = useCallback(
-    (type: Toast["type"], title: string, message: string) => {
-      const id = ++toastIdRef.current;
-      setToasts((prev) => [...prev, { id, type, title, message }]);
-      const ttl = type === "error" ? 10000 : 6000;
-      setTimeout(() => {
-        setToasts((prev) => prev.filter((t) => t.id !== id));
-      }, ttl);
-    },
-    [],
-  );
-
   const loadEventLog = useCallback(async () => {
     try {
       setEventLogLoading(true);
@@ -385,9 +378,9 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    void loadAccountSummary();
+    void shellControls.refreshAccountSummary();
     void loadEventLog();
-  }, []);
+  }, [loadEventLog, shellControls.refreshAccountSummary]);
 
   useEffect(() => {
     void connectPortfolioSyncWs();
@@ -798,21 +791,6 @@ export function App() {
     }
   }
 
-  async function loadAccountSummary() {
-    try {
-      const payload = await getAccountSummary();
-      setAccountSummary(payload);
-      setAccountError(null);
-    } catch (error) {
-      setAccountError(
-        error instanceof Error
-          ? error.message
-          : "Failed to load account summary",
-      );
-      setAccountSummary(null);
-    }
-  }
-
   async function loadPositions() {
     setIsRefreshing(true);
     setLoadingPositions(true);
@@ -1005,18 +983,18 @@ export function App() {
     };
   }, [viewingMarketSlug, marketDetails]);
 
-  function handleTabSwitch(nextTab: AppTab) {
-    if (nextTab === activeTab) {
+  useEffect(() => {
+    if (previousActiveTabRef.current === activeTab) {
       return;
     }
 
-    setActiveTab(nextTab);
+    previousActiveTabRef.current = activeTab;
     setEvents([]);
     setSelectedEventSlug("");
     setSelectedSlug("");
     setViewingMarketSlug(null);
     setMarketDetails(null);
-  }
+  }, [activeTab]);
 
   function cleanupPortfolioSyncHeartbeat() {
     if (portfolioSyncPingIntervalRef.current) {
@@ -1033,7 +1011,7 @@ export function App() {
     portfolioSyncRefreshTimeoutRef.current = setTimeout(() => {
       portfolioSyncRefreshTimeoutRef.current = null;
       void loadPositions();
-      void loadAccountSummary();
+      void shellControls.refreshAccountSummary();
     }, 750);
   }
 
@@ -1242,7 +1220,7 @@ export function App() {
   }
 
   return (
-    <div className="shell">
+    <>
       {/* ── Toast stack ── */}
       <div className="toast-stack">
         {toasts.map((t) => (
@@ -1256,77 +1234,13 @@ export function App() {
             </div>
             <button
               className="toast-close"
-              onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}
+              onClick={() => removeToast(t.id)}
             >
               ×
             </button>
           </div>
         ))}
       </div>
-      <header className="topbar">
-        <div className="topbar-metrics">
-          <div className="topbar-metric">
-            <span className="topbar-label">Portfolio</span>
-            <strong className="topbar-value">
-              {formatMoneyValue(accountSummary?.portfolio_value)}
-            </strong>
-          </div>
-          <div className="topbar-metric">
-            <span className="topbar-label">Available</span>
-            <strong className="topbar-value">
-              {formatMoneyValue(accountSummary?.available_to_trade)}
-            </strong>
-          </div>
-          <div className="topbar-metric">
-            <span className="topbar-label">Wallet USDC</span>
-            <strong className="topbar-value">
-              {formatUsdcValue(accountSummary?.usdc_balance)}
-            </strong>
-          </div>
-        </div>
-
-        <div className="topbar-side">
-          <span className="topbar-meta">
-            {accountSummary?.address
-              ? shortenAddress(accountSummary.address)
-              : accountError
-                ? accountError
-                : "No wallet"}
-          </span>
-          <span
-            className={`topbar-mode ${accountSummary?.dry_run ? "dry" : "live"}`}
-          >
-            {accountSummary?.dry_run ? "dry-run" : "live"}
-          </span>
-        </div>
-      </header>
-
-      {!viewingMarketSlug && (
-        <nav className="app-nav">
-          <button
-            type="button"
-            className={`button tab-button ${activeTab === "positions" ? "tab-button-active" : ""}`}
-            onClick={() => handleTabSwitch("positions")}
-          >
-            Positions
-          </button>
-          <button
-            type="button"
-            className={`button tab-button ${activeTab === "btc5m" ? "tab-button-active" : ""}`}
-            onClick={() => handleTabSwitch("btc5m")}
-          >
-            BTC 5M Bot
-          </button>
-          <button
-            type="button"
-            className={`button tab-button ${activeTab === "btc15m" ? "tab-button-active" : ""}`}
-            onClick={() => handleTabSwitch("btc15m")}
-          >
-            BTC 15m
-          </button>
-        </nav>
-      )}
-
       {activeTab === "positions" ? (
         <main className="layout layout-single">
           {viewingMarketSlug ? (
@@ -1801,11 +1715,11 @@ export function App() {
                   {isRefreshing && <span className="spinner-dot" />}
                 </button>
               </div>
-              <p className="status status-muted positions-hint">
+              <StatusMessage className="positions-hint" tone="muted">
                 Holdings (outcome shares) from Polymarket — not the same as open
                 limit orders on the CLOB.
-              </p>
-              <p className="status status-muted">
+              </StatusMessage>
+              <StatusMessage tone="muted">
                 {positionsPayload?.user
                   ? `Wallet: ${shortenAddress(positionsPayload.user)} (${ 
                       positionsPayload.wallet_source === "funder"
@@ -1813,26 +1727,20 @@ export function App() {
                         : "signer EOA"
                     })`
                   : "Set POLYMARKET_PRIVATE_KEY or POLYMARKET_FUNDER_ADDRESS in backend .env to load positions."}
-              </p>
+              </StatusMessage>
               {positionsError ? (
-                <p className="status">{positionsError}</p>
+                <StatusMessage>{positionsError}</StatusMessage>
               ) : null}
               {!positionsPayload?.user ? (
-                <div className="empty-state">
-                  <strong>No wallet configured for positions</strong>
-                  <p>
-                    The API uses your Polymarket proxy (funder) address when
-                    set; otherwise the signer EOA from your private key.
-                  </p>
-                </div>
+                <EmptyState
+                  description="The API uses your Polymarket proxy (funder) address when set; otherwise the signer EOA from your private key."
+                  title="No wallet configured for positions"
+                />
               ) : sortedPositions.length === 0 ? (
-                <div className="empty-state">
-                  <strong>No open positions</strong>
-                  <p>
-                    Either you have no active shares, or the Data API returned
-                    an empty list.
-                  </p>
-                </div>
+                <EmptyState
+                  description="Either you have no active shares, or the Data API returned an empty list."
+                  title="No open positions"
+                />
               ) : (
                 <div className="positions-grid">
                   {groupedPositions.map((group) => {
@@ -2054,14 +1962,14 @@ export function App() {
           )}
 
           {/* ── Event Log ── */}
-          <section className="panel event-log-panel">
-            <div className="panel-head">
-              <div>
-                <p className="section-kicker">Trade History</p>
-                <h2>Event Log</h2>
-              </div>
+          <Panel
+            actions={
               <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                {eventLogLoading && <span style={{ fontSize: "0.75rem", color: "var(--muted)" }}>Refreshing…</span>}
+                {eventLogLoading ? (
+                  <span style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
+                    Refreshing…
+                  </span>
+                ) : null}
                 <button
                   type="button"
                   className="button button-secondary"
@@ -2082,12 +1990,17 @@ export function App() {
                   Clear
                 </button>
               </div>
-            </div>
+            }
+            className="event-log-panel"
+            kicker="Trade History"
+            title="Event Log"
+          >
             {eventLog.length === 0 ? (
-              <div className="empty-state event-log-empty-state">
-                <strong>No events yet</strong>
-                <p>Sell operations and bot actions will appear here.</p>
-              </div>
+              <EmptyState
+                className="event-log-empty-state"
+                description="Sell operations and bot actions will appear here."
+                title="No events yet"
+              />
             ) : (
               <div className="positions-table-wrap">
                 <table className="positions-table">
@@ -2126,7 +2039,7 @@ export function App() {
                 </table>
               </div>
             )}
-          </section>
+          </Panel>
         </main>
       ) : activeTab === "btc5m" ? (
         <main className="layout layout-single">
@@ -2149,7 +2062,7 @@ export function App() {
               <article className="btc5m-stat-card"><span>Order Size</span><strong>{formatPosNum(btc5mStatus?.orderSize)}</strong></article>
             </div>
 
-            <p className="status">{describeBtc5mStatus(btc5mStatus)}</p>
+            <StatusMessage>{describeBtc5mStatus(btc5mStatus)}</StatusMessage>
 
             <article className="btc5m-current-market-card">
               <div className="panel-head">
@@ -2515,7 +2428,7 @@ export function App() {
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }
 
