@@ -279,6 +279,11 @@ export type Btc15mStatusPayload = {
   updatedAt: number;
 };
 
+export type Btc15mAutoStartConfig = Btc15mStartConfig;
+export type Btc15mAutoCompletedTrade = Btc15mCompletedTrade;
+export type Btc15mAutoAnalyticsSummary = Btc15mAnalyticsSummary;
+export type Btc15mAutoStatusPayload = Btc15mStatusPayload;
+
 export type EventLogEntry = {
   id: number;
   timestamp: number;

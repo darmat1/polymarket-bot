@@ -3,8 +3,8 @@ import { useToasts } from "./shared/hooks/useToasts";
 import type { AppShellRenderProps } from "./app/AppShell";
 import { Btc5mScreen } from "./screens/btc5m/Btc5mScreen";
 import { Btc15mScreen } from "./screens/btc15m/Btc15mScreen";
+import { Btc15mAutoScreen } from "./screens/btc15mAuto/Btc15mAutoScreen";
 import { PositionsScreen } from "./screens/positions/PositionsScreen";
-import { WeatherScreen } from "./screens/weather/WeatherScreen";
 
 type AppProps = AppShellRenderProps;
 
@@ -40,10 +40,10 @@ export function App({ activeTab, setTabsVisible, shellControls }: AppProps) {
           setTabsVisible={setTabsVisible}
           shellControls={shellControls}
         />
-      ) : activeTab === "weather" ? (
-        <WeatherScreen shellControls={shellControls} />
       ) : activeTab === "btc5m" ? (
         <Btc5mScreen addToast={addToast} refreshAccountSummary={shellControls.refreshAccountSummary} />
+      ) : activeTab === "btc15mAuto" ? (
+        <Btc15mAutoScreen addToast={addToast} />
       ) : (
         <Btc15mScreen addToast={addToast} />
       )}

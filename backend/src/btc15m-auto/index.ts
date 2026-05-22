@@ -117,7 +117,7 @@ export async function startBtc15mAutoBot(
     },
     persistTrade: (trade) => store.appendCompletedTrade(trade),
     persistConfig: (cfg) => store.updateConfig(cfg),
-    persistRuntimeState: (state) => store.updateRuntimeState(state),
+    persistRuntimeState: settings.dryRun ? undefined : (state) => store.updateRuntimeState(state),
     getOrder: async (orderId) => {
       try {
         const order = await service.getOrder(orderId);
@@ -144,8 +144,15 @@ export async function startBtc15mAutoBot(
     config,
     dryRun: settings.dryRun,
     runtime,
-    initialTrades: latestPersisted.completedTrades,
-    initialRuntimeState: latestPersisted,
+    initialTrades: settings.dryRun ? [] : latestPersisted.completedTrades,
+    initialRuntimeState: settings.dryRun
+      ? {
+          ...latestPersisted,
+          completedTrades: [],
+          logs: [],
+          lastError: null,
+        }
+      : latestPersisted,
   });
   await bot.start();
   activeBot = bot;
@@ -261,14 +268,15 @@ export async function getBtc15mAutoBotStatus(settings: Settings): Promise<Btc15m
     defaultConfig: configFromSettings(settings),
   });
   const persisted = await store.readState();
-  const status = createIdleStatus(settings, persisted.config, persisted.completedTrades, persisted);
+  const persistedTrades = settings.dryRun ? [] : persisted.completedTrades;
+  const status = createIdleStatus(settings, persisted.config, persistedTrades, persisted);
   status.market = persisted.market;
   status.sessionAnalytics.remainingBudgetUsd = status.analytics.remainingBudgetUsd;
   status.marketStartBtcPrice = persisted.marketStartBtcPrice;
   status.currentBtcPrice = persisted.currentBtcPrice;
   status.cycle = persisted.cycle;
-  status.logs = persisted.logs;
-  status.lastError = persisted.lastError;
+  status.logs = settings.dryRun ? [] : persisted.logs;
+  status.lastError = settings.dryRun ? null : persisted.lastError;
   return status;
 }
 
