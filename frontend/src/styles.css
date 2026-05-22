@@ -1111,12 +1111,18 @@ input:checked ~ .toggle-label {
   gap: 16px;
 }
 
- .btc15m-actions {
-   display: flex;
-   flex-direction: column;
-   gap: 8px;
-   align-items: stretch;
- }
+.btc15m-actions {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.btc15m-actions .button {
+  min-width: 140px;
+}
 
 
 .btc15m-summary-grid {

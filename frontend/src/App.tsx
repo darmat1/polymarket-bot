@@ -2558,17 +2558,17 @@ export function App() {
                 </div>
               </div>
               <div className="btc15m-analytics-row">
-                <span>Trades: {btc15mStatus?.analytics.totalTrades ?? 0}</span>
-                <span>Wins: {btc15mStatus?.analytics.wins ?? 0}</span>
-                <span>Losses: {btc15mStatus?.analytics.losses ?? 0}</span>
-                <span>Win rate: {((btc15mStatus?.analytics.winRate ?? 0) * 100).toFixed(1)}%</span>
-                <span>PnL: {formatUsd(btc15mStatus?.analytics.totalPnlUsd)}</span>
+                <span>Trades: {(btc15mStatus?.dryRun ? (btc15mStatus as any)?.sessionAnalytics?.totalTrades : btc15mStatus?.analytics.totalTrades) ?? 0}</span>
+                <span>Wins: {(btc15mStatus?.dryRun ? (btc15mStatus as any)?.sessionAnalytics?.wins : btc15mStatus?.analytics.wins) ?? 0}</span>
+                <span>Losses: {(btc15mStatus?.dryRun ? (btc15mStatus as any)?.sessionAnalytics?.losses : btc15mStatus?.analytics.losses) ?? 0}</span>
+                <span>Win rate: {(((btc15mStatus?.dryRun ? (btc15mStatus as any)?.sessionAnalytics?.winRate : btc15mStatus?.analytics.winRate) ?? 0) * 100).toFixed(1)}%</span>
+                <span>PnL: {formatUsd(btc15mStatus?.dryRun ? (btc15mStatus as any)?.sessionAnalytics?.totalPnlUsd : btc15mStatus?.analytics.totalPnlUsd)}</span>
               </div>
               <div className="positions-table-wrap">
                 <table className="positions-table btc15m-trade-table">
                   <thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Buy</th><th>Sell</th><th>Qty</th><th>PnL</th><th>Result</th><th>Exit</th></tr></thead>
                   <tbody>
-                    {(btc15mStatus?.completedTrades ?? []).slice().reverse().map((trade) => (
+                    {((btc15mStatus?.dryRun ? (btc15mStatus as any)?.sessionTrades : btc15mStatus?.completedTrades) ?? []).slice().reverse().map((trade: any) => (
                       <tr key={trade.id} className={trade.result === "win" ? "btc15m-row-win" : "btc15m-row-loss"}>
                         <td>{new Date(trade.closedAt).toLocaleString()}</td>
                         <td>{trade.marketSlug.replace("btc-updown-15m-", "")}</td>
@@ -2581,7 +2581,7 @@ export function App() {
                         <td>{trade.exitReason}</td>
                       </tr>
                     ))}
-                    {(btc15mStatus?.completedTrades ?? []).length === 0 ? (
+                    {(((btc15mStatus?.dryRun ? (btc15mStatus as any)?.sessionTrades : btc15mStatus?.completedTrades) ?? []).length === 0) ? (
                       <tr><td colSpan={9} className="status status-muted">No trades yet.</td></tr>
                     ) : null}
                   </tbody>
