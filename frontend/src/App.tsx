@@ -6,14 +6,8 @@ import {
   resetBtc15mBudget as resetBtc15mBudgetRequest,
   toggleBtc15mBot as toggleBtc15mBotRequest,
 } from "./shared/api/btc15m";
-import {
-  getBtc5mStatus,
-  toggleBtc5mBot as toggleBtc5mBotRequest,
-} from "./shared/api/btc5m";
 import { formatTimeRemaining } from "./shared/lib/dates";
 import {
-  describeBtc5mStatus,
-  formatBtc5mPrice,
   formatBtcDelta,
   formatBtcPrice,
   formatPosDate,
@@ -23,7 +17,8 @@ import {
 } from "./shared/lib/format";
 import { useToasts } from "./shared/hooks/useToasts";
 import type { AppShellRenderProps } from "./app/AppShell";
-import type { Btc15mCompletedTrade, Btc15mStatusPayload, Btc5mBotStatus } from "./shared/types/api";
+import type { Btc15mCompletedTrade, Btc15mStatusPayload } from "./shared/types/api";
+import { Btc5mScreen } from "./screens/btc5m/Btc5mScreen";
 import { PositionsScreen } from "./screens/positions/PositionsScreen";
 import { WeatherScreen } from "./screens/weather/WeatherScreen";
 
@@ -32,8 +27,6 @@ type AppProps = AppShellRenderProps;
 export function App({ activeTab, setTabsVisible, shellControls }: AppProps) {
   const { addToast, removeToast, toasts } = useToasts();
 
-  const [btc5mStatus, setBtc5mStatus] = useState<Btc5mBotStatus | null>(null);
-  const [btc5mLoading, setBtc5mLoading] = useState(false);
   const [btc15mStatus, setBtc15mStatus] = useState<Btc15mStatusPayload | null>(null);
   const [btc15mLoading, setBtc15mLoading] = useState(false);
   const btc15mPrevPhaseRef = useRef<string | null>(null);
@@ -59,12 +52,6 @@ export function App({ activeTab, setTabsVisible, shellControls }: AppProps) {
   useEffect(() => {
     setTabsVisible(true);
   }, [activeTab, setTabsVisible]);
-
-  useEffect(() => {
-    if (activeTab === "btc5m") {
-      void loadBtc5mStatus();
-    }
-  }, [activeTab]);
 
   useEffect(() => {
     if (activeTab !== "btc15m") {
@@ -123,37 +110,6 @@ export function App({ activeTab, setTabsVisible, shellControls }: AppProps) {
       neutralZoneUsd: btc15mStatus.config.neutralZoneUsd,
     });
   }, [btc15mStatus]);
-
-  async function loadBtc5mStatus() {
-    setBtc5mLoading(true);
-    try {
-      const payload = await getBtc5mStatus();
-      setBtc5mStatus(payload);
-    } catch (error) {
-      addToast("error", "BTC 5m status failed", error instanceof Error ? error.message : "Unknown error");
-    } finally {
-      setBtc5mLoading(false);
-    }
-  }
-
-  async function toggleBtc5mBot() {
-    const isActive = Boolean(btc5mStatus?.active);
-    setBtc5mLoading(true);
-    try {
-      const payload = await toggleBtc5mBotRequest(isActive);
-      setBtc5mStatus(payload);
-      addToast(
-        "success",
-        isActive ? "BTC 5m bot stopped" : "BTC 5m bot started",
-        isActive ? "Bot stopped." : "Bot will buy UP at 60¢ and sell all UP shares at 70¢.",
-      );
-    } catch (error) {
-      addToast("error", "BTC 5m toggle failed", error instanceof Error ? error.message : "Unknown error");
-    } finally {
-      setBtc5mLoading(false);
-      void loadBtc5mStatus();
-    }
-  }
 
   async function loadBtc15mStatus() {
     setBtc15mLoading(true);
@@ -232,93 +188,7 @@ export function App({ activeTab, setTabsVisible, shellControls }: AppProps) {
       ) : activeTab === "weather" ? (
         <WeatherScreen shellControls={shellControls} />
       ) : activeTab === "btc5m" ? (
-        <main className="layout layout-single">
-          <section className="panel btc5m-panel">
-            <div className="panel-head">
-              <div>
-                <p className="section-kicker">Bitcoin 5-minute markets</p>
-                <h2>UP 60¢ → 70¢ scalper</h2>
-              </div>
-              <div className="btc5m-actions">
-                <button className="button button-secondary" onClick={() => void loadBtc5mStatus()} type="button" disabled={btc5mLoading}>{btc5mLoading ? "..." : "Refresh"}</button>
-                <button className={`button ${btc5mStatus?.active ? "button-secondary" : "button-primary"}`} onClick={() => void toggleBtc5mBot()} type="button" disabled={btc5mLoading}>{btc5mLoading ? "..." : btc5mStatus?.active ? "Stop Bot" : "Start Bot"}</button>
-              </div>
-            </div>
-
-            <div className="btc5m-summary-grid">
-              <article className="btc5m-stat-card"><span>Status</span><strong className={btc5mStatus?.active ? "pnl-pos" : "pnl-neg"}>{btc5mStatus?.active ? "ACTIVE" : "STOPPED"}</strong></article>
-              <article className="btc5m-stat-card"><span>Mode</span><strong>{btc5mStatus?.dryRun ? "dry-run" : "live"}</strong></article>
-              <article className="btc5m-stat-card"><span>Buy / Sell</span><strong>{formatBtc5mPrice(btc5mStatus?.buyPriceLimit)} / {formatBtc5mPrice(btc5mStatus?.sellPriceLimit)}</strong></article>
-              <article className="btc5m-stat-card"><span>Order Size</span><strong>{formatPosNum(btc5mStatus?.orderSize)}</strong></article>
-            </div>
-
-            <StatusText>{describeBtc5mStatus(btc5mStatus)}</StatusText>
-
-            <article className="btc5m-current-market-card">
-              <div className="panel-head">
-                <div>
-                  <p className="section-kicker">Current market</p>
-                  <h2>{btc5mStatus?.currentMarket?.question ?? "No active market found yet"}</h2>
-                </div>
-                {btc5mStatus?.currentMarket?.slug ? <a className="positions-link" href={`https://polymarket.com/event/${btc5mStatus.currentMarket.slug}`} target="_blank" rel="noreferrer">Open market ↗</a> : null}
-              </div>
-              <div className="btc5m-market-meta">
-                <span>Slug: {btc5mStatus?.currentMarket?.slug ?? "—"}</span>
-                <span>UP token: {btc5mStatus?.currentMarket?.upTokenId ?? "—"}</span>
-                <span>Ends: {btc5mStatus?.currentMarket?.endDateIso ? formatPosDate(btc5mStatus.currentMarket.endDateIso) : "—"}</span>
-                <span>Buy order: {btc5mStatus?.buyOrderId ?? "—"}</span>
-                <span>Sell order: {btc5mStatus?.sellOrderId ?? "—"}</span>
-                <span>Last completed: {btc5mStatus?.lastCompletedMarketSlug ?? "—"}</span>
-              </div>
-            </article>
-
-            <article className="btc5m-current-market-card">
-              <div className="panel-head">
-                <div>
-                  <p className="section-kicker">Next market</p>
-                  <h2>{btc5mStatus?.nextMarket?.question ?? "No next 5-minute market queued yet"}</h2>
-                </div>
-                {btc5mStatus?.nextMarket?.slug ? <a className="positions-link" href={`https://polymarket.com/event/${btc5mStatus.nextMarket.slug}`} target="_blank" rel="noreferrer">Open next ↗</a> : null}
-              </div>
-              <div className="btc5m-market-meta">
-                <span>Slug: {btc5mStatus?.nextMarket?.slug ?? "—"}</span>
-                <span>Starts: {btc5mStatus?.nextMarket?.startDateIso ? formatPosDate(btc5mStatus.nextMarket.startDateIso) : "—"}</span>
-                <span>Ends: {btc5mStatus?.nextMarket?.endDateIso ? formatPosDate(btc5mStatus.nextMarket.endDateIso) : "—"}</span>
-                <span>Planned buy: {formatBtc5mPrice(btc5mStatus?.buyPriceLimit)} on UP</span>
-                <span>Shares: {formatPosNum(btc5mStatus?.orderSize)}</span>
-              </div>
-            </article>
-
-            {btc5mStatus?.lastError ? <div className="empty-state"><strong>Last error</strong><p>{btc5mStatus.lastError}</p></div> : null}
-
-            <article className="btc5m-log-card">
-              <div className="panel-head">
-                <div>
-                  <p className="section-kicker">Bot log</p>
-                  <h2>Execution timeline</h2>
-                </div>
-              </div>
-              {!btc5mStatus?.logs?.length ? (
-                <StatusText tone="muted">No BTC 5m bot events yet.</StatusText>
-              ) : (
-                <div className="positions-table-wrap">
-                  <table className="positions-table">
-                    <thead><tr><th>Time</th><th>Type</th><th>Message</th></tr></thead>
-                    <tbody>
-                      {btc5mStatus.logs.map((entry, index) => (
-                        <tr key={`${entry.timestamp}-${index}`}>
-                          <td style={{ whiteSpace: "nowrap" }}>{new Date(entry.timestamp).toLocaleString()}</td>
-                          <td><span className={`event-badge event-badge-${entry.type}`}>{entry.type.toUpperCase()}</span></td>
-                          <td>{entry.message}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </article>
-          </section>
-        </main>
+        <Btc5mScreen addToast={addToast} refreshAccountSummary={shellControls.refreshAccountSummary} />
       ) : (
         <main className="layout layout-single btc15m-tab">
           <section className="panel btc15m-panel">
@@ -467,14 +337,4 @@ export function App({ activeTab, setTabsVisible, shellControls }: AppProps) {
       )}
     </>
   );
-}
-
-function StatusText({
-  children,
-  tone = "default",
-}: {
-  children: ReactNode;
-  tone?: "default" | "muted";
-}) {
-  return <p className={`status${tone === "muted" ? " status-muted" : ""}`}>{children}</p>;
 }
