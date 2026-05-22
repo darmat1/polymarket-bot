@@ -1,239 +1,79 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
-
-type OutcomeToken = {
-  label: string;
-  tokenId: string;
-};
-
-type MarketSummary = {
-  marketId: string;
-  slug: string;
-  question: string;
-  description: string;
-  category: string;
-  outcomes: OutcomeToken[];
-  active?: boolean;
-  closed?: boolean;
-};
-
-type SearchEventSummary = {
-  eventId: string;
-  slug: string;
-  title: string;
-  description: string;
-  active: boolean;
-  closed: boolean;
-  image: string;
-  icon: string;
-  tags: string[];
-  markets: MarketSummary[];
-};
-
-type EvaluationPayload = {
-  market: string;
-  slug: string;
-  outcome: string;
-  fair_probability: number;
-  model_probability: number | null;
-  fair_probability_source: "manual" | "weather-model";
-  best_bid: number | null;
-  best_ask: number | null;
-  spread_bps: number | null;
-  weather_analysis: {
-    city: string;
-    station: string;
-    target_date: string;
-    bucket: string;
-    blended_forecast_high: number;
-    sigma: number;
-    sources: string[];
-  } | null;
-  decision: {
-    should_trade: boolean;
-    side: "buy" | "sell";
-    target_price: number;
-    edge_bps: number;
-    reason: string;
-  };
-};
-
-type AccountSummaryPayload = {
-  address: string | null;
-  usdc_balance: string | null;
-  available_to_trade: string | null;
-  portfolio_value: string | null;
-  dry_run: boolean;
-  source: "polymarket-account";
-};
-
-type PolymarketPositionRow = {
-  asset?: string;
-  conditionId?: string;
-  title?: string;
-  slug?: string;
-  eventSlug?: string;
-  outcome?: string;
-  size?: number;
-  avgPrice?: number;
-  curPrice?: number;
-  currentValue?: number;
-  cashPnl?: number;
-  percentPnl?: number;
-  endDate?: string;
-  redeemable?: boolean;
-  icon?: string;
-};
-
-type OpenPositionsPayload = {
-  user: string | null;
-  wallet_source: "funder" | "eoa" | null;
-  positions: PolymarketPositionRow[];
-};
-
-type UserWebSocketAuthPayload = {
-  available: boolean;
-  source: "env" | "unavailable";
-  auth: {
-    apiKey: string;
-    secret: string;
-    passphrase: string;
-  } | null;
-  key_preview: string | null;
-  passphrase_preview: string | null;
-  last_error: string | null;
-};
-
-type AppTab = "weather" | "positions" | "btc5m" | "btc15m";
-
-type Btc5mBotPhase =
-  | "idle"
-  | "looking_for_market"
-  | "placing_buy"
-  | "buy_open"
-  | "placing_sell"
-  | "sell_open"
-  | "completed_waiting_next"
-  | "error";
-
-type Btc5mBotLogEntry = {
-  timestamp: number;
-  message: string;
-  type: "info" | "success" | "warn" | "error";
-};
-
-type Btc5mBotMarket = {
-  marketId: string;
-  slug: string;
-  question: string;
-  startDateIso: string | null;
-  endDateIso: string | null;
-  upTokenId: string;
-  downTokenId: string | null;
-};
-
-type Btc5mBotStatus = {
-  active: boolean;
-  phase: Btc5mBotPhase;
-  dryRun: boolean;
-  orderSize: number;
-  buyPriceLimit: number;
-  sellPriceLimit: number;
-  currentMarket: Btc5mBotMarket | null;
-  nextMarket: Btc5mBotMarket | null;
-  buyOrderId: string | null;
-  sellOrderId: string | null;
-  lastCompletedMarketSlug: string | null;
-  lastError: string | null;
-  updatedAt: number;
-  logs: Btc5mBotLogEntry[];
-};
-
-type Btc15mStatusPayload = {
-  enginePhase: "stopped" | "running" | "auto_stopped";
-  dryRun: boolean;
-  config: {
-    workingBudgetUsd: number;
-    shares: number;
-    buyPrice: number;
-    trailStep: number;
-    trailDist: number;
-    trailUpdateIntervalSec: number;
-    repeatThresholdMin: number;
-    forceSellThresholdMin: number;
-    neutralZoneUsd: number;
-    tickIntervalSec: number;
-  };
-  market: {
-    slug: string;
-    question: string;
-    startTimeMs: number;
-    endTimeMs: number;
-    upTokenId: string;
-    downTokenId: string;
-  } | null;
-  marketStartBtcPrice: number | null;
-  currentBtcPrice: number | null;
-  cycle: {
-    cyclePhase: string;
-    buyOrder: {
-      price: number;
-      size: number;
-      status: string;
-      bettingSide: "up" | "down";
-      orderId: string | null;
-    } | null;
-    sellOrder: {
-      price: number;
-      size: number;
-      status: string;
-      orderId: string | null;
-    } | null;
-    position: {
-      bettingSide: "up" | "down";
-      tokenId: string;
-      shares: number;
-      avgEntryPrice: number;
-      costBasisUsd: number;
-    } | null;
-  };
-  completedTrades: Array<{
-    id: string;
-    marketSlug: string;
-    bettingSide: "up" | "down";
-    buyPrice: number;
-    sellPrice: number;
-    shares: number;
-    pnlUsd: number;
-    result: "win" | "loss";
-    exitReason: string;
-    closedAt: number;
-  }>;
-  analytics: {
-    totalTrades: number;
-    wins: number;
-    losses: number;
-    winRate: number;
-    totalPnlUsd: number;
-    remainingBudgetUsd: number;
-  };
-  budget: {
-    availableBudget: number;
-    lockedBudget: number;
-    initialBudget: number;
-  } | null;
-  logs: Array<{ timestamp: number; message: string; type: "info" | "warn" | "error" | "success" }>;
-  lastError: string | null;
-  updatedAt: number;
-};
-
-type EventLogEntry = {
-  id: number;
-  timestamp: number;
-  marketSlug: string;
-  type: "info" | "success" | "warn" | "error";
-  trigger: "auto" | "manual";
-  message: string;
-};
+import {
+  getUserWebSocketAuth,
+  getAccountSummary,
+} from "./shared/api/account";
+import {
+  getBtc15mStatus,
+  resetBtc15mBudget as resetBtc15mBudgetRequest,
+  toggleBtc15mBot as toggleBtc15mBotRequest,
+} from "./shared/api/btc15m";
+import {
+  getBtc5mStatus,
+  toggleBtc5mBot as toggleBtc5mBotRequest,
+} from "./shared/api/btc5m";
+import {
+  clearEventLog,
+  getActiveBotSlugs,
+  getEventLog,
+} from "./shared/api/events";
+import {
+  activateMarketBot,
+  deactivateMarketBot,
+  getMarketBotStatus,
+  getPositions,
+  submitManualSell,
+} from "./shared/api/positions";
+import {
+  getHourlyForecast as getHourlyForecastRequest,
+  getMarketDetails as getMarketDetailsRequest,
+  getStationHistory as getStationHistoryRequest,
+  searchWeatherEvents,
+} from "./shared/api/weather";
+import { formatDateInTimeZone, formatLocalDateKey, formatTimeRemaining } from "./shared/lib/dates";
+import {
+  availableLabel,
+  describeBtc5mStatus,
+  formatBalance,
+  formatBpsValue,
+  formatBtc5mPrice,
+  formatBtcDelta,
+  formatBtcPrice,
+  formatCompactBtcPrice,
+  formatConfidence,
+  formatCountdownMs,
+  formatDurationMs,
+  formatMarketPrice,
+  formatMaybeNumber,
+  formatMoneyValue,
+  formatPosDate,
+  formatPosDateParts,
+  formatPosNum,
+  formatPercentSigned,
+  formatSignedUsd,
+  formatUsd,
+  formatUsdPrice,
+  formatUsdSigned,
+  formatUsdValue,
+  formatUsdcValue,
+  shortenAddress,
+} from "./shared/lib/format";
+import { isWeatherEvent } from "./shared/lib/guards";
+import type { AppTab } from "./shared/types/app";
+import type {
+  AccountSummaryPayload,
+  ActivateMarketBotPayload,
+  Btc15mCompletedTrade,
+  Btc15mStatusPayload,
+  Btc5mBotStatus,
+  EventLogEntry,
+  HourlyForecastEntry,
+  MarketDetailsPayload,
+  OpenPositionsPayload,
+  PolymarketPositionRow,
+  SearchEventSummary,
+  StationHistoryEntry,
+} from "./shared/types/api";
 
 type Toast = {
   id: number;
@@ -302,7 +142,7 @@ export function App() {
   const [viewingMarketSlug, setViewingMarketSlug] = useState<string | null>(
     null,
   );
-  const [marketDetails, setMarketDetails] = useState<any>(null);
+  const [marketDetails, setMarketDetails] = useState<MarketDetailsPayload | null>(null);
   const [loadingMarketDetails, setLoadingMarketDetails] = useState(false);
   const [marketDetailsError, setMarketDetailsError] = useState<string | null>(
     null,
@@ -313,6 +153,7 @@ export function App() {
   const portfolioSyncReconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const portfolioSyncRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const portfolioSyncStoppedRef = useRef(false);
+  const marketDetailsRequestRef = useRef(0);
   const activeTabRef = useRef<AppTab>("positions");
 
   const [posSortField, setPosSortField] = useState<string>("value");
@@ -370,18 +211,13 @@ export function App() {
     sortedPositions.forEach(pos => {
       let dateKey = "Unknown";
       if (pos.endDate) {
-        try {
-          // Format as YYYY-MM-DD
-          dateKey = new Date(pos.endDate).toISOString().split('T')[0];
-        } catch (e) {
-          dateKey = pos.endDate;
-        }
+        dateKey = formatLocalDateKey(pos.endDate) ?? pos.endDate;
       }
       if (!groupsMap[dateKey]) groupsMap[dateKey] = [];
       groupsMap[dateKey].push(pos);
     });
 
-    const today = new Date().toISOString().split('T')[0];
+    const today = formatLocalDateKey(Date.now());
     
     return Object.entries(groupsMap)
       .map(([date, positions]) => ({ date, positions }))
@@ -414,8 +250,8 @@ export function App() {
     );
   };
 
-  const [stationHistory, setStationHistory] = useState<any[] | null>(null);
-  const [hourlyForecast, setHourlyForecast] = useState<any[] | null>(null);
+  const [stationHistory, setStationHistory] = useState<StationHistoryEntry[] | null>(null);
+  const [hourlyForecast, setHourlyForecast] = useState<HourlyForecastEntry[] | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [loadingHourly, setLoadingHourly] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -471,6 +307,12 @@ export function App() {
           ? eventsError
           : `${events.length} ${tabTitle.toLowerCase()} event(s) visible`;
   const emptyStateText = getEmptyStateText(trimmedSearch, activeTab);
+  const btc15mAnalytics = btc15mStatus?.dryRun
+    ? btc15mStatus?.sessionAnalytics
+    : btc15mStatus?.analytics;
+  const btc15mTrades: Btc15mCompletedTrade[] = btc15mStatus?.dryRun
+    ? (btc15mStatus?.sessionTrades ?? [])
+    : (btc15mStatus?.completedTrades ?? []);
 
   useEffect(() => {
     setPendingSells((prev) => {
@@ -533,8 +375,7 @@ export function App() {
   const loadEventLog = useCallback(async () => {
     try {
       setEventLogLoading(true);
-      const res = await fetch("/api/event-log?limit=50");
-      const data = await res.json();
+      const data = await getEventLog();
       setEventLog(data.entries ?? []);
     } catch {
       // silent
@@ -695,8 +536,7 @@ export function App() {
 
   async function fetchBotStatus(slug: string) {
     try {
-      const botStatusRes = await fetch(`/api/bot/status?slug=${slug}`);
-      const botStatus = await botStatusRes.json();
+      const botStatus = await getMarketBotStatus(slug);
       setBotActive(botStatus.active);
       setLastPollTime(botStatus.lastPollTime || null);
       setBotLogs(botStatus.logs || []);
@@ -709,17 +549,12 @@ export function App() {
     setBotLoading(true);
     try {
       if (currentActive) {
-        await fetch("/api/bot/deactivate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ marketSlug: slug }),
-        });
+        await deactivateMarketBot(slug);
         if (slug === viewingMarketSlug) setBotActive(false);
         setActiveBotSlugs((prev) => prev.filter((s) => s !== slug));
       } else {
         // We need market details to activate
-        const detailsRes = await fetch(`/api/market-details?slug=${slug}`);
-        const details = await detailsRes.json();
+        const details = await getMarketDetailsRequest(slug);
         if (!details || !details.extractedData)
           throw new Error("Could not load market details for bot");
 
@@ -734,22 +569,19 @@ export function App() {
         }
 
         const pos = activePositions[0];
+        const payload: ActivateMarketBotPayload = {
+          marketSlug: slug,
+          stationCode: details.extractedData.station_code,
+          targetTemp: details.extractedData.t,
+          targetDate: details.extractedData.day,
+          tempUnit: details.extractedData.t_sys === "F" ? "F" : "C",
+          outcome: pos.outcome,
+          tokenId: pos.asset,
+          expectHigher: expectHigher,
+          timezone: details.extractedData.timezone,
+        };
 
-        await fetch("/api/bot/activate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            marketSlug: slug,
-            stationCode: details.extractedData.station_code,
-            targetTemp: details.extractedData.t,
-            targetDate: details.extractedData.day,
-            tempUnit: details.extractedData.t_sys ?? "C",
-            outcome: pos.outcome,
-            tokenId: pos.asset,
-            expectHigher: expectHigher,
-            timezone: details.extractedData.timezone,
-          }),
-        });
+        await activateMarketBot(payload);
         if (slug === viewingMarketSlug) setBotActive(true);
         setActiveBotSlugs((prev) => [...prev, slug]);
       }
@@ -790,15 +622,7 @@ export function App() {
     }));
     setSellConfirmation(null);
     try {
-      const res = await fetch("/api/bot/manual-sell", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ marketSlug, tokenId }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error ?? "Sell failed");
-      }
+      const data = await submitManualSell(marketSlug, tokenId);
       setPendingSells((prev) => ({
         ...prev,
         [tokenId]: {
@@ -866,11 +690,7 @@ export function App() {
     let cancelled = false;
     const load = async () => {
       try {
-        const response = await fetch("/api/btc15m/status");
-        const payload = (await response.json()) as Btc15mStatusPayload & { error?: string };
-        if (!response.ok) {
-          throw new Error(payload.error ?? "Failed to load BTC 15m status");
-        }
+        const payload = await getBtc15mStatus();
         if (!cancelled) {
           setBtc15mStatus(payload);
         }
@@ -939,21 +759,7 @@ export function App() {
     setEventsError(null);
 
     try {
-      const params = new URLSearchParams();
-      if (nextSearch.trim()) {
-        params.set("search", nextSearch.trim());
-      }
-
-      const response = await fetch(`/api/search-events?${params.toString()}`);
-      const payload = (await response.json()) as {
-        error?: string;
-        events?: SearchEventSummary[];
-      };
-
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to load events");
-      }
-
+      const payload = await searchWeatherEvents(nextSearch);
       const rawEvents = payload.events ?? [];
       const filteredEvents = rawEvents.filter((event) => isWeatherEvent(event));
 
@@ -970,30 +776,31 @@ export function App() {
     }
   }
 
-  async function loadHourlyForecast(slug: string) {
+  async function loadHourlyForecast(slug: string, requestId?: number) {
     setLoadingHourly(true);
     setHourlyForecast([]); // Clear previous to avoid showing stale data
     try {
-      const res = await fetch(`/api/hourly-forecast?slug=${slug}&past_days=1`);
-      const data = await res.json();
+      const data = await getHourlyForecastRequest(slug);
+      if (requestId !== undefined && requestId !== marketDetailsRequestRef.current) {
+        return;
+      }
       setHourlyForecast(data.forecast ?? []);
     } catch (err) {
+      if (requestId !== undefined && requestId !== marketDetailsRequestRef.current) {
+        return;
+      }
       console.error("Failed to load hourly forecast:", err);
       setHourlyForecast([]);
     } finally {
-      setLoadingHourly(false);
+      if (requestId === undefined || requestId === marketDetailsRequestRef.current) {
+        setLoadingHourly(false);
+      }
     }
   }
 
   async function loadAccountSummary() {
     try {
-      const response = await fetch("/api/account-summary");
-      const payload = (await response.json()) as AccountSummaryPayload & {
-        error?: string;
-      };
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to load account summary");
-      }
+      const payload = await getAccountSummary();
       setAccountSummary(payload);
       setAccountError(null);
     } catch (error) {
@@ -1011,13 +818,7 @@ export function App() {
     setLoadingPositions(true);
     setPositionsError(null);
     try {
-      const response = await fetch("/api/positions");
-      const payload = (await response.json()) as OpenPositionsPayload & {
-        error?: string;
-      };
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to load positions");
-      }
+      const payload = await getPositions();
       setPositionsPayload(payload);
     } catch (error) {
       setPositionsError(
@@ -1029,8 +830,7 @@ export function App() {
       setTimeout(() => setIsRefreshing(false), 800);
 
       try {
-        const res = await fetch("/api/bot/active-slugs");
-        const data = await res.json();
+        const data = await getActiveBotSlugs();
         setActiveBotSlugs(data.slugs || []);
       } catch (e) {
         console.error("Failed to fetch active bots", e);
@@ -1041,11 +841,7 @@ export function App() {
   async function loadBtc5mStatus() {
     setBtc5mLoading(true);
     try {
-      const response = await fetch("/api/btc5m/status");
-      const payload = (await response.json()) as Btc5mBotStatus & { error?: string };
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to load BTC 5m bot status");
-      }
+      const payload = await getBtc5mStatus();
       setBtc5mStatus(payload);
     } catch (error) {
       addToast("error", "BTC 5m status failed", error instanceof Error ? error.message : "Unknown error");
@@ -1058,12 +854,7 @@ export function App() {
     const isActive = Boolean(btc5mStatus?.active);
     setBtc5mLoading(true);
     try {
-      const endpoint = isActive ? "/api/btc5m/stop" : "/api/btc5m/start";
-      const response = await fetch(endpoint, { method: "POST" });
-      const payload = (await response.json()) as Btc5mBotStatus & { error?: string };
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to toggle BTC 5m bot");
-      }
+      const payload = await toggleBtc5mBotRequest(isActive);
       setBtc5mStatus(payload);
       addToast(
         "success",
@@ -1081,11 +872,7 @@ export function App() {
   async function loadBtc15mStatus() {
     setBtc15mLoading(true);
     try {
-      const response = await fetch("/api/btc15m/status");
-      const payload = (await response.json()) as Btc15mStatusPayload & { error?: string };
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to load BTC 15m status");
-      }
+      const payload = await getBtc15mStatus();
       setBtc15mStatus(payload);
     } catch (error) {
       addToast("error", "BTC 15m status failed", error instanceof Error ? error.message : "Unknown error");
@@ -1097,11 +884,7 @@ export function App() {
   async function resetBtc15mBudget() {
     setBtc15mLoading(true);
     try {
-      const response = await fetch("/api/btc15m/reset-budget", { method: "POST" });
-      const payload = (await response.json()) as Btc15mStatusPayload & { error?: string };
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to reset BTC 15m budget");
-      }
+      const payload = await resetBtc15mBudgetRequest();
       setBtc15mStatus(payload);
       addToast("success", "BTC 15m budget reset", "Working budget restored.");
     } catch (error) {
@@ -1120,16 +903,7 @@ export function App() {
     const isActive = btc15mStatus?.enginePhase === "running";
     setBtc15mLoading(true);
     try {
-      const endpoint = isActive ? "/api/btc15m/stop" : "/api/btc15m/start";
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: isActive ? undefined : { "content-type": "application/json" },
-        body: isActive ? undefined : JSON.stringify({ config: btc15mFormConfig }),
-      });
-      const payload = (await response.json()) as Btc15mStatusPayload & { error?: string };
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to toggle BTC 15m bot");
-      }
+      const payload = await toggleBtc15mBotRequest(isActive, btc15mFormConfig);
       setBtc15mStatus(payload);
       addToast(
         "success",
@@ -1149,24 +923,30 @@ export function App() {
     setEvents([]);
   }
 
-  async function loadStationHistory(stationCode: string) {
+  async function loadStationHistory(stationCode: string, requestId?: number) {
     setLoadingHistory(true);
     try {
-      const res = await fetch(`/api/station-history?station=${stationCode}`);
-      const data = await res.json();
-      if (data.error) {
-        setHistoryError(data.error);
-      } else {
-        setStationHistory(data.history);
+      const data = await getStationHistoryRequest(stationCode);
+      if (requestId !== undefined && requestId !== marketDetailsRequestRef.current) {
+        return;
       }
-    } catch (e: any) {
-      setHistoryError(e.message);
+      setStationHistory(data.history ?? []);
+      setHistoryError(null);
+    } catch (error) {
+      if (requestId !== undefined && requestId !== marketDetailsRequestRef.current) {
+        return;
+      }
+      setHistoryError(error instanceof Error ? error.message : "Failed to load station history");
     } finally {
-      setLoadingHistory(false);
+      if (requestId === undefined || requestId === marketDetailsRequestRef.current) {
+        setLoadingHistory(false);
+      }
     }
   }
 
   async function loadMarketDetails(slug: string) {
+    const requestId = marketDetailsRequestRef.current + 1;
+    marketDetailsRequestRef.current = requestId;
     setViewingMarketSlug(slug);
     setLoadingMarketDetails(true);
     setMarketDetailsError(null);
@@ -1174,21 +954,23 @@ export function App() {
     setHistoryError(null);
     setHourlyForecast([]);
     try {
-      const response = await fetch(`/api/market-details?slug=${slug}`);
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Failed to load market details");
+      const payload = await getMarketDetailsRequest(slug);
+      if (requestId !== marketDetailsRequestRef.current) {
+        return;
       }
       setMarketDetails(payload);
 
       // Load hourly forecast
-      loadHourlyForecast(slug);
+      void loadHourlyForecast(slug, requestId);
 
       const stationCode = payload.extractedData?.station_code;
       if (stationCode) {
-        loadStationHistory(stationCode);
+        void loadStationHistory(stationCode, requestId);
       }
     } catch (error) {
+      if (requestId !== marketDetailsRequestRef.current) {
+        return;
+      }
       setMarketDetailsError(
         error instanceof Error
           ? error.message
@@ -1196,7 +978,9 @@ export function App() {
       );
       setMarketDetails(null);
     } finally {
-      setLoadingMarketDetails(false);
+      if (requestId === marketDetailsRequestRef.current) {
+        setLoadingMarketDetails(false);
+      }
     }
   }
 
@@ -1207,11 +991,11 @@ export function App() {
     const stationCode = marketDetails.extractedData?.station_code;
 
     const historyInterval = stationCode
-      ? setInterval(() => loadStationHistory(stationCode), 2 * 60 * 1000)
+      ? setInterval(() => void loadStationHistory(stationCode, marketDetailsRequestRef.current), 2 * 60 * 1000)
       : null;
 
     const forecastInterval = setInterval(
-      () => loadHourlyForecast(viewingMarketSlug),
+      () => void loadHourlyForecast(viewingMarketSlug, marketDetailsRequestRef.current),
       5 * 60 * 1000,
     );
 
@@ -1384,14 +1168,7 @@ export function App() {
     }
 
     try {
-      const res = await fetch("/api/user-ws-auth");
-      const payload = (await res.json()) as UserWebSocketAuthPayload & {
-        error?: string;
-      };
-
-      if (!res.ok) {
-        throw new Error(payload.error ?? "Failed to load user websocket auth");
-      }
+      const payload = await getUserWebSocketAuth();
 
       if (!payload.available || !payload.auth || portfolioSyncStoppedRef.current) {
         return;
@@ -1874,7 +1651,7 @@ export function App() {
                       Error loading history: {historyError}
                     </p>
                   )}
-                  {stationHistory && stationHistory.length > 0 && (
+                  {marketDetails.extractedData && (
                     <div className="weather-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px", marginTop: "20px" }}>
                       <article className="market-history">
                         <span style={{ color: "var(--muted)", fontSize: "0.82rem" }}>
@@ -1892,7 +1669,7 @@ export function App() {
                               {(() => {
                                 const targetDayStr = marketDetails.extractedData.day;
                                 const tz = marketDetails.extractedData.timezone || "UTC";
-                                const filteredHistory = stationHistory.filter((obs: any) => {
+                                const filteredHistory = (stationHistory ?? []).filter((obs) => {
                                   if (!targetDayStr) return true;
                                   return formatDateInTimeZone(obs.obsTime * 1000, tz) === targetDayStr;
                                 });
@@ -1907,17 +1684,17 @@ export function App() {
                                   );
                                 }
 
-                                return filteredHistory.map((obs: any, index: number) => (
+                                return filteredHistory.map((obs, index: number) => (
                                   <tr key={index}>
                                     <td style={{ fontSize: "0.75rem" }}>
                                       {new Date(obs.obsTime * 1000).toLocaleTimeString("en-GB", { 
-                                        timeZone: marketDetails.extractedData.timezone || "UTC",
+                                        timeZone: marketDetails.extractedData?.timezone || "UTC",
                                         hour: "2-digit", minute: "2-digit",
                                         hour12: false 
                                       })}
                                     </td>
                                     <td style={{ fontWeight: "600" }}>
-                                      {marketDetails.extractedData.t_sys === "F"
+                                      {marketDetails.extractedData?.t_sys === "F"
                                         ? ((obs.temp * 9) / 5 + 32).toFixed(1)
                                         : obs.temp}
                                     </td>
@@ -1947,10 +1724,17 @@ export function App() {
                                 const nowInCity = new Date().toLocaleString("en-CA", { timeZone: tz, hour12: false, hour: "2-digit", minute: "2-digit" });
                                 const currentHourStr = nowInCity.split(":")[0];
                                 const targetDay = marketDetails?.extractedData?.day;
+                                const todayInCity = formatDateInTimeZone(Date.now(), tz);
+                                const isTodayTarget = Boolean(targetDay && targetDay === todayInCity);
                                 
                                 return hourlyForecast
                                   ?.filter(p => !targetDay || p.time.includes(targetDay))
-                                  .filter(p => parseInt(p.time.slice(11, 13)) >= parseInt(currentHourStr))
+                                  .filter((p) => {
+                                    if (!isTodayTarget) {
+                                      return true;
+                                    }
+                                    return parseInt(p.time.slice(11, 13), 10) >= parseInt(currentHourStr, 10);
+                                  })
                                   .map((point, index) => {
                                     const hourStr = point.time.slice(11, 13);
                                     const isCurrent = hourStr === currentHourStr;
@@ -2052,7 +1836,7 @@ export function App() {
               ) : (
                 <div className="positions-grid">
                   {groupedPositions.map((group) => {
-                    const today = new Date().toISOString().split('T')[0];
+                    const today = formatLocalDateKey(Date.now());
                     const isActual = group.date === today;
                     
                     return (
@@ -2204,7 +1988,7 @@ export function App() {
                                     <td className="positions-date" style={{ whiteSpace: "normal", minWidth: "90px" }}>
                                       {row.endDate ? (
                                         <div style={{ lineHeight: "1.2" }}>
-                                          {formatPosDate(row.endDate).split(", ").map((part, i) => (
+                                          {formatPosDateParts(row.endDate).map((part, i) => (
                                             <div key={i} style={i === 1 ? { fontSize: "0.7rem", opacity: 0.7, marginTop: "2px" } : {}}>
                                               {part}
                                             </div>
@@ -2234,7 +2018,7 @@ export function App() {
                                             {isBotActive ? "Stop" : "Start"}
                                           </button>
                                 ) : null}
-                                {row.asset ? (
+                                {row.asset && row.slug ? (
                                   <button
                                     type="button"
                                     className="button button-small sell-btn"
@@ -2291,7 +2075,7 @@ export function App() {
                   className="button button-secondary"
                   style={{ fontSize: "0.75rem", padding: "4px 10px", color: "var(--rose)" }}
                   onClick={async () => {
-                    await fetch("/api/event-log", { method: "DELETE" });
+                    await clearEventLog();
                     setEventLog([]);
                   }}
                 >
@@ -2462,9 +2246,9 @@ export function App() {
             <div className="btc15m-summary-grid">
               <article className="btc15m-stat-card"><span>Engine</span><strong className={btc15mStatus?.enginePhase === "running" ? "pnl-pos" : "pnl-neg"}>{btc15mStatus?.enginePhase?.toUpperCase() ?? "STOPPED"}</strong></article>
               <article className="btc15m-stat-card"><span>Mode</span><strong>{btc15mStatus?.dryRun === false ? "LIVE" : "SIM"}</strong></article>
-              <article className="btc15m-stat-card"><span>Session Start</span><strong>{formatUsd((btc15mStatus as any)?.analytics?.sessionStartBudgetUsd ?? btc15mStatus?.budget?.initialBudget)}</strong></article>
-              <article className="btc15m-stat-card"><span>Profit Sum</span><strong className="pnl-pos">{formatUsd((btc15mStatus as any)?.analytics?.grossProfitUsd)}</strong></article>
-              <article className="btc15m-stat-card"><span>Loss Sum</span><strong className="pnl-neg">{formatUsd((btc15mStatus as any)?.analytics?.grossLossUsd)}</strong></article>
+              <article className="btc15m-stat-card"><span>Session Start</span><strong>{formatUsd(btc15mAnalytics?.sessionStartBudgetUsd ?? btc15mStatus?.budget?.initialBudget)}</strong></article>
+              <article className="btc15m-stat-card"><span>Profit Sum</span><strong className="pnl-pos">{formatUsd(btc15mAnalytics?.grossProfitUsd)}</strong></article>
+              <article className="btc15m-stat-card"><span>Loss Sum</span><strong className="pnl-neg">{formatUsd(btc15mAnalytics?.grossLossUsd)}</strong></article>
               <article className="btc15m-stat-card"><span>Balance Now</span><strong>{formatUsd(btc15mStatus?.analytics?.remainingBudgetUsd ?? btc15mStatus?.budget?.availableBudget)}</strong></article>
             </div>
 
@@ -2523,8 +2307,8 @@ export function App() {
                 <span><em>Time left</em><strong>{btc15mStatus?.market ? formatTimeRemaining(btc15mStatus.market.endTimeMs) : "—"}</strong></span>
                 <span><em>Start BTC</em><strong>{formatBtcPrice(btc15mStatus?.marketStartBtcPrice)}</strong></span>
                 <span><em>Current BTC</em><strong>{formatBtcPrice(btc15mStatus?.currentBtcPrice)}</strong></span>
-                <span><em>Up Price</em><strong>{formatUsdPrice((btc15mStatus as any)?.upPrice)}</strong></span>
-                <span><em>Down Price</em><strong>{formatUsdPrice((btc15mStatus as any)?.downPrice)}</strong></span>
+                <span><em>Up Price</em><strong>{formatUsdPrice(btc15mStatus?.upPrice)}</strong></span>
+                <span><em>Down Price</em><strong>{formatUsdPrice(btc15mStatus?.downPrice)}</strong></span>
                 <span><em>Delta</em><strong>{formatBtcDelta(btc15mStatus)}</strong></span>
                 <span><em>Cycle</em><strong>{btc15mStatus?.cycle.cyclePhase ?? "—"}</strong></span>
               </div>
@@ -2558,17 +2342,17 @@ export function App() {
                 </div>
               </div>
               <div className="btc15m-analytics-row">
-                <span>Trades: {(btc15mStatus?.dryRun ? (btc15mStatus as any)?.sessionAnalytics?.totalTrades : btc15mStatus?.analytics.totalTrades) ?? 0}</span>
-                <span>Wins: {(btc15mStatus?.dryRun ? (btc15mStatus as any)?.sessionAnalytics?.wins : btc15mStatus?.analytics.wins) ?? 0}</span>
-                <span>Losses: {(btc15mStatus?.dryRun ? (btc15mStatus as any)?.sessionAnalytics?.losses : btc15mStatus?.analytics.losses) ?? 0}</span>
-                <span>Win rate: {(((btc15mStatus?.dryRun ? (btc15mStatus as any)?.sessionAnalytics?.winRate : btc15mStatus?.analytics.winRate) ?? 0) * 100).toFixed(1)}%</span>
-                <span>PnL: {formatUsd(btc15mStatus?.dryRun ? (btc15mStatus as any)?.sessionAnalytics?.totalPnlUsd : btc15mStatus?.analytics.totalPnlUsd)}</span>
+                <span>Trades: {btc15mAnalytics?.totalTrades ?? 0}</span>
+                <span>Wins: {btc15mAnalytics?.wins ?? 0}</span>
+                <span>Losses: {btc15mAnalytics?.losses ?? 0}</span>
+                <span>Win rate: {((btc15mAnalytics?.winRate ?? 0) * 100).toFixed(1)}%</span>
+                <span>PnL: {formatUsd(btc15mAnalytics?.totalPnlUsd)}</span>
               </div>
               <div className="positions-table-wrap">
                 <table className="positions-table btc15m-trade-table">
                   <thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Buy</th><th>Sell</th><th>Qty</th><th>PnL</th><th>Result</th><th>Exit</th></tr></thead>
                   <tbody>
-                    {((btc15mStatus?.dryRun ? (btc15mStatus as any)?.sessionTrades : btc15mStatus?.completedTrades) ?? []).slice().reverse().map((trade: any) => (
+                    {btc15mTrades.slice().reverse().map((trade) => (
                       <tr key={trade.id} className={trade.result === "win" ? "btc15m-row-win" : "btc15m-row-loss"}>
                         <td>{new Date(trade.closedAt).toLocaleString()}</td>
                         <td>{trade.marketSlug.replace("btc-updown-15m-", "")}</td>
@@ -2581,7 +2365,7 @@ export function App() {
                         <td>{trade.exitReason}</td>
                       </tr>
                     ))}
-                    {(((btc15mStatus?.dryRun ? (btc15mStatus as any)?.sessionTrades : btc15mStatus?.completedTrades) ?? []).length === 0) ? (
+                    {(btc15mTrades.length === 0) ? (
                       <tr><td colSpan={9} className="status status-muted">No trades yet.</td></tr>
                     ) : null}
                   </tbody>
@@ -2735,101 +2519,6 @@ export function App() {
   );
 }
 
-function formatMaybeNumber(value: number | null) {
-  return typeof value === "number" ? value.toFixed(2) : "-";
-}
-
-function formatPercentSigned(value: number | null | undefined) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`
-    : "-";
-}
-
-function formatBtcPrice(value: number | null | undefined) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
-    : "-";
-}
-
-function formatCompactBtcPrice(value: number | null | undefined) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? `$${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}`
-    : "-";
-}
-
-function formatMarketPrice(value: number | null | undefined) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? `${Math.round(value * 100)}c`
-    : "-";
-}
-
-function formatConfidence(value: number | null | undefined) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? `(${Math.round(value * 100)}%)`
-    : "";
-}
-
-function formatBalance(value: string) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed.toFixed(2) : value;
-}
-
-function formatMoneyValue(value: string | null | undefined) {
-  return value !== null && value !== undefined ? `$${formatBalance(value)}` : "$0.00";
-}
-
-function formatUsdcValue(value: string | null | undefined) {
-  return value !== null && value !== undefined ? `${formatBalance(value)} USDC` : "0.00 USDC";
-}
-
-function formatUsdValue(value: number | null | undefined) {
-  return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(2)}` : "$0.00";
-}
-
-function formatUsdSigned(value: number | null | undefined) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`
-    : "$0.00";
-}
-
-function formatSignedUsd(value: number | null | undefined) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`
-    : "$0.00";
-}
-
-function formatBpsValue(value: number | null | undefined) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? `${Math.round(value)} bps`
-    : "-";
-}
-
-function formatDurationMs(value: number | null | undefined) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "-";
-  }
-  if (value < 1000) {
-    return `${Math.round(value)}ms`;
-  }
-  if (value < 60_000) {
-    return `${(value / 1000).toFixed(1)}s`;
-  }
-  const minutes = Math.floor(value / 60_000);
-  const seconds = Math.round((value % 60_000) / 1000);
-  return `${minutes}m ${seconds}s`;
-}
-
-function formatCountdownMs(value: number | null | undefined) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "-";
-  }
-
-  const totalSeconds = Math.max(0, Math.floor(value / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
 function renderPendingSellBadge(pending: PendingSellState) {
   const className =
     pending.status === "error"
@@ -2865,44 +2554,6 @@ function renderPendingSellBadge(pending: PendingSellState) {
   );
 }
 
-function shortenAddress(value: string) {
-  return `${value.slice(0, 6)}...${value.slice(-4)}`;
-}
-
-function availableLabel(count: number, noun: string) {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
-}
-
-function formatPosNum(value: number | undefined) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? value.toFixed(2)
-    : "—";
-}
-
-function formatPosDate(iso: string) {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
-}
-
-function formatDateInTimeZone(value: number | string | Date, timeZone: string) {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  const parts = formatter.formatToParts(new Date(value));
-  const year = parts.find((part) => part.type === "year")?.value;
-  const month = parts.find((part) => part.type === "month")?.value;
-  const day = parts.find((part) => part.type === "day")?.value;
-
-  if (!year || !month || !day) {
-    return null;
-  }
-
-  return `${year}-${month}-${day}`;
-}
-
 function getEmptyStateText(search: string, activeTab: AppTab) {
   if (activeTab === "btc5m") {
     return "BTC 5m bot waits for the next active Bitcoin Up/Down 5-minute market.";
@@ -2915,95 +2566,4 @@ function getEmptyStateText(search: string, activeTab: AppTab) {
   }
 
   return `Type a query to fetch matching ${activeTab} Polymarket events.`;
-}
-
-function formatBtc5mPrice(value: number | undefined) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? `${Math.round(value * 100)}¢`
-    : "—";
-}
-
-function formatUsd(value: number | null | undefined) {
-  return formatUsdValue(value);
-}
-
-function formatUsdPrice(value: number | null | undefined) {
-  return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(2)}` : "—";
-}
-
-function formatBtcDelta(status: Btc15mStatusPayload | null) {
-  if (!status || status.currentBtcPrice === null || status.marketStartBtcPrice === null) {
-    return "—";
-  }
-  const delta = status.currentBtcPrice - status.marketStartBtcPrice;
-  return `${delta >= 0 ? "+" : "-"}$${Math.abs(delta).toFixed(2)}`;
-}
-
-function formatTimeRemaining(endTimeMs: number) {
-  const remaining = Math.max(0, endTimeMs - Date.now());
-  const minutes = Math.floor(remaining / 60_000);
-  const seconds = Math.floor((remaining % 60_000) / 1000);
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-}
-
-function describeBtc5mStatus(status: Btc5mBotStatus | null) {
-  if (!status) {
-    return "BTC 5m bot status unavailable.";
-  }
-
-  switch (status.phase) {
-    case "looking_for_market":
-      return status.nextMarket
-        ? "Next market selected. BUY on UP at 60¢ is queued for 5 shares; waiting for market activation and fill."
-        : "Waiting for the next Bitcoin 5-minute market.";
-    case "placing_buy":
-      return "Placing limit BUY on UP at 60¢.";
-    case "buy_open":
-      return "BUY order is live. Watching for fill.";
-    case "placing_sell":
-      return "BUY filled. Placing SELL for all UP shares at 70¢.";
-    case "sell_open":
-      return "SELL order is live. Waiting for full exit.";
-    case "completed_waiting_next":
-      return "Trade cycle finished. Waiting for the next 5-minute Bitcoin market.";
-    case "error":
-      return status.lastError ? `Error: ${status.lastError}` : "BTC 5m bot hit an error.";
-    case "idle":
-    default:
-      return status.active ? "BTC 5m bot is idle." : "BTC 5m bot is stopped.";
-  }
-}
-
-function isWeatherEvent(event: SearchEventSummary) {
-  const weatherKeywords = [
-    "weather",
-    "temperature",
-    "temp",
-    "rain",
-    "snow",
-    "storm",
-    "hurricane",
-    "climate",
-    "forecast",
-    "nyc high temp",
-    "high temp",
-  ];
-
-  return includesAnyKeyword(event, weatherKeywords);
-}
-
-function includesAnyKeyword(event: SearchEventSummary, keywords: string[]) {
-  const haystack = [
-    event.title,
-    event.slug,
-    event.description,
-    event.tags.join(" "),
-    ...event.markets.map(
-      (market) => `${market.question} ${market.slug} ${market.category}`,
-    ),
-  ]
-    .join(" ")
-    .toLowerCase();
-
-  return keywords.some((keyword) => haystack.includes(keyword));
 }
