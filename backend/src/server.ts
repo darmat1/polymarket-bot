@@ -499,6 +499,51 @@ const server = createServer(async (req, res) => {
       }
     }
 
+    // Weather session endpoints
+    if (requestUrl.pathname === "/api/weather/session" && req.method === "POST") {
+      try {
+        const { event_url } = (await readJsonBody(req)) as { event_url?: string };
+        if (!event_url || typeof event_url !== "string") {
+          return json(res, 400, { error: "event_url is required" });
+        }
+        const { createWeatherSession } = await import("./weather-sessions.js");
+        const session = await createWeatherSession(event_url);
+        return json(res, 200, session);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        console.error("[Weather] Create session error:", error);
+        return json(res, 400, { error: message });
+      }
+    }
+
+    if (requestUrl.pathname === "/api/weather/sessions" && req.method === "GET") {
+      try {
+        const { getWeatherSessions } = await import("./weather-sessions.js");
+        const sessions = await getWeatherSessions();
+        return json(res, 200, { sessions });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        console.error("[Weather] List sessions error:", error);
+        return json(res, 500, { error: message });
+      }
+    }
+
+    if (requestUrl.pathname.startsWith("/api/weather/session/") && req.method === "DELETE") {
+      try {
+        const sessionId = requestUrl.pathname.split("/").pop();
+        if (!sessionId) {
+          return json(res, 400, { error: "sessionId is required" });
+        }
+        const { deleteWeatherSession } = await import("./weather-sessions.js");
+        await deleteWeatherSession(sessionId);
+        return json(res, 200, { success: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        console.error("[Weather] Delete session error:", error);
+        return json(res, 500, { error: message });
+      }
+    }
+
     // Static file serving from frontend/dist
     const isGet = req.method === "GET" || req.method === "HEAD";
     if (isGet && !requestUrl.pathname.startsWith("/api")) {
@@ -535,6 +580,27 @@ const server = createServer(async (req, res) => {
 
 async function start(): Promise<void> {
   const settings = loadSettings();
+
+  // Initialize database
+  const { initDbPool, closeDb } = await import("./db/client.js");
+  const { runMigrations } = await import("./db/migrate.js");
+  try {
+    initDbPool();
+    console.log("[DB] Pool initialized");
+    await runMigrations();
+    console.log("[DB] Migrations completed");
+  } catch (error) {
+    console.error("[DB] Initialization failed:", error);
+    process.exit(1);
+  }
+
+  // Clean up on shutdown
+  process.on("SIGINT", async () => {
+    console.log("[Server] Shutting down...");
+    await closeDb();
+    process.exit(0);
+  });
+
   await initializeRuntimeApiCreds();
   const authState = getRuntimeAuthState();
 
