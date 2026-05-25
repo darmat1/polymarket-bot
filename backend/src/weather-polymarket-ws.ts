@@ -26,15 +26,34 @@ export async function subscribeToMarketPrices(
 
   const emitter = new EventEmitter();
 
-  // Load token IDs from DB (stored in event_data when session was created)
+  // Load token IDs — from DB if available, otherwise fetch fresh
   const db = getDb();
   const sessionResult = await db.query(
     `SELECT event_data FROM weather_sessions WHERE id = $1`,
     [sessionId]
   );
 
-  const eventData = sessionResult.rows[0]?.event_data;
-  const markets: any[] = eventData?.markets ?? [];
+  let markets: any[] = sessionResult.rows[0]?.event_data?.markets ?? [];
+
+  if (markets.length === 0) {
+    console.log(`[WS] No cached event_data for session ${sessionId}, fetching fresh from Gamma API`);
+    try {
+      const { getWeatherPolymarketEvent } = await import('./weather-polymarket.js');
+      const event = await getWeatherPolymarketEvent(slug);
+      markets = event?.markets ?? [];
+
+      // Cache it in DB
+      if (event) {
+        const icao = event.airport?.icao ?? null;
+        await db.query(
+          `UPDATE weather_sessions SET city = $1, icao = $2, event_data = $3, updated_at = NOW() WHERE id = $4`,
+          [icao ?? slug, icao, JSON.stringify(event), sessionId]
+        );
+      }
+    } catch (err) {
+      console.warn(`[WS] Failed to fetch event data for ${slug}:`, (err as Error).message);
+    }
+  }
 
   // Collect all YES token IDs from the event markets
   const tokenIds: string[] = markets

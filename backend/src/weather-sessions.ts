@@ -18,38 +18,39 @@ export async function createWeatherSession(eventUrl: string): Promise<SessionMet
     throw new Error('Invalid Polymarket event URL');
   }
 
-  // Fetch event from Polymarket to get metadata
-  const event = await getWeatherPolymarketEvent(slug);
-  if (!event) {
-    throw new Error('Event not found on Polymarket');
-  }
-
   const id = uuidv4();
   const db = getDb();
-  const icao = event.airport?.icao || 'UNKNOWN';
   const today = new Date().toISOString().split('T')[0];
+  const canonicalUrl = `https://polymarket.com/event/${slug}`;
 
+  // Save session immediately — event data will be loaded by the frontend
   await db.query(
     `INSERT INTO weather_sessions (id, slug, city, date, event_url, icao, event_data)
      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [
-      id,
-      slug,
-      icao,
-      today,
-      eventUrl,
-      icao === 'UNKNOWN' ? null : icao,
-      JSON.stringify(event),
-    ]
+    [id, slug, slug, today, canonicalUrl, null, null]
   );
+
+  // Try to enrich with event metadata in the background (non-blocking)
+  getWeatherPolymarketEvent(slug)
+    .then(async (event) => {
+      if (!event) return;
+      const icao = event.airport?.icao ?? null;
+      await db.query(
+        `UPDATE weather_sessions SET city = $1, icao = $2, event_data = $3, updated_at = NOW() WHERE id = $4`,
+        [icao ?? slug, icao, JSON.stringify(event), id]
+      );
+    })
+    .catch((err) => {
+      console.warn(`[Session] Background event fetch failed for ${slug}:`, (err as Error).message);
+    });
 
   return {
     id,
     slug,
-    city: icao,
+    city: slug,
     date: today,
-    event_url: eventUrl,
-    icao: icao === 'UNKNOWN' ? null : icao,
+    event_url: canonicalUrl,
+    icao: null,
     created_at: new Date().toISOString(),
   };
 }

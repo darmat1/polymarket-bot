@@ -77,8 +77,16 @@ const GAMMA_API = "https://gamma-api.polymarket.com";
 const activeTriggers = new Map<string, WeatherPolymarketTrigger>();
 
 export function extractSlugFromUrl(url: string): string | null {
+  // Handles /event/<slug>, /uk/event/<slug>, /us/event/<slug>, etc.
   const match = url.match(/\/event\/([^/?#\s]+)/i);
   return match?.[1] ?? null;
+}
+
+// Normalize any Polymarket URL to canonical https://polymarket.com/event/<slug>
+export function normalizePolymarketUrl(url: string): string {
+  const slug = extractSlugFromUrl(url);
+  if (!slug) return url;
+  return `https://polymarket.com/event/${slug}`;
 }
 
 export async function getWeatherPolymarketEvent(slug: string): Promise<WeatherPolymarketEventPayload | null> {
