@@ -30,6 +30,7 @@ export type AddToast = (
 type WeatherScreenProps = {
   addToast: AddToast;
   shellControls: ShellControls;
+  initialUrl?: string;
 };
 
 type PendingSellStateLike = {
@@ -63,8 +64,8 @@ type WeatherMarketDetailsPanelProps = {
 
 const DEFAULT_URL = "https://polymarket.com/event/highest-temperature-in-moscow-on-may-11-2026";
 
-export function WeatherScreen({ addToast, shellControls }: WeatherScreenProps) {
-  const [url, setUrl] = useState(DEFAULT_URL);
+export function WeatherScreen({ addToast, shellControls, initialUrl }: WeatherScreenProps) {
+  const [url, setUrl] = useState(initialUrl || DEFAULT_URL);
   const [event, setEvent] = useState<WeatherPolymarketEventPayload | null>(null);
   const [weather, setWeather] = useState<WeatherPolymarketWeather | null>(null);
   const [triggers, setTriggers] = useState<WeatherPolymarketTrigger[]>([]);
@@ -138,6 +139,14 @@ export function WeatherScreen({ addToast, shellControls }: WeatherScreenProps) {
   useEffect(() => {
     void refreshTradingStatus();
   }, [refreshTradingStatus]);
+
+  // Auto-load event when component mounts with a pre-set URL (from session tab)
+  useEffect(() => {
+    if (initialUrl) {
+      void analyze();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!airport?.icao) {

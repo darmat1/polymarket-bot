@@ -39,8 +39,12 @@ export function WeatherScreenWithTabs(props: WeatherScreenWithTabsProps) {
         </div>
       ) : (
         <div className={styles.screenContent}>
-          <WeatherScreen {...props} />
-          {/* WebSocket markets can be passed to WeatherScreen if needed via context */}
+          {/* key forces remount on tab switch, initialUrl auto-loads the event */}
+          <WeatherScreen
+            key={activeSessionId}
+            {...props}
+            initialUrl={activeSession.event_url}
+          />
         </div>
       )}
     </div>
