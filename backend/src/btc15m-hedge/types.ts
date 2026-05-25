@@ -7,11 +7,10 @@ export type Btc15mHedgeEnginePhase = "stopped" | "running" | "auto_stopped";
 
 export type Btc15mHedgeCyclePhase =
   | "waiting_market"
-  | "building_pair"
+  | "placing_orders"
+  | "waiting_fills"
   | "paired_holding"
-  | "unwinding"
-  | "cycle_done"
-  | "market_idle";
+  | "cycle_done";
 
 export type Btc15mHedgeSide = "up" | "down";
 
@@ -26,12 +25,9 @@ export interface Btc15mHedgeMarketView {
 }
 
 export interface Btc15mHedgeBotConfig {
-  workingBudgetUsd: number;
-  sharesPerSide: number;
-  targetCombinedPrice: number | null;
-  entryCutoffMin: number;
-  forceUnwindThresholdMin: number;
-  tickIntervalSec: number;
+  marketUrl: string;
+  buyPrice: number;
+  shares: number;
 }
 
 export interface Btc15mHedgeLegState {
@@ -49,14 +45,14 @@ export interface Btc15mHedgeLegState {
 export interface Btc15mHedgeCompletedCycle {
   id: string;
   marketSlug: string;
-  targetCombinedPrice: number;
-  maxSharesPerSide: number;
-  pairedShares: number;
+  buyPrice: number;
+  shares: number;
+  upFilled: number;
+  downFilled: number;
   avgUpPrice: number | null;
   avgDownPrice: number | null;
-  combinedAverage: number | null;
-  unpairedUnwindPnlUsd: number;
-  result: "paired_hold" | "partial_unwind" | "failed_to_pair";
+  totalCostUsd: number;
+  result: "paired_hold" | "partial_fill";
   startedAt: number;
   closedAt: number;
 }
@@ -73,13 +69,6 @@ export interface Btc15mHedgeCycleState {
   upLeg: Btc15mHedgeLegState;
   downLeg: Btc15mHedgeLegState;
   pairedShares: number;
-  unpairedUpShares: number;
-  unpairedDownShares: number;
-  pairedAvgUp: number | null;
-  pairedAvgDown: number | null;
-  combinedAverage: number | null;
-  pairAssembledAt: number | null;
-  completionLocked: boolean;
 }
 
 export interface Btc15mHedgeBotStatus {
@@ -87,11 +76,8 @@ export interface Btc15mHedgeBotStatus {
   dryRun: boolean;
   config: Btc15mHedgeBotConfig;
   market: Btc15mHedgeMarketView | null;
-  marketStartBtcPrice: number | null;
-  currentBtcPrice: number | null;
   cycle: Btc15mHedgeCycleState;
   completedCycles: Btc15mHedgeCompletedCycle[];
-  budget: BudgetSnapshot | null;
   logs: Btc15mHedgeLogEntry[];
   updatedAt: number;
   lastError: string | null;
@@ -110,8 +96,6 @@ export interface Btc15mHedgePersistedBudgetState {
 export interface Btc15mHedgeRuntimeStateUpdate {
   enginePhase: Btc15mHedgeEnginePhase;
   market: Btc15mHedgeMarketView | null;
-  marketStartBtcPrice: number | null;
-  currentBtcPrice: number | null;
   cycle: Btc15mHedgeCycleState;
   logs: Btc15mHedgeLogEntry[];
   lastError: string | null;
@@ -122,7 +106,6 @@ export interface Btc15mHedgePersistentState extends Btc15mHedgeRuntimeStateUpdat
   updatedAt: number;
   config: Btc15mHedgeBotConfig;
   completedCycles: Btc15mHedgeCompletedCycle[];
-  budget: Btc15mHedgePersistedBudgetState;
 }
 
 export interface Btc15mHedgeStateStoreOptions {

@@ -199,7 +199,7 @@ export type Btc15mCompletedTrade = {
   /** LIVE-only: total fees on sell side. */
   sellFeeUsd?: number;
   result: "win" | "loss";
-  exitReason: "target_sell" | "force_sell" | "resolved_unfilled";
+  exitReason: "target_sell" | "force_sell" | "resolved_unfilled" | "polymarket_history";
   startedAt?: number;
   closedAt: number;
   dryRun?: boolean;
@@ -289,7 +289,7 @@ export type Btc15mStatusPayload = {
 
 export type Btc15mAutoStartConfig = {
   workingBudgetUsd: number;
-  shares: number;
+  buyAmountUsd: number;
   minBuyPrice: number;
   maxBuyPrice: number;
   trailStep: number;
@@ -384,4 +384,93 @@ export type MarketDetailsPayload = {
   slug: string;
   extractedData?: MarketDetailsExtractedData | null;
   evaluation?: EvaluationPayload | null;
+};
+
+export type Btc15mHedgeBotConfig = {
+  marketUrl: string;
+  buyPrice: number;
+  shares: number;
+};
+
+export type Btc15mHedgeLegState = {
+  tokenId: string | null;
+  side: "up" | "down";
+  orderId: string | null;
+  orderPrice: number | null;
+  orderSize: number;
+  orderStatus: string | null;
+  filledShares: number;
+  filledCostUsd: number;
+  avgEntryPrice: number | null;
+};
+
+export type Btc15mHedgeCycleState = {
+  phase: "waiting_market" | "placing_orders" | "waiting_fills" | "paired_holding" | "cycle_done";
+  cycleStartedAt: number | null;
+  upLeg: Btc15mHedgeLegState;
+  downLeg: Btc15mHedgeLegState;
+  pairedShares: number;
+};
+
+export type Btc15mHedgeCompletedCycle = {
+  id: string;
+  marketSlug: string;
+  buyPrice: number;
+  shares: number;
+  upFilled: number;
+  downFilled: number;
+  avgUpPrice: number | null;
+  avgDownPrice: number | null;
+  totalCostUsd: number;
+  result: "paired_hold" | "partial_fill";
+  startedAt: number;
+  closedAt: number;
+};
+
+export type Btc15mHedgeStatusPayload = {
+  enginePhase: "stopped" | "running" | "auto_stopped";
+  dryRun: boolean;
+  config: Btc15mHedgeBotConfig;
+  market: {
+    slug: string;
+    question: string;
+    startTimeMs: number;
+    endTimeMs: number;
+    priceToBeat: number | null;
+    upTokenId: string;
+    downTokenId: string;
+  } | null;
+  cycle: Btc15mHedgeCycleState;
+  completedCycles: Btc15mHedgeCompletedCycle[];
+  logs: Array<{
+    timestamp: number;
+    message: string;
+    type: "info" | "warn" | "error" | "success";
+  }>;
+  updatedAt: number;
+  lastError: string | null;
+};
+
+export type CheckMarketPayload = {
+  valid: boolean;
+  slug: string | null;
+  question: string | null;
+  crypto: string | null;
+  timeframe: string | null;
+  startTimeMs: number | null;
+  endTimeMs: number | null;
+  isExpired: boolean;
+  upTokenId: string | null;
+  downTokenId: string | null;
+  upPrice: number | null;
+  downPrice: number | null;
+  currentMarket: {
+    slug: string;
+    question: string;
+    startTimeMs: number;
+    endTimeMs: number;
+    upTokenId: string;
+    downTokenId: string;
+  } | null;
+  error: string | null;
 };

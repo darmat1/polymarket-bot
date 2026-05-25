@@ -54,7 +54,8 @@ import {
   startBtc15mHedgeBot,
   stopBtc15mHedgeBot,
   type Btc15mHedgeBotConfig,
-} from "./btc15m-hedge/index.js";
+} from "./btc15m-hedge/simple-index.js";
+import { checkMarketUrl } from "./btc15m-hedge/market-checker.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const FRONTEND_DIST = join(__dirname, "..", "..", "frontend", "dist");
@@ -303,14 +304,50 @@ const server = createServer(async (req, res) => {
     }
 
     if (requestUrl.pathname === "/api/btc15m-hedge/start" && req.method === "POST") {
-      const body = await readJsonBody(req) as { config?: Partial<Btc15mHedgeBotConfig> };
-      const payload = await startBtc15mHedgeBot(loadSettings(), { configOverrides: body.config });
+      const body = await readJsonBody(req) as { config?: Btc15mHedgeBotConfig };
+      if (!body.config) {
+        return json(res, 400, { error: "config is required" });
+      }
+      if (!body.config.marketUrl || !body.config.buyPrice || !body.config.shares) {
+        return json(res, 400, { error: "marketUrl, buyPrice, and shares are required" });
+      }
+
+      // Pre-validate: reject expired markets with no replacement
+      const settings = loadSettings();
+      const marketCheck = await checkMarketUrl(body.config.marketUrl, settings.gammaHost);
+      if (marketCheck.isExpired && !marketCheck.currentMarket) {
+        return json(res, 400, {
+          error: `Market "${marketCheck.slug}" is expired and no active replacement was found. Please use a link to a currently active market.`,
+        });
+      }
+
+      const payload = await startBtc15mHedgeBot(settings, { config: body.config });
       return json(res, 200, payload);
     }
 
     if (requestUrl.pathname === "/api/btc15m-hedge/stop" && req.method === "POST") {
       const payload = await stopBtc15mHedgeBot(loadSettings());
       return json(res, 200, payload);
+    }
+
+    if (requestUrl.pathname === "/api/btc15m-hedge/check-market" && req.method === "POST") {
+      const body = await readJsonBody(req) as { marketUrl?: string };
+      if (!body.marketUrl) {
+        return json(res, 400, { error: "marketUrl is required" });
+      }
+      const settings = loadSettings();
+      
+      // Create temporary WebSocket for price fetching
+      const { PolymarketMarketWs } = await import("./polymarket-market-ws.js");
+      const tempWs = new PolymarketMarketWs(() => {});
+      
+      try {
+        const result = await checkMarketUrl(body.marketUrl, settings.gammaHost, tempWs);
+        return json(res, 200, result);
+      } finally {
+        // Clean up WebSocket connection
+        tempWs.setTrackedAssets([]);
+      }
     }
 
     if (requestUrl.pathname === "/api/event-log" && req.method === "GET") {

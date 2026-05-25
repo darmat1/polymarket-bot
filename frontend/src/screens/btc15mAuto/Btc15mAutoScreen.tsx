@@ -30,9 +30,11 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
   const [status, setStatus] = useState<Btc15mAutoStatusPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const previousPhaseRef = useRef<string | null>(null);
+  const statusWsRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [formConfig, setFormConfig] = useState({
     workingBudgetUsd: 5,
-    shares: 5,
+    buyAmountUsd: 5,
     minBuyPrice: 0.2,
     maxBuyPrice: 0.8,
     trailStep: 0.05,
@@ -91,6 +93,54 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
   }, [addToast]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const connect = () => {
+      if (cancelled) {
+        return;
+      }
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(`${protocol}//${window.location.host}`);
+      statusWsRef.current = ws;
+
+      ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(String(event.data)) as { type?: string; payload?: Btc15mAutoStatusPayload };
+          if (message.type === "btc15m_auto_status" && message.payload) {
+            setStatus(message.payload);
+          }
+        } catch {
+        }
+      };
+
+      ws.onclose = () => {
+        if (statusWsRef.current === ws) {
+          statusWsRef.current = null;
+        }
+        if (!cancelled) {
+          reconnectTimeoutRef.current = setTimeout(connect, 1000);
+        }
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+    };
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      statusWsRef.current?.close();
+      statusWsRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!status?.config) {
       return;
     }
@@ -110,7 +160,7 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
 
     setFormConfig({
       workingBudgetUsd: status.config.workingBudgetUsd,
-      shares: status.config.shares,
+      buyAmountUsd: status.config.buyAmountUsd,
       minBuyPrice: status.config.minBuyPrice,
       maxBuyPrice: status.config.maxBuyPrice,
       trailStep: status.config.trailStep,
@@ -248,7 +298,7 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
           <div className="btc15m-settings-grid">
             {([
               ["Working budget ($)", "workingBudgetUsd", 0.5],
-              ["Shares per cycle", "shares", 1],
+              ["Buy amount ($)", "buyAmountUsd", 0.01],
               ["Min buy ($)", "minBuyPrice", 0.01],
               ["Max buy ($)", "maxBuyPrice", 0.01],
               ["Trail step ($)", "trailStep", 0.01],
@@ -403,6 +453,26 @@ export function Btc15mAutoScreen({ addToast }: Btc15mAutoScreenProps) {
                 ) : null}
               </tbody>
             </table>
+          </div>
+        </article>
+
+        <article className="btc15m-card">
+          <div className="panel-head">
+            <div>
+              <p className="section-kicker">Activity</p>
+              <h2>Bot logs</h2>
+            </div>
+          </div>
+          <div className="btc15m-logs">
+            {status?.logs.slice(0, 50).map((log, index) => (
+              <div key={index} className={`btc15m-log-entry btc15m-log-${log.type}`}>
+                <span className="btc15m-log-time">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                <span className="btc15m-log-message">{log.message}</span>
+              </div>
+            ))}
+            {!status?.logs.length ? (
+              <p className="status status-muted">No logs yet.</p>
+            ) : null}
           </div>
         </article>
       </section>

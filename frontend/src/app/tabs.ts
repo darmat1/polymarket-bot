@@ -5,4 +5,5 @@ export const APP_TABS: Array<{ id: AppTab; label: string }> = [
   { id: "btc5m", label: "BTC 5m" },
   { id: "btc15m", label: "BTC 15m" },
   { id: "btc15mAuto", label: "BTC 15m Auto" },
+  { id: "btc15mHedge", label: "Hedging" },
 ];

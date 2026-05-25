@@ -58,6 +58,24 @@ export interface Btc15mAutoRuntime {
    * avg fill price and total fees (instead of trusting the limit price).
    */
   getTradesForOrder?: (orderId: string) => Promise<Array<{ price: number; size: number; feeRateBps: number; side: string }>>;
+  /**
+   * Reconcile target — fetch the live open orders + position Polymarket actually has for this
+   * token. LIVE-mode reconcile each tick treats this as the source of truth, not local state.
+   */
+  getLiveStateForAsset?: (tokenId: string) => Promise<{
+    openOrders: Array<{ id: string; side: "buy" | "sell"; price: number; originalSize: number; matchedSize: number; status: string }>;
+    position: { size: number; avgPrice: number } | null;
+  }>;
+  getRecentAccountTrades?: () => Promise<Array<{
+    id: string;
+    asset_id: string;
+    side: string;
+    size: string;
+    fee_rate_bps: string;
+    price: string;
+    match_time: string;
+    outcome: string;
+  }>>;
 }
 
 export interface Btc15mAutoBotStartOptions {
@@ -74,6 +92,7 @@ export interface Btc15mAutoBotOptions {
 }
 
 const MAX_LOG_ENTRIES = 60;
+const BOOK_STALE_MS = 10_000;
 
 export class Btc15mAutoBot {
   private readonly runtime: Btc15mAutoRuntime;
@@ -82,7 +101,7 @@ export class Btc15mAutoBot {
   private tickTimer: ReturnType<typeof setInterval> | null = null;
   private tickInProgress = false;
   private pendingActions: Promise<void>[] = [];
-  private readonly bookSnapshots = new Map<string, { bestBid: number | null; bestAsk: number | null }>();
+  private readonly bookSnapshots = new Map<string, { bestBid: number | null; bestAsk: number | null; updatedAt: number }>();
   private readonly subscribedTokens = new Set<string>();
   // Per-side trail/poll throttles — UP and DOWN run as independent parallel cycles.
   private readonly lastTrailUpdateMs: Record<Btc15mAutoSide, number> = { up: 0, down: 0 };
@@ -143,6 +162,219 @@ export class Btc15mAutoBot {
     if (tokenId === market.upTokenId) return "up";
     if (tokenId === market.downTokenId) return "down";
     return null;
+  }
+
+  /**
+   * Full reconciliation of one side's cycle against Polymarket reality (LIVE only).
+   *
+   * Polymarket is the source of truth for execution state (orders + position). Strategy state
+   * (plannedBuyPrice, trail levels, highWaterMark) is preserved locally because it cannot be
+   * inferred from Polymarket data.
+   *
+   * Per-tick algorithm:
+   *  1. Fetch live open orders + position for this side's token.
+   *  2. If PM has a position the bot didn't track → adopt it as cycle.position, fetch trades to
+   *     get the true avg entry, recompute trail levels.
+   *  3. If PM has buy/sell orders the bot didn't track → adopt them (sync orderId/price/size).
+   *  4. If the bot's tracked order is GONE on PM AND no position appeared → it was cancelled
+   *     externally or fully filled (without us noticing). For a vanished buy with a new
+   *     position: filled. For a vanished sell with no position remaining: filled → record trade.
+   *  5. Cancel any orphan orders on PM that don't match strategy intent (e.g. multiple stale
+   *     buys from prior session — keep newest, cancel rest).
+   *  6. Recompute cycle.cyclePhase from the synced state.
+   */
+  private async reconcileWithPolymarket(side: Btc15mAutoSide): Promise<void> {
+    const market = this.state.market;
+    if (!market || !this.runtime.getLiveStateForAsset) return;
+    const tokenId = this.tokenFor(side, market);
+    const tag = side.toUpperCase();
+    const cycle = this.cycleFor(side);
+
+    let live: Awaited<ReturnType<NonNullable<typeof this.runtime.getLiveStateForAsset>>>;
+    try {
+      live = await this.runtime.getLiveStateForAsset(tokenId);
+    } catch (error) {
+      this.pushLog(`[${tag}] Reconcile: failed to fetch live state: ${error instanceof Error ? error.message : String(error)}`, "warn");
+      return;
+    }
+
+    const livePosition = live.position;
+    const liveBuys = live.openOrders.filter((o) => o.side === "buy");
+    const liveSells = live.openOrders.filter((o) => o.side === "sell");
+
+    // ---- 1. POSITION reconcile ----
+    if (livePosition && livePosition.size > 0) {
+      if (!cycle.position) {
+        const avgEntryPrice = this.estimatePositionAvgPrice(side, livePosition.avgPrice, this.priceFor(side) ?? this.config.minBuyPrice);
+        // Adopt unknown position. If PM doesn't provide avgPrice, use the current side price
+        // instead of zero so trailing stop / PnL logic doesn't operate on nonsense.
+        cycle.position = {
+          bettingSide: side,
+          tokenId,
+          shares: livePosition.size,
+          avgEntryPrice,
+          costBasisUsd: roundUsd(livePosition.size * avgEntryPrice),
+        };
+        cycle.highWaterMark = avgEntryPrice;
+        cycle.trailStopPrice = roundUsd(Math.max(0.01, avgEntryPrice - this.config.trailDist));
+        cycle.cyclePhase = "holding";
+        this.pushLog(`[${tag}] Reconcile: adopted external position ${livePosition.size} sh @ $${avgEntryPrice.toFixed(4)}.`, "warn");
+        // Subscribe to book so reconcileHolding can read bestBid for trailing.
+        this.subscribeBook(tokenId);
+      } else if (Math.abs(cycle.position.shares - livePosition.size) > 0.01) {
+        // Size drifted (partial sell happened externally). Sync.
+        this.pushLog(`[${tag}] Reconcile: position size drift ${cycle.position.shares} → ${livePosition.size}. Updating.`, "warn");
+        cycle.position.shares = livePosition.size;
+        cycle.position.costBasisUsd = roundUsd(livePosition.size * cycle.position.avgEntryPrice);
+      }
+    } else {
+      // PM has no position.
+      if (cycle.position) {
+        // We thought we had one. Either it was sold externally OR our previous sell completed without us seeing.
+        // If we had a sell order whose orderId matches one on PM that's now matched → record trade.
+        // Otherwise clear silently (likely manual sell).
+        const lastSellId = cycle.sellOrder?.orderId;
+        if (lastSellId && this.runtime.getTradesForOrder) {
+          const agg = await this.aggregateTrades(lastSellId, side, "SELL");
+          if (agg && agg.totalShares > 0) {
+            this.pushLog(`[${tag}] Reconcile: position closed via SELL ${lastSellId}. Recording trade.`, "info");
+            await this.handleSellFill(side, agg.avgPrice, cycle.cyclePhase === "force_selling" ? "force_sell" : "target_sell");
+            return;
+          }
+        }
+        this.pushLog(`[${tag}] Reconcile: position vanished on Polymarket without a matching sell trade. Clearing local (likely external sale).`, "warn");
+        cycle.position = null;
+        cycle.highWaterMark = null;
+        cycle.trailStopPrice = null;
+        // Don't lose track of sell order — handled below.
+      }
+    }
+
+    // ---- 2. BUY ORDER reconcile ----
+    // Keep newest live buy (latest by id sort) as the "tracked" one; cancel rest as orphans.
+    if (liveBuys.length > 0) {
+      const liveBuy = liveBuys[liveBuys.length - 1]; // arbitrary "newest" pick
+      const expectedOrderId = cycle.buyOrder?.orderId;
+      if (!cycle.buyOrder || cycle.buyOrder.orderId !== liveBuy.id) {
+        // Adopt
+        cycle.buyOrder = {
+          id: randomUUID(),
+          orderId: liveBuy.id,
+          side: "buy",
+          tokenId,
+          bettingSide: side,
+          price: liveBuy.price,
+          size: liveBuy.originalSize,
+          filledSize: liveBuy.matchedSize,
+          status: "open",
+          reservedBudget: 0,  // can't easily reconstruct; future placements still consume budget correctly
+          createdAt: this.runtime.now(),
+          updatedAt: this.runtime.now(),
+        };
+        cycle.cyclePhase = livePosition ? "holding" : "buy_pending";
+        this.pushLog(`[${tag}] Reconcile: adopted external BUY order ${liveBuy.id} @ $${liveBuy.price.toFixed(4)} (size ${liveBuy.originalSize}).`, "warn");
+      }
+      // Cancel orphan duplicates
+      for (let i = 0; i < liveBuys.length - 1; i++) {
+        const orphan = liveBuys[i];
+        if (orphan.id !== expectedOrderId) {
+          this.pushLog(`[${tag}] Reconcile: cancelling orphan BUY ${orphan.id} @ $${orphan.price.toFixed(4)}.`, "warn");
+          try { await this.runtime.cancelOrder(orphan.id); } catch { /* best-effort */ }
+        }
+      }
+    } else if (cycle.buyOrder) {
+      // PM has no buy. Either filled (position appeared above) or cancelled externally.
+      if (livePosition && !cycle.position) {
+        // already handled in position adopt
+      } else {
+        const vanishedBuy = cycle.buyOrder;
+        if (vanishedBuy.orderId && this.runtime.getTradesForOrder) {
+          const aggregated = await this.aggregateTrades(vanishedBuy.orderId, side, "BUY");
+          if (aggregated && aggregated.totalShares > 0) {
+            this.pushLog(`[${tag}] Reconcile: tracked BUY ${vanishedBuy.orderId} disappeared from open orders but has trade matches. Adopting filled position.`, "info");
+            await this.applyRecoveredBuyFill(side, {
+              tokenId,
+              shares: aggregated.totalShares,
+              avgEntryPrice: aggregated.avgPrice,
+              buyFeeUsd: aggregated.totalFeeUsd,
+              reservedBudget: vanishedBuy.reservedBudget,
+              now: this.runtime.now(),
+            });
+            return;
+          }
+        }
+        const recentTrade = await this.findRecentAccountTrade({
+          tokenId,
+          side: "BUY",
+          notBeforeMs: (vanishedBuy.createdAt ?? this.runtime.now()) - 10_000,
+          expectedSize: vanishedBuy.size,
+        });
+        if (recentTrade) {
+          this.pushLog(`[${tag}] Reconcile: tracked BUY ${vanishedBuy.orderId} disappeared from open orders but recent account BUY trade exists. Adopting filled position.`, "warn");
+          await this.applyRecoveredBuyFill(side, {
+            tokenId,
+            shares: Number(recentTrade.size),
+            avgEntryPrice: Number(recentTrade.price),
+            buyFeeUsd: computeTradeFeeUsd(Number(recentTrade.size), Number(recentTrade.price), recentTrade.fee_rate_bps),
+            reservedBudget: vanishedBuy.reservedBudget,
+            now: this.runtime.now(),
+          });
+          return;
+        }
+        // Filled into existing position (handled by position size adopt) or external cancel.
+        this.pushLog(`[${tag}] Reconcile: tracked BUY ${cycle.buyOrder.orderId} is no longer open on Polymarket. Clearing local.`, "info");
+        // Release reserved budget (if we held any)
+        if (cycle.buyOrder.reservedBudget > 0) {
+          await this.runtime.budget.release(cycle.buyOrder.reservedBudget, `btc15mAuto-${side}-reconcile-clear`);
+        }
+        cycle.buyOrder = null;
+      }
+    }
+
+    // ---- 3. SELL ORDER reconcile ----
+    if (liveSells.length > 0) {
+      const liveSell = liveSells[liveSells.length - 1];
+      const expectedOrderId = cycle.sellOrder?.orderId;
+      if (!cycle.sellOrder || cycle.sellOrder.orderId !== liveSell.id) {
+        cycle.sellOrder = {
+          id: randomUUID(),
+          orderId: liveSell.id,
+          side: "sell",
+          tokenId,
+          bettingSide: side,
+          price: liveSell.price,
+          size: liveSell.originalSize,
+          filledSize: liveSell.matchedSize,
+          status: "open",
+          reservedBudget: 0,
+          createdAt: this.runtime.now(),
+          updatedAt: this.runtime.now(),
+        };
+        if (cycle.cyclePhase !== "force_selling") cycle.cyclePhase = "holding";
+        this.pushLog(`[${tag}] Reconcile: adopted external SELL order ${liveSell.id} @ $${liveSell.price.toFixed(4)} (size ${liveSell.originalSize}).`, "warn");
+      }
+      // Cancel orphan duplicates
+      for (let i = 0; i < liveSells.length - 1; i++) {
+        const orphan = liveSells[i];
+        if (orphan.id !== expectedOrderId) {
+          this.pushLog(`[${tag}] Reconcile: cancelling orphan SELL ${orphan.id} @ $${orphan.price.toFixed(4)}.`, "warn");
+          try { await this.runtime.cancelOrder(orphan.id); } catch { /* best-effort */ }
+        }
+      }
+    } else if (cycle.sellOrder) {
+      this.pushLog(`[${tag}] Reconcile: tracked SELL ${cycle.sellOrder.orderId} is no longer open on Polymarket. Clearing local.`, "info");
+      cycle.sellOrder = null;
+    }
+
+    // ---- 4. PHASE recompute ----
+    // Derive cyclePhase from synced execution state, preserving in-flight phases.
+    if (cycle.position) {
+      if (cycle.cyclePhase !== "force_selling") cycle.cyclePhase = "holding";
+    } else if (cycle.buyOrder) {
+      cycle.cyclePhase = "buy_pending";
+    } else if (cycle.cyclePhase === "holding" || cycle.cyclePhase === "force_selling" || cycle.cyclePhase === "buy_pending") {
+      cycle.cyclePhase = "waiting_direction";
+    }
   }
 
   async start(options: Btc15mAutoBotStartOptions = {}): Promise<void> {
@@ -233,7 +465,8 @@ export class Btc15mAutoBot {
       }
 
       this.state.currentBtcPrice = await this.runtime.fetchBtcPrice(now);
-      await this.refreshMarketPrices();
+      this.syncMarketSubscriptions();
+      this.refreshMarketPricesFromSnapshots();
       await this.refreshBudget();
 
       // Run the full per-side pipeline for UP and DOWN independently (parallel cycles, shared budget).
@@ -254,6 +487,13 @@ export class Btc15mAutoBot {
 
   /** Run the full phase pipeline for one side (UP or DOWN). */
   private async runSidePipeline(side: Btc15mAutoSide, now: number): Promise<void> {
+    // LIVE: reconcile local cycle state against Polymarket reality BEFORE strategy runs.
+    // The bot must not invent state — orders + positions are read fresh every tick.
+    // Strategy-only state (planned-buy, trail levels, highWaterMark) is preserved across ticks.
+    if (!this.dryRun) {
+      await this.reconcileWithPolymarket(side);
+    }
+
     const cycle = this.cycleFor(side);
 
     if (cycle.cyclePhase === "waiting_market") {
@@ -311,9 +551,7 @@ export class Btc15mAutoBot {
 
   private async maybePlaceBuy(side: Btc15mAutoSide): Promise<void> {
     const market = this.state.market;
-    const start = this.state.marketStartBtcPrice;
-    const current = this.state.currentBtcPrice;
-    if (!market || start === null || current === null) {
+    if (!market) {
       return;
     }
     const cycle = this.cycleFor(side);
@@ -342,8 +580,9 @@ export class Btc15mAutoBot {
     const bettingSide = side;
     const tokenId = this.tokenFor(side, market);
 
-    const marketPrice = this.priceFor(side);
-    if (marketPrice === null) {
+    const book = this.getFreshBookSnapshot(tokenId);
+    const marketPrice = book?.bestAsk ?? book?.bestBid ?? null;
+    if (book?.bestAsk === null || book?.bestAsk === undefined || marketPrice === null) {
       return;
     }
 
@@ -353,6 +592,27 @@ export class Btc15mAutoBot {
       cycle.buyBlockReason = "low_range";
       cycle.buyBlockReferencePrice = null;
       return;
+    }
+
+    // Post-cancel cooldown: if reconcilePendingBuy cancelled a stale buy (market moved away),
+    // it sets high_wait_pullback with the referencePrice = where market ran off to. We must
+    // wait until market drops by at least `trailStep` from that peak before re-arming. While
+    // waiting we still update the reference if market climbs further (track new peaks).
+    if (cycle.buyBlockReason === "high_wait_pullback" && cycle.buyBlockReferencePrice !== null) {
+      const ref = cycle.buyBlockReferencePrice;
+      if (marketPrice > ref) {
+        // Market kept climbing — bump the reference.
+        cycle.buyBlockReferencePrice = marketPrice;
+        return;
+      }
+      if (ref - marketPrice < this.config.trailStep) {
+        // Not enough pullback yet — keep waiting.
+        return;
+      }
+      // Pulled back by ≥ trailStep — clear the block and proceed with fresh anchoring.
+      this.pushLog(`[${tag}] Pullback satisfied: peak ${ref.toFixed(4)} → ${marketPrice.toFixed(4)} (Δ=${(ref - marketPrice).toFixed(4)} ≥ ${this.config.trailStep}). Re-arming buy.`, "info");
+      cycle.buyBlockReason = null;
+      cycle.buyBlockReferencePrice = null;
     }
 
     if (marketPrice > this.config.maxBuyPrice) {
@@ -395,7 +655,12 @@ export class Btc15mAutoBot {
       return;
     }
 
-    const stake = roundUsd(this.config.shares * guardedPlannedBuyPrice);
+    const stake = roundUsd(this.config.buyAmountUsd);
+    const buySize = roundShares(stake / marketPrice);
+    if (!(buySize > 0)) {
+      this.pushLog(`[${tag}] Skip buy: computed size is 0 for $${stake.toFixed(2)} at ${formatPrice(marketPrice)}.`, "warn");
+      return;
+    }
     try {
       await this.runtime.budget.reserve(stake, `btc15mAuto-${side}-cycle-buy`);
     } catch (error) {
@@ -416,8 +681,8 @@ export class Btc15mAutoBot {
       response = await this.runtime.placeLimitOrder({
         tokenId,
         side: "buy",
-        price: guardedPlannedBuyPrice,
-        size: this.config.shares,
+        price: marketPrice,
+        size: buySize,
       });
     } catch (error) {
       // Polymarket rejected the order (or the request failed). Release the reservation we made
@@ -433,8 +698,23 @@ export class Btc15mAutoBot {
     // A sentinel makes polling/WS detection impossible (no real ID to match against), which
     // historically led to phantom positions when polling 404'd on the sentinel.
     if (!extractedOrderId) {
+      const recovered = await this.recoverBuySubmissionWithoutOrderId(
+        side,
+        tokenId,
+        marketPrice,
+        buySize,
+        stake,
+        now,
+      );
+      if (recovered) {
+        this.pushLog(
+          `[${tag}] BUY trigger ${formatPrice(guardedPlannedBuyPrice)} hit; recovered live submission @ ${formatPrice(marketPrice)}.`,
+          "warn",
+        );
+        return;
+      }
       await this.runtime.budget.release(stake, `btc15mAuto-${side}-no-order-id`);
-      this.pushLog(`[${tag}] BUY response had no orderID. Released reserve, no local tracking.`, "error");
+      this.pushLog(`[${tag}] BUY response had no orderID and no live order/position was found. Released reserve.`, "error");
       return;
     }
     const orderId = extractedOrderId;
@@ -448,8 +728,8 @@ export class Btc15mAutoBot {
         side: "buy",
         tokenId,
         bettingSide,
-        price: guardedPlannedBuyPrice,
-        size: this.config.shares,
+        price: marketPrice,
+        size: buySize,
         filledSize: 0,
         status: "open",
         reservedBudget: stake,
@@ -461,7 +741,10 @@ export class Btc15mAutoBot {
       buyBlockReason: null,
       buyBlockReferencePrice: null,
     });
-    this.pushLog(`[${tag}] BUY @ ${formatPrice(guardedPlannedBuyPrice)} submitted (${orderId}).`, "info");
+    this.pushLog(
+      `[${tag}] BUY trigger ${formatPrice(guardedPlannedBuyPrice)} hit; submitted @ ${formatPrice(marketPrice)} (${orderId}).`,
+      "info",
+    );
     if (this.dryRun) {
       this.subscribeBook(tokenId);
     }
@@ -519,6 +802,14 @@ export class Btc15mAutoBot {
     if (livePrice !== null && livePrice > buyOrder.price) {
       await this.cancelBuy(side, `missed-breakout (${livePrice.toFixed(2)} > ${buyOrder.price.toFixed(2)})`);
       cycle.cyclePhase = "waiting_direction";
+      // Reset planning AND require a pullback before re-arming. Without this guard, maybePlaceBuy
+      // would immediately re-place at the stale planned price (anchor stays low → planned stays
+      // low → market still above → re-place → cancel → loop). Set high_wait_pullback so the
+      // next maybePlaceBuy waits until market drops by at least `trailStep` from this peak.
+      cycle.plannedBuyPrice = null;
+      cycle.plannedBuyAnchorPrice = null;
+      cycle.buyBlockReason = "high_wait_pullback";
+      cycle.buyBlockReferencePrice = livePrice;
       return;
     }
 
@@ -543,20 +834,51 @@ export class Btc15mAutoBot {
     }
     const tag = side.toUpperCase();
 
-    const snap = this.bookSnapshots.get(position.tokenId);
-    let bestBid = snap?.bestBid ?? null;
-    let bestAsk = snap?.bestAsk ?? null;
-    const timeToEndMs = market.endTimeMs - now;
+    // Poll the SELL order BEFORE running trail/force-sell logic. The WS user-channel can
+    // miss "matched" events (Polymarket sometimes drops them under load), and without this
+    // polling our local sellOrder stays "open" forever even after the real Polymarket order
+    // was filled or rejected. That stalled the cycle: bot kept waiting for a fill that already
+    // happened OR for a sell that was never accepted.
+    if (!this.dryRun && cycle.sellOrder && cycle.sellOrder.orderId && this.runtime.getOrder) {
+      if (now - this.lastOrderPollMs[side] >= this.orderPollIntervalMs) {
+        this.lastOrderPollMs[side] = now;
+        try {
+          const data = await this.runtime.getOrder(cycle.sellOrder.orderId);
+          if (data) {
+            const statusLower = (data.status ?? "").toLowerCase();
+            const matched = parseFloat(data.size_matched) || 0;
+            const original = parseFloat(data.original_size ?? String(cycle.sellOrder.size)) || cycle.sellOrder.size;
+            const fullyFilled = matched >= original - 1e-9 && matched > 0;
+            const statusFilled = isFilledStatus(statusLower);
 
-    if (this.runtime.getOrderBook) {
-      try {
-        const book = await this.runtime.getOrderBook(position.tokenId);
-        this.bookSnapshots.set(position.tokenId, { bestBid: book.bestBid, bestAsk: book.bestAsk });
-        bestBid = book.bestBid;
-        bestAsk = book.bestAsk;
-      } catch (error) {
-        this.pushLog(`[${tag}] getOrderBook failed during holding: ${error instanceof Error ? error.message : String(error)}`, "warn");
+            if (statusFilled || fullyFilled) {
+              this.pushLog(`[${tag}] SELL fill detected via polling (matched ${matched}/${original}, status=${data.status}).`, "info");
+              await this.handleSellFill(
+                side,
+                cycle.sellOrder.price,
+                cycle.cyclePhase === "force_selling" ? "force_sell" : "target_sell",
+              );
+              return; // cycle is now closed — nothing else to do this tick
+            } else if (isFailureStatus(statusLower) || statusLower === "not_found") {
+              this.pushLog(`[${tag}] SELL ${statusLower === "not_found" ? "not found on Polymarket" : "failed"} (status=${data.status}). Clearing local tracking; will re-place.`, "warn");
+              cycle.sellOrder = null;
+              // Fall through to trail logic — it will place a fresh sell next iteration.
+            }
+            // else: still open — fall through to trail/force-sell logic which may update price.
+          }
+        } catch {
+          // best-effort; trail/force-sell still runs below
+        }
       }
+    }
+
+    const snap = this.getFreshBookSnapshot(position.tokenId);
+    const bestBid = snap?.bestBid ?? null;
+    const bestAsk = snap?.bestAsk ?? null;
+    const timeToEndMs = market.endTimeMs - now;
+    if (bestBid === null && bestAsk === null) {
+      this.pushLog(`[${tag}] Waiting for fresh websocket book before managing position.`, "warn");
+      return;
     }
 
     const isLateForceSellWindow = timeToEndMs < this.config.forceSellThresholdMin * 60_000;
@@ -583,8 +905,27 @@ export class Btc15mAutoBot {
 
     const trailStopPrice = cycle.trailStopPrice;
     if (!isLateForceSellWindow && bestBid !== null && trailStopPrice !== null && bestBid <= trailStopPrice) {
-      const liveExitPrice = trailStopPrice;
-      this.pushLog(`[${tag}] Trail stop triggered at ${formatPrice(trailStopPrice)} (live bid ${formatPrice(bestBid)}).`, "warn");
+      // The whole point of a stop is to EXIT NOW. If we place a sell at `trailStopPrice` while
+      // the current bid is below it, the limit sells sits above the bid and never fills — the
+      // bot then waits forever while the price keeps dropping. Cross the spread by selling
+      // INTO the current bid (so the sell matches immediately against the existing buy offer).
+      // Also fetch a fresh book here in LIVE: WS bookSnapshots can be stale by hundreds of ms,
+      // and a stop-out at a stale price is the worst time to hesitate.
+      const exitBid: number | null = bestBid;
+      // Sell INTO the bid (cross-the-spread). Clamp to ≥ 0.01 (Polymarket min tick).
+      const liveExitPrice = exitBid !== null && exitBid > 0 ? exitBid : 0.01;
+      // Anti-spam: if an existing sell is already at or below the current bid, it SHOULD fill
+      // via Polymarket matching — re-placing every tick would just cancel/replace API spam.
+      // Only re-place when the existing sell is ABOVE the bid (so it can't fill passively).
+      if (cycle.sellOrder && cycle.sellOrder.price <= liveExitPrice + 1e-9) {
+        // existing sell is competitive; let it sit. Polling will detect a real fill.
+        return;
+      }
+      this.pushLog(`[${tag}] Trail stop triggered. Stop=${formatPrice(trailStopPrice)}, bid=${formatPrice(exitBid ?? 0)} → selling at ${formatPrice(liveExitPrice)} (cross-spread).`, "warn");
+      // Cancel the stale higher-priced sell before placing the fresh cross-spread one.
+      if (cycle.sellOrder) {
+        await this.cancelSellOrderApi(side);
+      }
       await this.placeSell(side, liveExitPrice, "holding");
       if (this.dryRun) {
         await this.handleSellFill(side, liveExitPrice, "target_sell");
@@ -596,18 +937,7 @@ export class Btc15mAutoBot {
     if (!isLateForceSellWindow) {
       return;
     }
-    let liveBid: number | null = bestBid;
-    if (!this.dryRun && this.runtime.getOrderBook) {
-      try {
-        const book = await this.runtime.getOrderBook(position.tokenId);
-        if (book.bestBid !== null && book.bestBid > 0) {
-          liveBid = book.bestBid;
-          this.bookSnapshots.set(position.tokenId, { bestBid: book.bestBid, bestAsk: book.bestAsk });
-        }
-      } catch (error) {
-        this.pushLog(`[${tag}] getOrderBook failed during force-sell: ${error instanceof Error ? error.message : String(error)}`, "warn");
-      }
-    }
+    const liveBid: number | null = bestBid;
     const forceSellPrice = liveBid !== null && liveBid > 0 ? liveBid : 0.01;
     await this.cancelSellOrderApi(side);
     this.pushLog(`[${tag}] Force-sell at ${formatPrice(forceSellPrice)} (live bid: ${liveBid ?? "n/a"}).`, "warn");
@@ -628,21 +958,6 @@ export class Btc15mAutoBot {
       }
     }
     cycle.sellOrder = null;
-  }
-
-  private async getFreshBookSnapshot(tokenId: string): Promise<{ previous: { bestBid: number | null; bestAsk: number | null } | null; current: { bestBid: number | null; bestAsk: number | null } }> {
-    const previous = this.bookSnapshots.get(tokenId) ?? null;
-    if (this.runtime.getOrderBook) {
-      try {
-        const book = await this.runtime.getOrderBook(tokenId);
-        if (book.bestBid !== null || book.bestAsk !== null) {
-          this.bookSnapshots.set(tokenId, { bestBid: book.bestBid, bestAsk: book.bestAsk });
-          return { previous, current: book };
-        }
-      } catch {
-      }
-    }
-    return { previous, current: previous ?? { bestBid: null, bestAsk: null } };
   }
 
   private decideRepeat(side: Btc15mAutoSide, now: number): void {
@@ -720,7 +1035,17 @@ export class Btc15mAutoBot {
       return;
     }
     this.runtime.onMarketBookSubscribe(tokenId, (bestBid, bestAsk) => {
-      this.bookSnapshots.set(tokenId, { bestBid, bestAsk });
+      this.bookSnapshots.set(tokenId, { bestBid, bestAsk, updatedAt: this.runtime.now() });
+      const market = this.state.market;
+      if (market) {
+        if (tokenId === market.upTokenId) {
+          this.state.upPrice = bestAsk;
+          this.touch();
+        } else if (tokenId === market.downTokenId) {
+          this.state.downPrice = bestAsk;
+          this.touch();
+        }
+      }
       // In LIVE mode the book listener is ONLY used to populate bookSnapshots (for the trailing
       // stop calculation in reconcileHolding). It must NOT auto-trigger fills — real fills come
       // from the Polymarket user-WS channel and the polling fallback. Auto-firing transitionBuy
@@ -891,12 +1216,20 @@ export class Btc15mAutoBot {
       this.pushLog(`[${side.toUpperCase()}] SELL placement failed: ${msg}. Position kept; will retry.`, "error");
       return;
     }
+    const now = this.runtime.now();
     const extractedOrderId = extractOrderId(response);
     if (!extractedOrderId) {
+      const recovered = await this.recoverSellSubmissionWithoutOrderId(side, clamped, now);
+      if (recovered) {
+        this.pushLog(
+          `[${side.toUpperCase()}] SELL submission recovered from live state @ ${formatPrice(clamped)}.`,
+          "warn",
+        );
+        return;
+      }
       this.pushLog(`[${side.toUpperCase()}] SELL response had no orderID. Position kept; will retry next tick.`, "error");
       return;
     }
-    const now = this.runtime.now();
     const orderId = extractedOrderId;
     cycle.sellOrder = {
       id: randomUUID(),
@@ -1100,6 +1433,290 @@ export class Btc15mAutoBot {
     });
   }
 
+  private estimatePositionAvgPrice(
+    side: Btc15mAutoSide,
+    liveAvgPrice: number | null | undefined,
+    fallbackPrice: number,
+  ): number {
+    if (typeof liveAvgPrice === "number" && Number.isFinite(liveAvgPrice) && liveAvgPrice > 0) {
+      return roundPrice(liveAvgPrice);
+    }
+    const cycle = this.cycleFor(side);
+    const bookPrice = this.priceFor(side);
+    return roundPrice(bookPrice ?? cycle.buyOrder?.price ?? fallbackPrice);
+  }
+
+  private async recoverBuySubmissionWithoutOrderId(
+    side: Btc15mAutoSide,
+    tokenId: string,
+    fallbackPrice: number,
+    fallbackSize: number,
+    reservedBudget: number,
+    now: number,
+  ): Promise<boolean> {
+    if (!this.runtime.getLiveStateForAsset) {
+      return false;
+    }
+    try {
+      const live = await this.runtime.getLiveStateForAsset(tokenId);
+      const cycle = this.cycleFor(side);
+      const liveBuy = live.openOrders.filter((order) => order.side === "buy")[0];
+
+      if (liveBuy?.id) {
+        cycle.cyclePhase = "buy_pending";
+        cycle.cycleStartedAt = cycle.cycleStartedAt ?? now;
+        cycle.buyOrder = {
+          id: randomUUID(),
+          orderId: liveBuy.id,
+          side: "buy",
+          tokenId,
+          bettingSide: side,
+          price: liveBuy.price > 0 ? liveBuy.price : fallbackPrice,
+          size: liveBuy.originalSize > 0 ? liveBuy.originalSize : fallbackSize,
+          filledSize: liveBuy.matchedSize,
+          status: "open",
+          reservedBudget,
+          createdAt: now,
+          updatedAt: now,
+        };
+        cycle.plannedBuyPrice = null;
+        cycle.plannedBuyAnchorPrice = null;
+        cycle.buyBlockReason = null;
+        cycle.buyBlockReferencePrice = null;
+        return true;
+      }
+
+      if (live.position && live.position.size > 0) {
+        const avgEntryPrice = this.estimatePositionAvgPrice(side, live.position.avgPrice, fallbackPrice);
+        await this.applyRecoveredBuyFill(side, {
+          tokenId,
+          shares: live.position.size,
+          avgEntryPrice,
+          buyFeeUsd: 0,
+          reservedBudget,
+          now,
+        });
+        return true;
+      }
+
+      const recentTrade = await this.findRecentAccountTrade({
+        tokenId,
+        side: "BUY",
+        notBeforeMs: now - 120_000,
+        expectedSize: fallbackSize,
+      });
+      if (recentTrade) {
+        await this.applyRecoveredBuyFill(side, {
+          tokenId,
+          shares: Number(recentTrade.size),
+          avgEntryPrice: Number(recentTrade.price),
+          buyFeeUsd: computeTradeFeeUsd(Number(recentTrade.size), Number(recentTrade.price), recentTrade.fee_rate_bps),
+          reservedBudget,
+          now,
+        });
+        return true;
+      }
+    } catch {
+    }
+    return false;
+  }
+
+  private async applyRecoveredBuyFill(side: Btc15mAutoSide, args: {
+    tokenId: string;
+    shares: number;
+    avgEntryPrice: number;
+    buyFeeUsd: number;
+    reservedBudget: number;
+    now: number;
+  }): Promise<void> {
+    const cycle = this.cycleFor(side);
+    const shares = roundShares(args.shares);
+    const avgEntryPrice = roundPrice(args.avgEntryPrice);
+    const buyFeeUsd = roundUsd(args.buyFeeUsd);
+    const consumed = roundUsd(shares * avgEntryPrice + buyFeeUsd);
+    const unfilledBudget = roundUsd(Math.max(0, args.reservedBudget - consumed));
+    cycle.cyclePhase = "holding";
+    cycle.cycleStartedAt = cycle.cycleStartedAt ?? args.now;
+    cycle.buyOrder = null;
+    cycle.position = {
+      bettingSide: side,
+      tokenId: args.tokenId,
+      shares,
+      avgEntryPrice,
+      costBasisUsd: consumed,
+    };
+    (cycle.position as { buyFeeUsd?: number }).buyFeeUsd = buyFeeUsd;
+    cycle.highWaterMark = avgEntryPrice;
+    cycle.trailStopPrice = roundUsd(Math.max(0.01, avgEntryPrice - this.config.trailDist));
+    cycle.plannedBuyPrice = null;
+    cycle.plannedBuyAnchorPrice = null;
+    cycle.buyBlockReason = null;
+    cycle.buyBlockReferencePrice = null;
+    await this.runtime.budget.consume(consumed, `btc15mAuto-${side}-buy-filled-recovered`);
+    if (unfilledBudget > 0) {
+      await this.runtime.budget.release(unfilledBudget, `btc15mAuto-${side}-buy-recovered-unfilled`);
+    }
+  }
+
+  private async recoverSellSubmissionWithoutOrderId(
+    side: Btc15mAutoSide,
+    fallbackPrice: number,
+    now: number,
+  ): Promise<boolean> {
+    const cycle = this.cycleFor(side);
+    const position = cycle.position;
+    if (!position || !this.runtime.getLiveStateForAsset) {
+      return false;
+    }
+    try {
+      const live = await this.runtime.getLiveStateForAsset(position.tokenId);
+      const liveSell = live.openOrders.filter((order) => order.side === "sell")[0];
+      if (!liveSell?.id) {
+        if (!live.position || live.position.size <= 0) {
+          const recentTrade = await this.findRecentAccountTrade({
+            tokenId: position.tokenId,
+            side: "SELL",
+            notBeforeMs: now - 120_000,
+            expectedSize: position.shares,
+          });
+          if (recentTrade) {
+            await this.handleRecoveredSellTrade(side, recentTrade, cycle.cyclePhase === "force_selling" ? "force_sell" : "target_sell");
+            return true;
+          }
+        }
+        return false;
+      }
+      cycle.sellOrder = {
+        id: randomUUID(),
+        orderId: liveSell.id,
+        side: "sell",
+        tokenId: position.tokenId,
+        bettingSide: position.bettingSide,
+        price: liveSell.price > 0 ? liveSell.price : fallbackPrice,
+        size: liveSell.originalSize > 0 ? liveSell.originalSize : position.shares,
+        filledSize: liveSell.matchedSize,
+        status: "open",
+        reservedBudget: 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async findRecentAccountTrade(args: {
+    tokenId: string;
+    side: "BUY" | "SELL";
+    notBeforeMs: number;
+    expectedSize: number;
+  }): Promise<{
+    id: string;
+    asset_id: string;
+    side: string;
+    size: string;
+    fee_rate_bps: string;
+    price: string;
+    match_time: string;
+    outcome: string;
+  } | null> {
+    if (!this.runtime.getRecentAccountTrades) {
+      return null;
+    }
+    try {
+      const candidates = await this.runtime.getRecentAccountTrades();
+      const sideNorm = args.side.toUpperCase();
+      const recent = candidates
+        .map((trade) => ({
+          trade,
+          matchMs: parseTradeTimestampValue(trade.match_time),
+          sizeNum: Number(trade.size),
+        }))
+        .filter((entry) =>
+          entry.trade.asset_id === args.tokenId &&
+          String(entry.trade.side).toUpperCase() === sideNorm &&
+          Number.isFinite(entry.matchMs) &&
+          entry.matchMs >= args.notBeforeMs &&
+          Number.isFinite(entry.sizeNum) &&
+          entry.sizeNum > 0 &&
+          Math.abs(entry.sizeNum - args.expectedSize) <= Math.max(0.05, args.expectedSize * 0.25),
+        )
+        .sort((a, b) => b.matchMs - a.matchMs);
+      return recent[0]?.trade ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async handleRecoveredSellTrade(
+    side: Btc15mAutoSide,
+    trade: {
+      id: string;
+      asset_id: string;
+      side: string;
+      size: string;
+      fee_rate_bps: string;
+      price: string;
+      match_time: string;
+      outcome: string;
+    },
+    exitReason: Btc15mAutoCompletedTrade["exitReason"],
+  ): Promise<void> {
+    const cycle = this.cycleFor(side);
+    const position = cycle.position;
+    const market = this.state.market;
+    if (!position || !market) {
+      return;
+    }
+
+    const realSellPrice = roundPrice(Number(trade.price));
+    const realShares = roundShares(Number(trade.size));
+    const sellFeeUsd = computeTradeFeeUsd(realShares, realSellPrice, trade.fee_rate_bps);
+    const sellProceedsUsd = roundUsd(realSellPrice * realShares);
+    const buyFeeUsd = (position as { buyFeeUsd?: number }).buyFeeUsd ?? 0;
+    const buyCostUsd = roundUsd(position.avgEntryPrice * position.shares);
+    const pnlUsd = roundUsd(sellProceedsUsd - buyCostUsd - buyFeeUsd - sellFeeUsd);
+
+    const completedTrade: Btc15mAutoCompletedTrade = {
+      id: `recovered-${trade.id}`,
+      marketSlug: market.slug,
+      bettingSide: position.bettingSide,
+      buyPrice: position.avgEntryPrice,
+      sellPrice: realSellPrice,
+      shares: realShares,
+      pnlUsd,
+      result: pnlUsd > 0 ? "win" : "loss",
+      exitReason,
+      startedAt: cycle.cycleStartedAt ?? this.runtime.now(),
+      closedAt: parseTradeTimestampValue(trade.match_time) || this.runtime.now(),
+      dryRun: this.dryRun,
+      ...(this.dryRun ? {} : {
+        buyCostUsd,
+        sellProceedsUsd,
+        buyFeeUsd: roundUsd(buyFeeUsd),
+        sellFeeUsd: roundUsd(sellFeeUsd),
+      }),
+    };
+
+    cycle.sellOrder = null;
+    cycle.position = null;
+    cycle.cyclePhase = "cycle_done";
+
+    await this.runtime.budget.addFunds(roundUsd(sellProceedsUsd - sellFeeUsd), `btc15mAuto-${side}-sell-filled-history`);
+    if (this.dryRun) {
+      this.state.sessionTrades = [...this.state.sessionTrades, completedTrade].slice(-500);
+    } else {
+      this.state.completedTrades = [...this.state.completedTrades, completedTrade].slice(-500);
+      await this.runtime.persistTrade(completedTrade);
+    }
+    this.runtime.onMarketBookUnsubscribe(position.tokenId);
+    this.subscribedTokens.delete(position.tokenId);
+    this.pushLog(`[${side.toUpperCase()}] SELL recovered from account trade history @ ${formatPrice(realSellPrice)}. PnL ${pnlUsd.toFixed(2)} (${completedTrade.result}).`, completedTrade.result === "win" ? "success" : "warn");
+    await this.refreshBudget();
+    await this.persistRuntimeState();
+  }
+
   private async refreshBudget(): Promise<void> {
     const snapshot = await this.runtime.budget.snapshot();
     this.state.budget = snapshot;
@@ -1143,23 +1760,35 @@ export class Btc15mAutoBot {
     };
   }
 
-  private async refreshMarketPrices(): Promise<void> {
+  private refreshMarketPricesFromSnapshots(): void {
     const market = this.state.market;
-    if (!market || !this.runtime.getOrderBook) {
+    if (!market) {
       return;
     }
-    try {
-      const [upBook, downBook] = await Promise.all([
-        this.runtime.getOrderBook(market.upTokenId),
-        this.runtime.getOrderBook(market.downTokenId),
-      ]);
-      this.bookSnapshots.set(market.upTokenId, { bestBid: upBook.bestBid, bestAsk: upBook.bestAsk });
-      this.bookSnapshots.set(market.downTokenId, { bestBid: downBook.bestBid, bestAsk: downBook.bestAsk });
-      this.state.upPrice = upBook.bestAsk ?? upBook.bestBid;
-      this.state.downPrice = downBook.bestAsk ?? downBook.bestBid;
-    } catch (error) {
-      this.pushLog(`getOrderBook failed during market refresh: ${error instanceof Error ? error.message : String(error)}`, "warn");
+    const upBook = this.getFreshBookSnapshot(market.upTokenId);
+    const downBook = this.getFreshBookSnapshot(market.downTokenId);
+    this.state.upPrice = upBook?.bestAsk ?? null;
+    this.state.downPrice = downBook?.bestAsk ?? null;
+  }
+
+  private getFreshBookSnapshot(tokenId: string): { bestBid: number | null; bestAsk: number | null } | null {
+    const snapshot = this.bookSnapshots.get(tokenId);
+    if (!snapshot) {
+      return null;
     }
+    if (this.runtime.now() - snapshot.updatedAt > BOOK_STALE_MS) {
+      return null;
+    }
+    return { bestBid: snapshot.bestBid, bestAsk: snapshot.bestAsk };
+  }
+
+  private syncMarketSubscriptions(): void {
+    const market = this.state.market;
+    if (!market) {
+      return;
+    }
+    this.subscribeBook(market.upTokenId);
+    this.subscribeBook(market.downTokenId);
   }
 
   private pushLog(message: string, type: Btc15mAutoLogEntry["type"]): void {
@@ -1224,10 +1853,49 @@ function extractOrderId(payload: unknown): string | null {
     return null;
   }
   const value = payload as Record<string, unknown>;
-  if (typeof value.orderID === "string") return value.orderID;
-  if (typeof value.orderId === "string") return value.orderId;
-  if (typeof value.id === "string") return value.id;
+  for (const candidate of [value, value.data, value.order, value.response, value.orderID ? { orderID: value.orderID } : null]) {
+    if (!candidate || typeof candidate !== "object") {
+      continue;
+    }
+    const record = candidate as Record<string, unknown>;
+    if (typeof record.orderID === "string") return record.orderID;
+    if (typeof record.orderId === "string") return record.orderId;
+    if (typeof record.id === "string") return record.id;
+    if (typeof record.order_id === "string") return record.order_id;
+    for (const nestedKey of ["data", "order", "response", "orders", "results"]) {
+      const nested = record[nestedKey];
+      if (Array.isArray(nested)) {
+        for (const item of nested) {
+          const nestedId = extractOrderId(item);
+          if (nestedId) return nestedId;
+        }
+      } else {
+        const nestedId = extractOrderId(nested);
+        if (nestedId) return nestedId;
+      }
+    }
+  }
   return null;
+}
+
+function parseTradeTimestampValue(value: string): number {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return Number.NaN;
+  }
+  const numeric = Number(trimmed);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+  }
+  return Date.parse(trimmed);
+}
+
+function computeTradeFeeUsd(size: number, price: number, feeRateBps: string): number {
+  const feeRate = Number(feeRateBps);
+  if (!Number.isFinite(size) || !Number.isFinite(price) || !Number.isFinite(feeRate) || feeRate <= 0) {
+    return 0;
+  }
+  return roundUsd(size * price * (feeRate / 10000));
 }
 
 function extractMatchedSize(message: ScalperUserWsMessage): number | null {

@@ -78,7 +78,7 @@ export interface Btc15mAutoCompletedTrade {
   /** Total fees paid in USD across all sell trades. Set in LIVE only. */
   sellFeeUsd?: number;
   result: "win" | "loss";
-  exitReason: "target_sell" | "force_sell" | "resolved_unfilled";
+  exitReason: "target_sell" | "force_sell" | "resolved_unfilled" | "polymarket_history";
   startedAt: number;
   closedAt: number;
   /** True if this trade was simulated (DRY_RUN). SIM trades are NOT persisted and live only for the session. */
@@ -99,7 +99,7 @@ export interface Btc15mAutoAnalyticsSummary {
 
 export interface Btc15mAutoBotConfig {
   workingBudgetUsd: number;
-  shares: number;
+  buyAmountUsd: number;
   minBuyPrice: number;
   maxBuyPrice: number;
   trailStep: number;

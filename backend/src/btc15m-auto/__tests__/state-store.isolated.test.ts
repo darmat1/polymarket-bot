@@ -13,7 +13,7 @@ import type {
 
 const defaultConfig: Btc15mAutoBotConfig = {
   workingBudgetUsd: 5,
-  shares: 5,
+  buyAmountUsd: 5,
   minBuyPrice: 0.2,
   maxBuyPrice: 0.8,
   trailStep: 0.05,

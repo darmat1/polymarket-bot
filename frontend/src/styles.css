@@ -1348,6 +1348,42 @@ input:checked ~ .toggle-label {
   color: var(--rose);
 }
 
+.btc15m-logs {
+  display: grid;
+  gap: 8px;
+}
+
+.btc15m-log-entry {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.btc15m-log-time {
+  color: var(--muted);
+}
+
+.btc15m-log-message {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.btc15m-log-success .btc15m-log-message {
+  color: var(--mint);
+}
+
+.btc15m-log-warn .btc15m-log-message {
+  color: var(--gold);
+}
+
+.btc15m-log-error .btc15m-log-message {
+  color: var(--rose);
+}
+
 @media (max-width: 1580px) {
   .positions-grid {
     grid-template-columns: 1fr;

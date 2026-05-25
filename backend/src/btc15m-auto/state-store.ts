@@ -223,9 +223,12 @@ function normalizeConfig(
   input: Partial<Btc15mAutoBotConfig> | undefined,
   fallback: Btc15mAutoBotConfig,
 ): Btc15mAutoBotConfig {
+  const legacyShares = typeof (input as { shares?: unknown } | undefined)?.shares === "number"
+    ? ((input as { shares?: number }).shares ?? fallback.buyAmountUsd)
+    : fallback.buyAmountUsd;
   return {
     workingBudgetUsd: numberOr(input?.workingBudgetUsd, fallback.workingBudgetUsd),
-    shares: numberOr(input?.shares, fallback.shares),
+    buyAmountUsd: numberOr(input?.buyAmountUsd, legacyShares),
     minBuyPrice: numberOr(input?.minBuyPrice, fallback.minBuyPrice),
     maxBuyPrice: numberOr(input?.maxBuyPrice, fallback.maxBuyPrice),
     trailStep: numberOr(input?.trailStep, fallback.trailStep),

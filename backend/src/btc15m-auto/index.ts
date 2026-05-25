@@ -145,6 +145,20 @@ export async function startBtc15mAutoBot(
         return [];
       }
     },
+    getRecentAccountTrades: async () => {
+      try {
+        return await service.getRecentAccountTrades();
+      } catch {
+        return [];
+      }
+    },
+    getLiveStateForAsset: async (tokenId) => {
+      try {
+        return await service.getLiveStateForAsset(tokenId);
+      } catch {
+        return { openOrders: [], position: null };
+      }
+    },
   };
 
   const latestPersisted = await store.readState();
@@ -164,7 +178,7 @@ export async function startBtc15mAutoBot(
   });
   await bot.start();
   activeBot = bot;
-  return bot.getStatus();
+  return withLiveHistory(settings, bot.getStatus());
 }
 
 /**
@@ -241,7 +255,7 @@ export async function stopBtc15mAutoBot(settings?: Settings): Promise<Btc15mAuto
     await activeBot.stop();
     const status = activeBot.getStatus();
     activeBot = null;
-    return status;
+    return settings ? withLiveHistory(settings, status) : status;
   }
 
   if (settings) {
@@ -253,7 +267,7 @@ export async function stopBtc15mAutoBot(settings?: Settings): Promise<Btc15mAuto
     dryRun: true,
     config: {
       workingBudgetUsd: 5,
-      shares: 5,
+      buyAmountUsd: 5,
       minBuyPrice: 0.2,
       maxBuyPrice: 0.8,
       trailStep: 0.05,
@@ -328,7 +342,7 @@ export async function stopBtc15mAutoBot(settings?: Settings): Promise<Btc15mAuto
 
 export async function getBtc15mAutoBotStatus(settings: Settings): Promise<Btc15mAutoBotStatus> {
   if (activeBot) {
-    return activeBot.getStatus();
+    return withLiveHistory(settings, activeBot.getStatus());
   }
 
   const store = createBtc15mAutoStateStore({
@@ -346,13 +360,13 @@ export async function getBtc15mAutoBotStatus(settings: Settings): Promise<Btc15m
   status.downCycle = persisted.downCycle;
   status.logs = settings.dryRun ? [] : persisted.logs;
   status.lastError = settings.dryRun ? null : persisted.lastError;
-  return status;
+  return withLiveHistory(settings, status);
 }
 
 export function configFromSettings(settings: Settings): Btc15mAutoBotConfig {
   return {
     workingBudgetUsd: settings.btc15mAuto.workingBudgetUsd,
-    shares: settings.btc15mAuto.orderSize,
+    buyAmountUsd: settings.btc15mAuto.orderSize,
     minBuyPrice: settings.btc15mAuto.buyPriceLimit,
     maxBuyPrice: settings.btc15mAuto.maxBuyPriceLimit ?? 0.8,
     trailStep: settings.btc15mAuto.trailStep,
@@ -447,6 +461,201 @@ function createIdleStatus(
     updatedAt: Date.now(),
     lastError: null,
   };
+}
+
+type PolymarketAccountTrade = {
+  id: string;
+  market: string;
+  asset_id: string;
+  side: string;
+  size: string;
+  fee_rate_bps: string;
+  price: string;
+  status: string;
+  match_time: string;
+  outcome: string;
+  trader_side: "TAKER" | "MAKER";
+};
+
+async function withLiveHistory(settings: Settings, status: Btc15mAutoBotStatus): Promise<Btc15mAutoBotStatus> {
+  if (settings.dryRun) {
+    return status;
+  }
+  const service = PolymarketService.getInstance(settings);
+  try {
+    const historyTrades = buildCompletedTradesFromPolymarket(await service.getRecentAccountTrades());
+    if (!historyTrades.length) {
+      return status;
+    }
+    const completedTrades = dedupeCompletedTrades([...status.completedTrades, ...historyTrades]);
+    const wins = completedTrades.filter((trade) => trade.result === "win").length;
+    const totalPnlUsd = roundUsd(completedTrades.reduce((sum, trade) => sum + trade.pnlUsd, 0));
+    const grossProfitUsd = roundUsd(completedTrades.reduce((sum, trade) => sum + (trade.pnlUsd > 0 ? trade.pnlUsd : 0), 0));
+    const grossLossUsd = roundUsd(completedTrades.reduce((sum, trade) => sum + (trade.pnlUsd < 0 ? Math.abs(trade.pnlUsd) : 0), 0));
+    return {
+      ...status,
+      completedTrades,
+      analytics: {
+        ...status.analytics,
+        totalTrades: completedTrades.length,
+        wins,
+        losses: completedTrades.length - wins,
+        winRate: completedTrades.length > 0 ? wins / completedTrades.length : 0,
+        totalPnlUsd,
+        grossProfitUsd,
+        grossLossUsd,
+      },
+    };
+  } catch {
+    return status;
+  }
+}
+
+function buildCompletedTradesFromPolymarket(trades: PolymarketAccountTrade[]): Btc15mAutoCompletedTrade[] {
+  const sorted = trades
+    .map((trade) => ({
+      ...trade,
+      matchMs: parseTradeTimestamp(trade.match_time),
+      sizeNum: Number(trade.size),
+      priceNum: Number(trade.price),
+      feeRateBpsNum: Number(trade.fee_rate_bps),
+      sideNorm: String(trade.side).toUpperCase(),
+    }))
+    .filter((trade) =>
+      Number.isFinite(trade.matchMs) &&
+      Number.isFinite(trade.sizeNum) &&
+      trade.sizeNum > 0 &&
+      Number.isFinite(trade.priceNum) &&
+      trade.priceNum > 0,
+    )
+    .sort((a, b) => a.matchMs - b.matchMs);
+
+  const openByAsset = new Map<string, {
+    shares: number;
+    costBasisUsd: number;
+    buyFeeUsd: number;
+    openedAt: number;
+    bettingSide: "up" | "down";
+    marketSlug: string;
+  }>();
+  const result: Btc15mAutoCompletedTrade[] = [];
+
+  for (const trade of sorted) {
+    const feeUsd = roundUsd(trade.sizeNum * trade.priceNum * (trade.feeRateBpsNum / 10000));
+    const bettingSide = normalizeOutcomeToSide(trade.outcome);
+    const marketSlug = trade.market;
+    const open = openByAsset.get(trade.asset_id);
+
+    if (trade.sideNorm === "BUY") {
+      if (!bettingSide) {
+        continue;
+      }
+      if (!open) {
+        openByAsset.set(trade.asset_id, {
+          shares: roundShares(trade.sizeNum),
+          costBasisUsd: roundUsd(trade.sizeNum * trade.priceNum),
+          buyFeeUsd: feeUsd,
+          openedAt: trade.matchMs,
+          bettingSide,
+          marketSlug,
+        });
+        continue;
+      }
+      open.shares = roundShares(open.shares + trade.sizeNum);
+      open.costBasisUsd = roundUsd(open.costBasisUsd + trade.sizeNum * trade.priceNum);
+      open.buyFeeUsd = roundUsd(open.buyFeeUsd + feeUsd);
+      continue;
+    }
+
+    if (trade.sideNorm !== "SELL" || !open || open.shares <= 0) {
+      continue;
+    }
+
+    const closedShares = roundShares(Math.min(open.shares, trade.sizeNum));
+    if (!(closedShares > 0)) {
+      continue;
+    }
+    const avgBuyPrice = open.costBasisUsd / open.shares;
+    const buyCostUsd = roundUsd(avgBuyPrice * closedShares);
+    const buyFeeAllocatedUsd = roundUsd(open.buyFeeUsd * (closedShares / open.shares));
+    const sellProceedsUsd = roundUsd(trade.priceNum * closedShares);
+    const pnlUsd = roundUsd(sellProceedsUsd - buyCostUsd - buyFeeAllocatedUsd - feeUsd);
+    result.push({
+      id: `polymarket-${trade.id}`,
+      marketSlug: open.marketSlug,
+      bettingSide: open.bettingSide,
+      buyPrice: roundPrice(avgBuyPrice),
+      sellPrice: roundPrice(trade.priceNum),
+      shares: closedShares,
+      pnlUsd,
+      buyCostUsd,
+      sellProceedsUsd,
+      buyFeeUsd: buyFeeAllocatedUsd,
+      sellFeeUsd: feeUsd,
+      result: pnlUsd > 0 ? "win" : "loss",
+      exitReason: "polymarket_history",
+      startedAt: open.openedAt,
+      closedAt: trade.matchMs,
+      dryRun: false,
+    });
+
+    open.shares = roundShares(Math.max(0, open.shares - closedShares));
+    open.costBasisUsd = roundUsd(Math.max(0, open.costBasisUsd - buyCostUsd));
+    open.buyFeeUsd = roundUsd(Math.max(0, open.buyFeeUsd - buyFeeAllocatedUsd));
+    if (open.shares <= 0.0001) {
+      openByAsset.delete(trade.asset_id);
+    }
+  }
+
+  return result.sort((a, b) => a.closedAt - b.closedAt);
+}
+
+function parseTradeTimestamp(value: string): number {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return Number.NaN;
+  }
+
+  const numeric = Number(trimmed);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+  }
+
+  return Date.parse(trimmed);
+}
+
+function normalizeOutcomeToSide(outcome: string): "up" | "down" | null {
+  const value = outcome.trim().toLowerCase();
+  if (value.includes("up")) return "up";
+  if (value.includes("down")) return "down";
+  return null;
+}
+
+function dedupeCompletedTrades(trades: Btc15mAutoCompletedTrade[]): Btc15mAutoCompletedTrade[] {
+  const seen = new Set<string>();
+  return trades
+    .slice()
+    .sort((a, b) => a.closedAt - b.closedAt)
+    .filter((trade) => {
+      const key = `${trade.marketSlug}|${trade.bettingSide}|${trade.closedAt}|${trade.buyPrice}|${trade.sellPrice}|${trade.shares}`;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+}
+
+function roundUsd(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function roundPrice(value: number): number {
+  return Math.round(value * 10000) / 10000;
+}
+
+function roundShares(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 function sanitizeConfigOverrides(overrides: Partial<Btc15mAutoBotConfig> | undefined): Partial<Btc15mAutoBotConfig> {
