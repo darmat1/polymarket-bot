@@ -2,7 +2,6 @@ import WebSocket from 'ws';
 import { EventEmitter } from 'events';
 import { getDb } from './db/client.js';
 import { getPositionsCached } from './weather-position-cache.js';
-import { getRuntimeAuthState } from './runtime-auth.js';
 
 const GAMMA_API = 'https://gamma-api.polymarket.com';
 
@@ -110,46 +109,41 @@ async function connectWebSocket(
 
           if (hasActiveTrigger) {
             // Fetch positions
-            const authState = getRuntimeAuthState();
-            const user = authState.user;
+            const positions = await getPositionsCached();
 
-            if (user) {
-              const positions = await getPositionsCached(user);
+            // Find matching position
+            const position = positions.find(
+              (p: any) =>
+                (p.slug === subscription.slug ||
+                  p.eventSlug === subscription.slug) &&
+                (message.tokenId === p.asset || message.yes_token_id === p.asset)
+            );
 
-              // Find matching position
-              const position = positions.find(
-                (p: any) =>
-                  (p.slug === subscription.slug ||
-                    p.eventSlug === subscription.slug) &&
-                  (message.tokenId === p.asset || message.yes_token_id === p.asset)
-              );
+            // Enrich market data
+            const enrichedData = {
+              type: 'market_update',
+              sessionId: subscription.sessionId,
+              market: {
+                market_slug: subscription.slug,
+                question: message.question || '',
+                yes_price: message.yes_price || message.yesPrices?.[0] || 0,
+                no_price: message.no_price || message.noPrices?.[0] || 0,
+                yes_token_id: message.tokenId,
+                volume: message.volume || 0,
+                liquidity: message.liquidity || 0,
+                position: position
+                  ? {
+                      size: position.size,
+                      avg_price: position.avgPrice,
+                      current_value: position.currentValue,
+                      cash_pnl: position.cashPnl,
+                      percent_pnl: position.percentPnl,
+                    }
+                  : undefined,
+              },
+            };
 
-              // Enrich market data
-              const enrichedData = {
-                type: 'market_update',
-                sessionId: subscription.sessionId,
-                market: {
-                  market_slug: subscription.slug,
-                  question: message.question || '',
-                  yes_price: message.yes_price || message.yesPrices?.[0] || 0,
-                  no_price: message.no_price || message.noPrices?.[0] || 0,
-                  yes_token_id: message.tokenId,
-                  volume: message.volume || 0,
-                  liquidity: message.liquidity || 0,
-                  position: position
-                    ? {
-                        size: position.size,
-                        avg_price: position.avgPrice,
-                        current_value: position.currentValue,
-                        cash_pnl: position.cashPnl,
-                        percent_pnl: position.percentPnl,
-                      }
-                    : undefined,
-                },
-              };
-
-              subscription.emitter.emit('price_update', enrichedData);
-            }
+            subscription.emitter.emit('price_update', enrichedData);
           }
         }
       } catch (error) {

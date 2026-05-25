@@ -7,10 +7,11 @@ export interface CachedPositions {
 
 const positionCache = new Map<string, CachedPositions>();
 const CACHE_TTL = 3000; // 3 seconds
+const CACHE_KEY = 'default';
 
-export async function getPositionsCached(user: string): Promise<any[]> {
+export async function getPositionsCached(): Promise<any[]> {
   const now = Date.now();
-  const cached = positionCache.get(user);
+  const cached = positionCache.get(CACHE_KEY);
 
   if (cached && now - cached.timestamp < CACHE_TTL) {
     return cached.data;
@@ -18,9 +19,9 @@ export async function getPositionsCached(user: string): Promise<any[]> {
 
   // Fetch fresh data
   try {
-    const positions = await getOpenPositions(user);
+    const positions = await getOpenPositions();
 
-    positionCache.set(user, {
+    positionCache.set(CACHE_KEY, {
       timestamp: now,
       data: positions.positions,
     });
@@ -33,12 +34,8 @@ export async function getPositionsCached(user: string): Promise<any[]> {
   }
 }
 
-export function clearPositionCache(user?: string): void {
-  if (user) {
-    positionCache.delete(user);
-  } else {
-    positionCache.clear();
-  }
+export function clearPositionCache(): void {
+  positionCache.clear();
 }
 
 export function getCacheTTL(): number {

@@ -34,7 +34,7 @@ export function initDbPool(): pg.Pool {
     password: config.password,
   });
 
-  pool.on('error', (err) => {
+  pool.on('error', (err: Error) => {
     console.error('[DB] Unexpected pool error:', err);
   });
 
