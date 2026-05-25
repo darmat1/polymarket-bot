@@ -1,0 +1,73 @@
+.weatherScreenWithTabs {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: rgba(20, 20, 30, 0.9);
+  color: #e0e0f0;
+}
+
+.errorBanner {
+  padding: 12px 16px;
+  background: rgba(255, 107, 157, 0.1);
+  color: #ff6b9d;
+  border-bottom: 1px solid rgba(255, 107, 157, 0.3);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.statusBanner {
+  padding: 12px 16px;
+  background: rgba(128, 255, 165, 0.1);
+  color: #80ffa5;
+  border-bottom: 1px solid rgba(128, 255, 165, 0.2);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.statusBanner::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #80ffa5;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.emptyState {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: #909090;
+}
+
+.emptyState p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.emptyState p:first-child {
+  font-size: 32px;
+  color: #707080;
+}
+
+.screenContent {
+  flex: 1;
+  overflow: auto;
+}
