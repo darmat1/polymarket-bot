@@ -56,6 +56,15 @@ import {
   type Btc15mHedgeBotConfig,
 } from "./btc15m-hedge/simple-index.js";
 import { checkMarketUrl } from "./btc15m-hedge/market-checker.js";
+import {
+  checkWeatherPolymarketTriggers,
+  clearWeatherPolymarketTriggers,
+  extractSlugFromUrl,
+  getCurrentTemperature,
+  getWeatherPolymarketEvent,
+  listWeatherPolymarketTriggers,
+  setWeatherPolymarketTrigger,
+} from "./weather-polymarket.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const FRONTEND_DIST = join(__dirname, "..", "..", "frontend", "dist");
@@ -128,6 +137,99 @@ const server = createServer(async (req, res) => {
       } catch (err) {
         return json(res, 500, { error: err instanceof Error ? err.message : "Internal error" });
       }
+    }
+
+    if (requestUrl.pathname === "/api/weather-polymarket/event" && req.method === "POST") {
+      const body = await readJsonBody(req) as { url?: string };
+      const url = String(body.url ?? "").trim();
+      const slug = extractSlugFromUrl(url);
+      if (!slug) {
+        return json(res, 400, { error: "Invalid Polymarket event URL" });
+      }
+      const event = await getWeatherPolymarketEvent(slug);
+      if (!event) {
+        return json(res, 404, { error: "Event not found" });
+      }
+      return json(res, 200, event);
+    }
+
+    if (requestUrl.pathname === "/api/weather-polymarket/weather" && req.method === "POST") {
+      const body = await readJsonBody(req) as { icao?: string };
+      const icao = String(body.icao ?? "").trim().toUpperCase();
+      if (!icao) {
+        return json(res, 400, { error: "ICAO required" });
+      }
+      const weather = await getCurrentTemperature(icao);
+      if (!weather) {
+        return json(res, 404, { error: "No weather data from available sources" });
+      }
+      return json(res, 200, weather);
+    }
+
+    if (requestUrl.pathname === "/api/weather-polymarket/triggers" && req.method === "POST") {
+      const body = await readJsonBody(req) as {
+        token_id?: string;
+        temp_threshold?: number;
+        amount?: number;
+        icao?: string;
+        slug?: string | null;
+      };
+      if (!body.token_id || body.temp_threshold === undefined || !body.icao) {
+        return json(res, 400, { error: "token_id, temp_threshold, and icao are required" });
+      }
+      const trigger = setWeatherPolymarketTrigger({
+        token_id: String(body.token_id),
+        temp_threshold: Number(body.temp_threshold),
+        amount: Number(body.amount ?? 1),
+        icao: String(body.icao),
+        slug: body.slug ? String(body.slug) : null,
+      });
+      return json(res, 200, {
+        status: "ok",
+        trigger,
+        message: `Trigger set: buy YES on ${trigger.amount} USDC at >= ${trigger.temp}°C`,
+      });
+    }
+
+    if (requestUrl.pathname === "/api/weather-polymarket/triggers" && req.method === "GET") {
+      const icao = requestUrl.searchParams.get("icao")?.trim().toUpperCase();
+      if (!icao) {
+        return json(res, 400, { error: "icao is required" });
+      }
+      return json(res, 200, { triggers: listWeatherPolymarketTriggers(icao) });
+    }
+
+    if (requestUrl.pathname === "/api/weather-polymarket/triggers" && req.method === "DELETE") {
+      const body = await readJsonBody(req) as { icao?: string; token_id?: string };
+      const icao = String(body.icao ?? "").trim().toUpperCase();
+      if (!icao) {
+        return json(res, 400, { error: "icao is required" });
+      }
+      const removed = clearWeatherPolymarketTriggers(
+        icao,
+        body.token_id ? String(body.token_id) : undefined,
+      );
+      return json(res, 200, {
+        status: "ok",
+        removed,
+        message: `Removed ${removed.length} trigger(s) for ${icao}`,
+      });
+    }
+
+    if (requestUrl.pathname === "/api/weather-polymarket/check-triggers" && req.method === "POST") {
+      const body = await readJsonBody(req) as { icao?: string; current_rounded?: number };
+      const icao = String(body.icao ?? "").trim().toUpperCase();
+      const currentRounded = Number(body.current_rounded);
+      if (!icao || !Number.isFinite(currentRounded)) {
+        return json(res, 400, { error: "icao and current_rounded are required" });
+      }
+      const result = await checkWeatherPolymarketTriggers(icao, currentRounded);
+      return json(res, 200, result);
+    }
+
+    if (requestUrl.pathname === "/api/weather-polymarket/trading-status" && req.method === "GET") {
+      const runtime = getRuntimeAuthState();
+      return json(res, 200, { ready: runtime.credsLoaded === true });
     }
 
     if (
@@ -546,4 +648,3 @@ async function publishBtc15mAutoStatus(): Promise<void> {
   } catch {
   }
 }
-

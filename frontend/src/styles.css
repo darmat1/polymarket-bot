@@ -352,6 +352,42 @@ select:focus {
   color: var(--rose);
 }
 
+.weather-poly-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.weather-poly-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.weather-poly-stat span {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.weather-poly-stat strong {
+  font-size: 18px;
+}
+
+.weather-poly-trigger-controls {
+  margin-top: 18px;
+}
+
+.weather-poly-market-button {
+  margin-top: 12px;
+  width: 100%;
+}
+
 .markets {
   display: grid;
   gap: 8px;

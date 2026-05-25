@@ -337,6 +337,76 @@ export type StationHistoryEntry = {
   [key: string]: unknown;
 };
 
+export type WeatherPolymarketWeather = {
+  temperature_c: number;
+  rounded_c: number;
+};
+
+export type WeatherPolymarketMarket = {
+  slug: string;
+  question: string;
+  yes_price: number;
+  no_price: number;
+  volume: number;
+  liquidity: number;
+  active: boolean;
+  yes_token_id: string | null;
+  no_token_id: string | null;
+};
+
+export type WeatherPolymarketTrigger = {
+  token_id: string;
+  temp: number;
+  amount: number;
+  executed: boolean;
+  slug: string | null;
+  icao: string;
+};
+
+export type WeatherPolymarketEventPayload = {
+  title: string;
+  slug: string;
+  end_date: string;
+  description: string;
+  total_volume: number;
+  liquidity: number;
+  markets: WeatherPolymarketMarket[];
+  airport: {
+    name: string | null;
+    icao: string;
+    weather: WeatherPolymarketWeather | null;
+  } | null;
+};
+
+export type WeatherPolymarketTradingStatusPayload = {
+  ready: boolean;
+};
+
+export type WeatherPolymarketTriggersPayload = {
+  triggers: WeatherPolymarketTrigger[];
+};
+
+export type WeatherPolymarketSetTriggerPayload = {
+  status: string;
+  message: string;
+  trigger: WeatherPolymarketTrigger;
+};
+
+export type WeatherPolymarketClearTriggersPayload = {
+  status: string;
+  message: string;
+  removed: WeatherPolymarketTrigger[];
+};
+
+export type WeatherPolymarketCheckTriggersPayload = {
+  executed: Array<{
+    token_id: string;
+    temp_threshold: number;
+    amount: number;
+    response: unknown;
+  }>;
+};
+
 export type SearchEventsPayload = {
   events?: SearchEventSummary[];
 };

@@ -635,3 +635,39 @@ export async function placeLimitOrder(params: {
       negRisk: isNegRisk
     });
 }
+
+export async function placeMarketOrder(params: {
+  tokenId: string;
+  side: "buy" | "sell";
+  amount: number;
+  tickSize?: "0.1" | "0.01" | "0.001" | "0.0001";
+  negRisk?: boolean;
+}): Promise<unknown> {
+  const settings = loadSettings();
+
+  if (params.amount > settings.maxOrderUsdc) {
+    throw new Error(
+      `Order amount ${params.amount.toFixed(2)} exceeds BOT_MAX_ORDER_USDC=${settings.maxOrderUsdc.toFixed(2)}`,
+    );
+  }
+
+  const client = await getRuntimeTradingClient();
+  const isNegRisk = params.negRisk !== undefined ? params.negRisk : await client.getNegRisk(params.tokenId);
+  console.log(`[Trading] Token ${params.tokenId} negRisk status: ${isNegRisk}`);
+
+  if (settings.dryRun) {
+    return {
+      dry_run: true,
+      token_id: params.tokenId,
+      side: params.side,
+      amount: params.amount,
+      tick_size: params.tickSize ?? "0.01",
+      negRisk: isNegRisk,
+    };
+  }
+
+  return client.placeMarketOrder({
+    ...params,
+    negRisk: isNegRisk,
+  });
+}

@@ -47,6 +47,16 @@ export class TradingClient extends BasePolymarketClient {
     return client.cancelOrders(orderIds);
   }
 
+  async placeMarketOrder(params: {
+    tokenId: string;
+    amount: number;
+    side: "buy" | "sell";
+    tickSize?: string;
+    negRisk?: boolean;
+  }): Promise<unknown> {
+    return super.placeMarketOrder(params);
+  }
+
   async getOrderBook(tokenId: string): Promise<OrderBookSummary> {
     const client = this.buildAuthenticatedClient();
     return client.getOrderBook(tokenId);

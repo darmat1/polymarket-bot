@@ -107,6 +107,38 @@ export class BasePolymarketClient {
     return result;
   }
 
+  async placeMarketOrder(params: {
+    tokenId: string;
+    amount: number;
+    side: "buy" | "sell";
+    tickSize?: string;
+    negRisk?: boolean;
+    orderType?: OrderType.FOK | OrderType.FAK;
+  }): Promise<unknown> {
+    const client = this.buildAuthenticatedClient();
+
+    console.log(
+      `[Trading] Placing market order: ${params.side} ${params.amount} USDC (Token: ${params.tokenId})`,
+    );
+
+    const result = await client.createAndPostMarketOrder(
+      {
+        tokenID: params.tokenId,
+        amount: params.amount,
+        side: toSdkSide(params.side),
+        orderType: params.orderType ?? OrderType.FOK,
+      },
+      {
+        tickSize: (params.tickSize as TickSize | undefined) ?? "0.01",
+        negRisk: params.negRisk ?? false,
+      },
+      params.orderType ?? OrderType.FOK,
+    );
+
+    console.log("[Trading] Market order result:", JSON.stringify(result, null, 2));
+    return result;
+  }
+
   async getTrades(
     params?: TradeParams,
     onlyFirstPage = true,

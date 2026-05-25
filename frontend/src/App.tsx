@@ -6,6 +6,7 @@ import { Btc15mScreen } from "./screens/btc15m/Btc15mScreen";
 import { Btc15mAutoScreen } from "./screens/btc15mAuto/Btc15mAutoScreen";
 import { Btc15mHedgeScreen } from "./screens/btc15mHedge/Btc15mHedgeScreen";
 import { PositionsScreen } from "./screens/positions/PositionsScreen";
+import { WeatherScreen } from "./screens/weather/WeatherScreen";
 
 type AppProps = AppShellRenderProps;
 
@@ -41,6 +42,8 @@ export function App({ activeTab, setTabsVisible, shellControls }: AppProps) {
           setTabsVisible={setTabsVisible}
           shellControls={shellControls}
         />
+      ) : activeTab === "weather" ? (
+        <WeatherScreen addToast={addToast} shellControls={shellControls} />
       ) : activeTab === "btc5m" ? (
         <Btc5mScreen addToast={addToast} refreshAccountSummary={shellControls.refreshAccountSummary} />
       ) : activeTab === "btc15mAuto" ? (
