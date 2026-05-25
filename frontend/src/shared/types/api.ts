@@ -340,6 +340,9 @@ export type StationHistoryEntry = {
 export type WeatherPolymarketWeather = {
   temperature_c: number;
   rounded_c: number;
+  temperature_native?: number;
+  rounded_native?: number;
+  unit?: "F" | "C";
 };
 
 export type WeatherPolymarketMarket = {

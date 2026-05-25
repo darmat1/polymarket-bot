@@ -31,6 +31,10 @@ export type WeatherPolymarketEventPayload = {
 export type WeatherTemperaturePayload = {
   temperature_c: number;
   rounded_c: number;
+  // Native unit for this station (F or C) — used for trigger comparison
+  temperature_native: number;
+  rounded_native: number;
+  unit: "F" | "C";
 };
 
 export type WeatherPolymarketTrigger = {
@@ -137,6 +141,10 @@ export async function getWeatherPolymarketEvent(slug: string): Promise<WeatherPo
   };
 }
 
+function cToF(c: number): number {
+  return c * 9 / 5 + 32;
+}
+
 export async function getCurrentTemperature(icao: string): Promise<WeatherTemperaturePayload | null> {
   const normalized = icao.trim().toUpperCase();
   let tempC = await getTemperatureFromNoaa(normalized);
@@ -152,9 +160,18 @@ export async function getCurrentTemperature(icao: string): Promise<WeatherTemper
   if (tempC === null) {
     return null;
   }
+
+  // Determine station unit to return native temperature for trigger comparison
+  const station = matchWeatherStation(normalized);
+  const unit = station?.unit ?? "C";
+  const tempNative = unit === "F" ? cToF(tempC) : tempC;
+
   return {
     temperature_c: round(tempC, 1),
     rounded_c: tempC >= 0 ? Math.round(tempC) : -Math.round(Math.abs(tempC)),
+    temperature_native: round(tempNative, 1),
+    rounded_native: Math.round(tempNative),
+    unit,
   };
 }
 
@@ -202,6 +219,12 @@ export function clearWeatherPolymarketTriggers(icao: string, tokenId?: string): 
 
 export async function checkWeatherPolymarketTriggers(icao: string, currentRounded: number) {
   const normalizedIcao = icao.trim().toUpperCase();
+
+  // Convert current temp to native unit for this station before comparing
+  const station = matchWeatherStation(normalizedIcao);
+  const unit = station?.unit ?? "C";
+  const currentNative = unit === "F" ? Math.round(cToF(currentRounded)) : currentRounded;
+
   const executed: Array<{
     token_id: string;
     temp_threshold: number;
@@ -210,7 +233,7 @@ export async function checkWeatherPolymarketTriggers(icao: string, currentRounde
   }> = [];
 
   for (const trigger of activeTriggers.values()) {
-    if (trigger.icao !== normalizedIcao || trigger.executed || currentRounded < trigger.temp) {
+    if (trigger.icao !== normalizedIcao || trigger.executed || currentNative < trigger.temp) {
       continue;
     }
     const response = await placeMarketOrder({

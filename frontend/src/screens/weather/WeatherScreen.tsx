@@ -72,6 +72,7 @@ export function WeatherScreen({ addToast, shellControls }: WeatherScreenProps) {
   const [loading, setLoading] = useState(false);
   const [refreshingWeather, setRefreshingWeather] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastWeatherUpdateAt, setLastWeatherUpdateAt] = useState<number | null>(null);
   const [triggerTemp, setTriggerTemp] = useState("");
   const [triggerAmount, setTriggerAmount] = useState("1");
 
@@ -100,6 +101,7 @@ export function WeatherScreen({ addToast, shellControls }: WeatherScreenProps) {
     try {
       const payload = await getWeatherPolymarketWeather(icao);
       setWeather(payload);
+      setLastWeatherUpdateAt(Date.now());
       await checkWeatherPolymarketTriggers(icao, payload.rounded_c);
       await refreshTriggers(icao);
       await shellControls.refreshAccountSummary();
@@ -115,6 +117,7 @@ export function WeatherScreen({ addToast, shellControls }: WeatherScreenProps) {
       const payload = await getWeatherPolymarketEvent(url.trim());
       setEvent(payload);
       setWeather(payload.airport?.weather ?? null);
+      setLastWeatherUpdateAt(payload.airport?.weather ? Date.now() : null);
       await refreshTradingStatus();
       if (payload.airport?.icao) {
         await refreshTriggers(payload.airport.icao);
@@ -142,7 +145,7 @@ export function WeatherScreen({ addToast, shellControls }: WeatherScreenProps) {
     }
     const intervalId = setInterval(() => {
       void refreshWeather(airport.icao);
-    }, 30_000);
+    }, 60_000);
     return () => clearInterval(intervalId);
   }, [airport?.icao, refreshWeather]);
 
@@ -308,12 +311,36 @@ export function WeatherScreen({ addToast, shellControls }: WeatherScreenProps) {
               <div className="weather-poly-stat">
                 <span>Current</span>
                 <strong>
-                  {weather ? `${weather.temperature_c.toFixed(1)}°C` : "—"}
+                  {weather
+                    ? weather.unit === "F"
+                      ? `${weather.temperature_native?.toFixed(1) ?? weather.temperature_c.toFixed(1)}°F`
+                      : `${weather.temperature_c.toFixed(1)}°C`
+                    : "—"}
                 </strong>
               </div>
               <div className="weather-poly-stat">
                 <span>Rounded</span>
-                <strong>{weather ? `${weather.rounded_c}°C` : "—"}</strong>
+                <strong>
+                  {weather
+                    ? weather.unit === "F"
+                      ? `${weather.rounded_native ?? weather.rounded_c}°F`
+                      : `${weather.rounded_c}°C`
+                    : "—"}
+                </strong>
+              </div>
+              <div className="weather-poly-stat">
+                <span>Updated</span>
+                <strong>
+                  {lastWeatherUpdateAt
+                    ? new Intl.DateTimeFormat(undefined, {
+                        year: "numeric",
+                        month: "2-digit",
+                        day: "2-digit",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      }).format(lastWeatherUpdateAt)
+                    : "—"}
+                </strong>
               </div>
             </div>
 
