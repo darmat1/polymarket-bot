@@ -69,6 +69,14 @@ export function WeatherTabProvider({ children }: { children: React.ReactNode }) 
         setSessions((prev) => [session, ...prev]);
         setActiveSessionId(session.id);
         setError(null);
+
+        // Background enrichment takes ~2s — refresh to get real city name
+        setTimeout(() => {
+          fetch('/api/weather/sessions')
+            .then((r) => r.json())
+            .then((data: { sessions: WeatherSession[] }) => setSessions(data.sessions))
+            .catch(() => {});
+        }, 3000);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to create session';
         setError(message);

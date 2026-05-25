@@ -129,7 +129,8 @@ export async function getWeatherPolymarketEvent(slug: string): Promise<WeatherPo
     }
   }
 
-  const weather = icao ? await getCurrentTemperature(icao) : null;
+  const unitHint = detectUnitFromMarkets(parsedMarkets);
+  const weather = icao ? await getCurrentTemperature(icao, unitHint) : null;
 
   return {
     title: String(raw.title ?? raw.slug ?? ""),
@@ -153,7 +154,7 @@ function cToF(c: number): number {
   return c * 9 / 5 + 32;
 }
 
-export async function getCurrentTemperature(icao: string): Promise<WeatherTemperaturePayload | null> {
+export async function getCurrentTemperature(icao: string, unitHint?: "F" | "C"): Promise<WeatherTemperaturePayload | null> {
   const normalized = icao.trim().toUpperCase();
   let tempC = await getTemperatureFromNoaa(normalized);
   if (tempC === null) {
@@ -169,9 +170,9 @@ export async function getCurrentTemperature(icao: string): Promise<WeatherTemper
     return null;
   }
 
-  // Determine station unit to return native temperature for trigger comparison
+  // Determine station unit: stations list > hint from market questions > default C
   const station = matchWeatherStation(normalized);
-  const unit = station?.unit ?? "C";
+  const unit = station?.unit ?? unitHint ?? "C";
   const tempNative = unit === "F" ? cToF(tempC) : tempC;
 
   return {
@@ -260,6 +261,14 @@ export async function checkWeatherPolymarketTriggers(icao: string, currentRounde
   }
 
   return { executed };
+}
+
+function detectUnitFromMarkets(markets: WeatherPolymarketOutcome[]): "F" | "C" {
+  for (const m of markets) {
+    if (/°F/i.test(m.question)) return "F";
+    if (/°C/i.test(m.question)) return "C";
+  }
+  return "C";
 }
 
 function parseMarket(raw: Record<string, unknown>): WeatherPolymarketOutcome | null {

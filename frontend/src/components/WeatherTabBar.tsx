@@ -2,6 +2,11 @@ import React, { useState } from 'react';
 import { useWeatherTabs } from '../context/WeatherTabContext.js';
 import styles from './WeatherTabBar.module.css';
 
+function formatTabDate(dateStr: string): string {
+  const date = new Date(dateStr + 'T12:00:00');
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
 export function WeatherTabBar() {
   const { sessions, activeSessionId, openSession, closeSession, setActiveSession, loading } =
     useWeatherTabs();
@@ -34,7 +39,7 @@ export function WeatherTabBar() {
             onClick={() => setActiveSession(session.id)}
           >
             <span className={styles.tabLabel}>
-              {session.city} • {session.date}
+              {session.city} | {formatTabDate(session.date)}
             </span>
             <button
               className={styles.closeBtn}

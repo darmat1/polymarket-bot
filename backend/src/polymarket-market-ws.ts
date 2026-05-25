@@ -269,6 +269,8 @@ export class PolymarketMarketWs {
       ws.onmessage = null;
       ws.onerror = null;
       ws.onclose = null;
+      // Suppress unhandled error if socket is still in CONNECTING state
+      ws.on('error', () => {});
       ws.close();
     }
   }

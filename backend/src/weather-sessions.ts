@@ -35,9 +35,10 @@ export async function createWeatherSession(eventUrl: string): Promise<SessionMet
     .then(async (event) => {
       if (!event) return;
       const icao = event.airport?.icao ?? null;
+      const city = extractCityName(event.title, event.airport?.name, icao, slug);
       await db.query(
         `UPDATE weather_sessions SET city = $1, icao = $2, event_data = $3, updated_at = NOW() WHERE id = $4`,
-        [icao ?? slug, icao, JSON.stringify(event), id]
+        [city, icao, JSON.stringify(event), id]
       );
     })
     .catch((err) => {
@@ -97,4 +98,26 @@ export async function getSessionTriggers(sessionId: string): Promise<Array<{
 function extractSlugFromUrl(url: string): string | null {
   const match = url.match(/\/event\/([^/?#\s]+)/i);
   return match?.[1] ?? null;
+}
+
+function extractCityName(
+  title: string,
+  airportName: string | null | undefined,
+  icao: string | null,
+  slug: string
+): string {
+  // "Highest temperature in London on May 26?" → "London"
+  const titleMatch = title.match(/\bin\s+(.+?)\s+on\s/i);
+  if (titleMatch?.[1]) return titleMatch[1].trim();
+
+  // "London City Airport" → "London City"
+  if (airportName) {
+    const stripped = airportName
+      .replace(/\s+(?:Intl|International)\s+Airport.*$/i, '')
+      .replace(/\s+Airport.*$/i, '')
+      .trim();
+    if (stripped) return stripped;
+  }
+
+  return icao ?? slug;
 }

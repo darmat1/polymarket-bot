@@ -195,12 +195,13 @@ export function WeatherScreen({ addToast, shellControls, initialUrl }: WeatherSc
       addToast("error", "Invalid temperature", "Enter a trigger temperature.");
       return;
     }
+    const eventUnit = weather?.unit ?? "C";
     const market = activeMarkets.find((entry) => {
-      const match = entry.question.match(/(\d+(?:\.\d+)?)\s*°C/i);
+      const match = entry.question.match(/(\d+(?:\.\d+)?)(?:\s*[-–]\s*\d+(?:\.\d+)?)?\s*°([CF])/i);
       return match && Math.round(Number(match[1])) === threshold && entry.yes_token_id;
     });
     if (!market) {
-      addToast("warn", "Market not found", `No YES market found for ${threshold}°C.`);
+      addToast("warn", "Market not found", `No YES market found for ${threshold}°${eventUnit}.`);
       return;
     }
     await handleSetTrigger(market, threshold);
@@ -406,8 +407,10 @@ export function WeatherScreen({ addToast, shellControls, initialUrl }: WeatherSc
             <div className="markets">
               {activeMarkets.map((market) => {
                 const yesPercent = Math.round(market.yes_price * 100);
-                const thresholdMatch = market.question.match(/(\d+(?:\.\d+)?)\s*°C/i);
+                // Match both °F and °C; for ranges like "56-57°F" take the lower (first) number
+                const thresholdMatch = market.question.match(/(\d+(?:\.\d+)?)(?:\s*[-–]\s*\d+(?:\.\d+)?)?\s*°([CF])/i);
                 const threshold = thresholdMatch ? Math.round(Number(thresholdMatch[1])) : null;
+                const marketUnit = thresholdMatch ? thresholdMatch[2].toUpperCase() : (weather?.unit ?? "C");
 
                 return (
                   <div key={`${event.slug}-${market.question}`} className="market-card">
@@ -429,7 +432,7 @@ export function WeatherScreen({ addToast, shellControls, initialUrl }: WeatherSc
                         }
                       }}
                     >
-                      Buy YES at ≥ {threshold ?? "?"}°C
+                      Buy YES at ≥ {threshold ?? "?"}°{marketUnit}
                     </button>
                   </div>
                 );
