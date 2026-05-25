@@ -606,6 +606,66 @@ async function start(): Promise<void> {
 
   const wss = new WebSocketServer({ server });
   appWss = wss;
+
+  // Weather market price WebSocket handler
+  wss.on('connection', async (ws, req) => {
+    const url = new URL(req.url || '', 'ws://localhost');
+    const sessionId = url.searchParams.get('sessionId');
+    const slug = url.searchParams.get('slug');
+
+    // Check if this is a weather WebSocket connection
+    if (!url.pathname.includes('/weather') && (!sessionId || !slug)) {
+      return; // Not a weather WS, let other handlers deal with it
+    }
+
+    if (!sessionId || !slug) {
+      ws.close(1008, 'Missing sessionId or slug');
+      return;
+    }
+
+    console.log(`[WS] Weather client connected for session ${sessionId}`);
+
+    try {
+      const { subscribeToMarketPrices, unsubscribeFromMarketPrices } = await import(
+        './weather-polymarket-ws.js'
+      );
+      const { getSessionTriggers } = await import('./weather-sessions.js');
+
+      await getSessionTriggers(sessionId); // Verify session exists
+
+      const emitter = await subscribeToMarketPrices(sessionId, slug);
+
+      const onPriceUpdate = (data: any) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(data));
+        }
+      };
+
+      const onError = (error: any) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'error', message: (error as Error).message }));
+        }
+      };
+
+      emitter.on('price_update', onPriceUpdate);
+      emitter.on('error', onError);
+
+      ws.on('close', () => {
+        console.log(`[WS] Weather client disconnected for session ${sessionId}`);
+        emitter.off('price_update', onPriceUpdate);
+        emitter.off('error', onError);
+        unsubscribeFromMarketPrices(sessionId, slug).catch(console.error);
+      });
+
+      ws.on('error', (error) => {
+        console.error(`[WS] Client error:`, error);
+      });
+    } catch (error) {
+      console.error(`[WS] Connection error:`, error);
+      ws.close(1011, (error as Error).message);
+    }
+  });
+
   initBotManager(wss);
   startBtc15mBroadcastLoop();
   startBtc15mAutoBroadcastLoop();
