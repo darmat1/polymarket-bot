@@ -1,20 +1,18 @@
-import WebSocket from 'ws';
 import { EventEmitter } from 'events';
+import { PolymarketMarketWs } from './polymarket-market-ws.js';
 import { getDb } from './db/client.js';
 import { getPositionsCached } from './weather-position-cache.js';
 
-const GAMMA_API = 'https://gamma-api.polymarket.com';
-
 interface ActiveSubscription {
-  ws: WebSocket | null;
+  ws: PolymarketMarketWs;
   slug: string;
   sessionId: string;
   emitter: EventEmitter;
-  reconnectCount: number;
+  tokenIds: string[];
 }
 
+// Map of key -> active subscription
 const activeSubscriptions = new Map<string, ActiveSubscription>();
-const MAX_RECONNECT_ATTEMPTS = 5;
 
 export async function subscribeToMarketPrices(
   sessionId: string,
@@ -22,199 +20,105 @@ export async function subscribeToMarketPrices(
 ): Promise<EventEmitter> {
   const key = `${slug}-${sessionId}`;
 
-  // Check if already subscribed
   if (activeSubscriptions.has(key)) {
-    const existing = activeSubscriptions.get(key)!;
-    if (existing.ws && existing.ws.readyState === WebSocket.OPEN) {
-      return existing.emitter;
-    }
+    return activeSubscriptions.get(key)!.emitter;
   }
 
   const emitter = new EventEmitter();
 
-  // Fetch event to get market details
-  let event: any;
-  try {
-    event = await fetchEventData(slug);
-    if (!event || !event.markets) {
-      throw new Error(`Event ${slug} not found or has no markets`);
-    }
-  } catch (error) {
-    console.error(`[WS] Failed to fetch event ${slug}:`, error);
-    emitter.emit('error', error);
-    throw error;
+  // Load token IDs from DB (stored in event_data when session was created)
+  const db = getDb();
+  const sessionResult = await db.query(
+    `SELECT event_data FROM weather_sessions WHERE id = $1`,
+    [sessionId]
+  );
+
+  const eventData = sessionResult.rows[0]?.event_data;
+  const markets: any[] = eventData?.markets ?? [];
+
+  // Collect all YES token IDs from the event markets
+  const tokenIds: string[] = markets
+    .map((m: any) => m.yes_token_id)
+    .filter(Boolean);
+
+  if (tokenIds.length === 0) {
+    console.warn(`[WS] No token IDs found for session ${sessionId}, slug ${slug}`);
   }
 
-  const subscription: ActiveSubscription = {
-    ws: null,
-    slug,
-    sessionId,
-    emitter,
-    reconnectCount: 0,
-  };
+  console.log(`[WS] Subscribing to ${tokenIds.length} markets for session ${sessionId}`);
 
-  activeSubscriptions.set(key, subscription);
+  // Use existing PolymarketMarketWs class (correct URL + format)
+  const ws = new PolymarketMarketWs(async (event) => {
+    if (event.kind !== 'book') return;
 
-  // Start connection attempt
-  await connectWebSocket(key, subscription, event);
+    const { assetId, bestAsk, bestBid } = event;
+
+    // Only process if this token has an active trigger
+    const triggerResult = await db.query(
+      `SELECT COUNT(*) as count FROM weather_triggers
+       WHERE session_id = $1 AND token_id = $2 AND executed = FALSE`,
+      [sessionId, assetId]
+    );
+    const hasActiveTrigger = Number(triggerResult.rows[0]?.count ?? 0) > 0;
+    if (!hasActiveTrigger) return;
+
+    // Find the market question for this token
+    const market = markets.find((m: any) => m.yes_token_id === assetId);
+
+    // Fetch positions (cached, 3s TTL)
+    const positions = await getPositionsCached();
+    const position = positions.find(
+      (p: any) =>
+        p.slug === slug ||
+        p.eventSlug === slug
+    );
+
+    const yesPrice = bestAsk ?? 0;
+    const noPrice = bestBid != null ? 1 - bestBid : 0;
+
+    const enrichedData = {
+      type: 'market_update',
+      sessionId,
+      market: {
+        market_slug: slug,
+        question: market?.question ?? '',
+        yes_price: yesPrice,
+        no_price: noPrice,
+        yes_token_id: assetId,
+        volume: market?.volume ?? 0,
+        liquidity: market?.liquidity ?? 0,
+        position: position
+          ? {
+              size: position.size,
+              avg_price: position.avgPrice,
+              current_value: position.currentValue,
+              cash_pnl: position.cashPnl,
+              percent_pnl: position.percentPnl,
+            }
+          : undefined,
+      },
+    };
+
+    emitter.emit('price_update', enrichedData);
+  });
+
+  // Start listening to the token IDs
+  ws.setTrackedAssets(tokenIds);
+
+  activeSubscriptions.set(key, { ws, slug, sessionId, emitter, tokenIds });
 
   return emitter;
-}
-
-async function connectWebSocket(
-  key: string,
-  subscription: ActiveSubscription,
-  event: any
-): Promise<void> {
-  try {
-    const wsUrl = 'wss://ws-api-clob.polymarket.com/ws';
-    const ws = new WebSocket(wsUrl);
-
-    subscription.ws = ws;
-
-    ws.on('open', () => {
-      console.log(`[WS] Connected to Polymarket for session ${subscription.sessionId}`);
-
-      // Subscribe to all markets in this event
-      const marketIds = event.markets
-        .map((m: any) => m.conditionId)
-        .filter(Boolean);
-
-      for (const marketId of marketIds) {
-        ws.send(
-          JSON.stringify({
-            type: 'subscribe',
-            market: marketId,
-          })
-        );
-      }
-
-      subscription.reconnectCount = 0;
-    });
-
-    ws.on('message', async (data: string) => {
-      try {
-        const message = JSON.parse(data);
-
-        if (message.type === 'price') {
-          // Filter by active triggers
-          const db = getDb();
-          const triggerResult = await db.query(
-            `SELECT COUNT(*) as count FROM weather_triggers
-             WHERE session_id = $1 AND token_id = $2 AND executed = FALSE`,
-            [subscription.sessionId, message.tokenId]
-          );
-
-          const hasActiveTrigger = Number(triggerResult.rows[0]?.count ?? 0) > 0;
-
-          if (hasActiveTrigger) {
-            // Fetch positions
-            const positions = await getPositionsCached();
-
-            // Find matching position
-            const position = positions.find(
-              (p: any) =>
-                (p.slug === subscription.slug ||
-                  p.eventSlug === subscription.slug) &&
-                (message.tokenId === p.asset || message.yes_token_id === p.asset)
-            );
-
-            // Enrich market data
-            const enrichedData = {
-              type: 'market_update',
-              sessionId: subscription.sessionId,
-              market: {
-                market_slug: subscription.slug,
-                question: message.question || '',
-                yes_price: message.yes_price || message.yesPrices?.[0] || 0,
-                no_price: message.no_price || message.noPrices?.[0] || 0,
-                yes_token_id: message.tokenId,
-                volume: message.volume || 0,
-                liquidity: message.liquidity || 0,
-                position: position
-                  ? {
-                      size: position.size,
-                      avg_price: position.avgPrice,
-                      current_value: position.currentValue,
-                      cash_pnl: position.cashPnl,
-                      percent_pnl: position.percentPnl,
-                    }
-                  : undefined,
-              },
-            };
-
-            subscription.emitter.emit('price_update', enrichedData);
-          }
-        }
-      } catch (error) {
-        console.error(`[WS] Error parsing message:`, error);
-      }
-    });
-
-    ws.on('error', (error) => {
-      console.error(`[WS] Error in session ${subscription.sessionId}:`, error);
-      subscription.emitter.emit('error', error);
-    });
-
-    ws.on('close', () => {
-      console.log(`[WS] Disconnected from session ${subscription.sessionId}`);
-
-      // Attempt reconnect
-      if (subscription.reconnectCount < MAX_RECONNECT_ATTEMPTS) {
-        subscription.reconnectCount++;
-        const delay = 1000 * Math.pow(2, subscription.reconnectCount - 1);
-        console.log(
-          `[WS] Reconnecting in ${delay}ms... (attempt ${subscription.reconnectCount}/${MAX_RECONNECT_ATTEMPTS})`
-        );
-
-        setTimeout(async () => {
-          try {
-            await connectWebSocket(key, subscription, event);
-          } catch (error) {
-            console.error(`[WS] Reconnect failed:`, error);
-            subscription.emitter.emit('reconnect_failed', error);
-          }
-        }, delay);
-      } else {
-        console.error(`[WS] Max reconnect attempts reached for session ${subscription.sessionId}`);
-        subscription.emitter.emit('connection_failed');
-        activeSubscriptions.delete(key);
-      }
-    });
-  } catch (error) {
-    console.error(`[WS] Connection error:`, error);
-    subscription.emitter.emit('error', error);
-    throw error;
-  }
 }
 
 export async function unsubscribeFromMarketPrices(sessionId: string, slug: string): Promise<void> {
   const key = `${slug}-${sessionId}`;
   const subscription = activeSubscriptions.get(key);
 
-  if (subscription && subscription.ws) {
-    subscription.ws.close();
-    subscription.ws = null;
+  if (subscription) {
+    subscription.ws.setTrackedAssets([]); // closes the WS
+    activeSubscriptions.delete(key);
+    console.log(`[WS] Unsubscribed from session ${sessionId}`);
   }
-
-  activeSubscriptions.delete(key);
-  console.log(`[WS] Unsubscribed from session ${sessionId}`);
-}
-
-async function fetchEventData(slug: string): Promise<any> {
-  const response = await fetch(`${GAMMA_API}/events?slug=${encodeURIComponent(slug)}`, {
-    headers: {
-      accept: 'application/json',
-      'user-agent': 'Mozilla/5.0',
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Gamma API failed: ${response.status}`);
-  }
-
-  const data = (await response.json()) as Array<Record<string, unknown>>;
-  return data[0] ?? null;
 }
 
 export function getActiveSubscriptions(): Array<{ sessionId: string; slug: string }> {
