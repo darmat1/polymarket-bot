@@ -369,3 +369,21 @@ function validateBtc15mHedgeSettings(settings: Btc15mHedgeSettings): void {
     throw new Error("BTC15M_HEDGE_FORCE_UNWIND_MIN must be less than BTC15M_HEDGE_ENTRY_CUTOFF_MIN.");
   }
 }
+
+export interface DbConfig {
+  host: string;
+  port: number;
+  database: string;
+  user: string;
+  password: string;
+}
+
+export function getDbConfig(): DbConfig {
+  return {
+    host: process.env.DB_HOST || 'postgres',
+    port: parseInt(process.env.DB_PORT || '5432', 10),
+    database: process.env.DB_NAME || 'pm_weather',
+    user: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || 'postgres',
+  };
+}
