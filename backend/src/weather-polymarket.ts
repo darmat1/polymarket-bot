@@ -156,7 +156,10 @@ function cToF(c: number): number {
 
 export async function getCurrentTemperature(icao: string, unitHint?: "F" | "C"): Promise<WeatherTemperaturePayload | null> {
   const normalized = icao.trim().toUpperCase();
-  let tempC = await getTemperatureFromNoaa(normalized);
+  let tempC = await getTemperatureFromNws(normalized);
+  if (tempC === null) {
+    tempC = await getTemperatureFromNoaa(normalized);
+  }
   if (tempC === null) {
     tempC = await getTemperatureFromMetarCentral(normalized);
   }
@@ -335,6 +338,26 @@ function extractAirportFromDescription(description: string): [string | null, str
     stationMatch?.label ??
     (icao ? `Airport ${icao}` : null);
   return [airportName, icao];
+}
+
+async function getTemperatureFromNws(icao: string): Promise<number | null> {
+  try {
+    const response = await fetch(
+      `https://api.weather.gov/stations/${encodeURIComponent(icao)}/observations/latest`,
+      {
+        headers: {
+          Accept: "application/geo+json",
+          "User-Agent": "WeatherPolymarketBot/1.0",
+        },
+      }
+    );
+    if (!response.ok) return null;
+    const data = (await response.json()) as { properties?: { temperature?: { value?: number | null } } };
+    const value = data.properties?.temperature?.value;
+    return typeof value === "number" ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 async function getTemperatureFromNoaa(icao: string): Promise<number | null> {

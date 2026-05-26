@@ -154,7 +154,7 @@ export function WeatherScreen({ addToast, shellControls, initialUrl }: WeatherSc
     }
     const intervalId = setInterval(() => {
       void refreshWeather(airport.icao);
-    }, 60_000);
+    }, 30_000);
     return () => clearInterval(intervalId);
   }, [airport?.icao, refreshWeather]);
 
