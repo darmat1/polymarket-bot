@@ -58,12 +58,9 @@ import {
 } from "./btc15m-hedge/simple-index.js";
 import { checkMarketUrl } from "./btc15m-hedge/market-checker.js";
 import {
-  checkWeatherPolymarketTriggers,
-  clearWeatherPolymarketTriggers,
   extractSlugFromUrl,
   getCurrentTemperature,
   getWeatherPolymarketEvent,
-  listWeatherPolymarketTriggers,
   setWeatherPolymarketTrigger,
 } from "./weather-polymarket.js";
 
@@ -226,7 +223,27 @@ const server = createServer(async (req, res) => {
       if (!icao) {
         return json(res, 400, { error: "icao is required" });
       }
-      return json(res, 200, { triggers: listWeatherPolymarketTriggers(icao) });
+      const db = getDb();
+      const triggersResult = await db.query(
+        `SELECT wt.id, wt.token_id, wt.temp, wt.amount, wt.executed, wt.executed_at,
+                wt.closed, wt.exit_price, wt.exit_minutes
+         FROM weather_triggers wt
+         JOIN weather_sessions ws ON ws.id = wt.session_id
+         WHERE ws.icao = \$1 AND wt.closed = FALSE
+         ORDER BY wt.created_at DESC`,
+        [icao]
+      );
+      const triggers = triggersResult.rows.map((r: any) => ({
+        id: r.id,
+        token_id: r.token_id,
+        temp: Number(r.temp),
+        amount: Number(r.amount),
+        executed: r.executed,
+        executed_at: r.executed_at,
+        exit_price: Number(r.exit_price),
+        exit_minutes: Number(r.exit_minutes),
+      }));
+      return json(res, 200, { triggers });
     }
 
     if (requestUrl.pathname === "/api/weather-polymarket/triggers" && req.method === "DELETE") {
@@ -235,27 +252,31 @@ const server = createServer(async (req, res) => {
       if (!icao) {
         return json(res, 400, { error: "icao is required" });
       }
-      const removed = clearWeatherPolymarketTriggers(
-        icao,
-        body.token_id ? String(body.token_id) : undefined,
-      );
+      const db = getDb();
+      let deleteResult: any;
+      if (body.token_id) {
+        deleteResult = await db.query(
+          `DELETE FROM weather_triggers wt
+           USING weather_sessions ws
+           WHERE wt.session_id = ws.id AND ws.icao = $1 AND wt.token_id = $2`,
+          [icao, String(body.token_id)]
+        );
+      } else {
+        deleteResult = await db.query(
+          `DELETE FROM weather_triggers wt
+           USING weather_sessions ws
+           WHERE wt.session_id = ws.id AND ws.icao = $1`,
+          [icao]
+        );
+      }
+      const removed = deleteResult.rowCount ?? 0;
       return json(res, 200, {
         status: "ok",
         removed,
-        message: `Removed ${removed.length} trigger(s) for ${icao}`,
+        message: `Removed ${removed} trigger(s) for ${icao}`,
       });
     }
 
-    if (requestUrl.pathname === "/api/weather-polymarket/check-triggers" && req.method === "POST") {
-      const body = await readJsonBody(req) as { icao?: string; current_rounded?: number };
-      const icao = String(body.icao ?? "").trim().toUpperCase();
-      const currentRounded = Number(body.current_rounded);
-      if (!icao || !Number.isFinite(currentRounded)) {
-        return json(res, 400, { error: "icao and current_rounded are required" });
-      }
-      const result = await checkWeatherPolymarketTriggers(icao, currentRounded);
-      return json(res, 200, result);
-    }
 
     if (requestUrl.pathname === "/api/weather-polymarket/trading-status" && req.method === "GET") {
       const runtime = getRuntimeAuthState();

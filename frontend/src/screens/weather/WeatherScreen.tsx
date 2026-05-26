@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
 import {
-  checkWeatherPolymarketTriggers,
   getMarketDetails as getMarketDetailsRequest,
   clearWeatherPolymarketTriggers,
   getWeatherPolymarketEvent,
@@ -106,7 +105,6 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather }
       const payload = await getWeatherPolymarketWeather(icao);
       setWeather(payload);
       setLastWeatherUpdateAt(Date.now());
-      await checkWeatherPolymarketTriggers(icao, payload.rounded_c);
       await refreshTriggers(icao);
       await shellControls.refreshAccountSummary();
     } finally {
