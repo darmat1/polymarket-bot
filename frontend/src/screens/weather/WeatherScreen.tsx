@@ -77,6 +77,8 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather }
   const [lastWeatherUpdateAt, setLastWeatherUpdateAt] = useState<number | null>(null);
   const [triggerTemp, setTriggerTemp] = useState("");
   const [triggerAmount, setTriggerAmount] = useState("1");
+  const [exitPrice, setExitPrice] = useState("0.99");
+  const [exitMinutes, setExitMinutes] = useState("10");
 
   const airport = event?.airport ?? null;
   const activeMarkets = useMemo(
@@ -176,6 +178,8 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather }
       addToast("error", "Invalid amount", "Enter a valid USDC amount.");
       return;
     }
+    const exitPriceVal = Number(exitPrice.replace(",", "."));
+    const exitMinutesVal = Number(exitMinutes);
     try {
       const payload = await setWeatherPolymarketTrigger({
         token_id: market.yes_token_id,
@@ -183,6 +187,8 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather }
         amount,
         icao: airport.icao,
         slug: event?.slug ?? null,
+        exit_price: Number.isFinite(exitPriceVal) ? exitPriceVal : 0.99,
+        exit_minutes: Number.isFinite(exitMinutesVal) ? exitMinutesVal : 10,
       });
       addToast("success", "Trigger set", payload.message);
       await refreshTriggers(airport.icao);
@@ -193,7 +199,7 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather }
         nextError instanceof Error ? nextError.message : "Failed to set trigger",
       );
     }
-  }, [addToast, airport?.icao, event?.slug, refreshTriggers, triggerAmount]);
+  }, [addToast, airport?.icao, event?.slug, exitMinutes, exitPrice, refreshTriggers, triggerAmount]);
 
   const handleQuickTrigger = useCallback(async () => {
     if (!event || !airport?.icao) {
@@ -384,6 +390,27 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather }
                       value={triggerAmount}
                       onChange={(event) => setTriggerAmount(event.target.value)}
                       placeholder="1"
+                    />
+                  </label>
+                  <label className="search">
+                    <span>Exit ¢</span>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={exitPrice}
+                      onChange={(event) => setExitPrice(event.target.value)}
+                      placeholder="0.99"
+                    />
+                  </label>
+                  <label className="search">
+                    <span>Exit min</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="1"
+                      value={exitMinutes}
+                      onChange={(event) => setExitMinutes(event.target.value)}
+                      placeholder="10"
                     />
                   </label>
                   <button className="button button-primary" type="button" onClick={() => void handleQuickTrigger()}>

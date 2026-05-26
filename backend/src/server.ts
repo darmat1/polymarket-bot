@@ -26,6 +26,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { initBotManager, activateBot, deactivateBot, getBotStatus, getAllActiveBots, getOrFetchStationHistory, type BotTask } from "./bot-manager.js";
 import { getEventLog, clearEventLog, logEvent } from "./event-log.js";
 import { loadSettings } from "./config.js";
+import { getDb } from "./db/client.js";
 import { readFile } from "node:fs/promises";
 import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -163,6 +164,9 @@ const server = createServer(async (req, res) => {
       if (!weather) {
         return json(res, 404, { error: "No weather data from available sources" });
       }
+      // Fire DB triggers immediately with fresh temperature (no waiting for next poll cycle)
+      const { fireTriggersForIcao } = await import("./weather-background.js");
+      void fireTriggersForIcao(icao, weather);
       return json(res, 200, weather);
     }
 
@@ -173,10 +177,14 @@ const server = createServer(async (req, res) => {
         amount?: number;
         icao?: string;
         slug?: string | null;
+        exit_price?: number;
+        exit_minutes?: number;
       };
       if (!body.token_id || body.temp_threshold === undefined || !body.icao) {
         return json(res, 400, { error: "token_id, temp_threshold, and icao are required" });
       }
+      const exitPrice = Number(body.exit_price ?? 0.99);
+      const exitMinutes = Number(body.exit_minutes ?? 10);
       const trigger = setWeatherPolymarketTrigger({
         token_id: String(body.token_id),
         temp_threshold: Number(body.temp_threshold),
@@ -184,10 +192,32 @@ const server = createServer(async (req, res) => {
         icao: String(body.icao),
         slug: body.slug ? String(body.slug) : null,
       });
+
+      // Persist to DB so background service can pick it up
+      if (body.slug) {
+        try {
+          const db = getDb();
+          const sessionRow = await db.query(
+            `SELECT id FROM weather_sessions WHERE slug = $1 ORDER BY created_at DESC LIMIT 1`,
+            [body.slug]
+          );
+          const sessionId = sessionRow.rows[0]?.id;
+          if (sessionId) {
+            await db.query(
+              `INSERT INTO weather_triggers (session_id, token_id, temp, amount, exit_price, exit_minutes)
+               VALUES ($1, $2, $3, $4, $5, $6)`,
+              [sessionId, body.token_id, trigger.temp, trigger.amount, exitPrice, exitMinutes]
+            );
+          }
+        } catch (dbErr) {
+          console.warn("[Trigger] Failed to persist trigger to DB:", (dbErr as Error).message);
+        }
+      }
+
       return json(res, 200, {
         status: "ok",
         trigger,
-        message: `Trigger set: buy YES on ${trigger.amount} USDC at >= ${trigger.temp}°C`,
+        message: `Trigger set: buy YES on ${trigger.amount} USDC at >= ${trigger.temp}°, exit at ${exitPrice} or ${exitMinutes}min`,
       });
     }
 
@@ -598,10 +628,15 @@ async function start(): Promise<void> {
   const { startWeatherBackgroundService, stopWeatherBackgroundService } = await import("./weather-background.js");
   startWeatherBackgroundService();
 
+  // Start position monitor (take-profit at 95¢, timeout after 10min)
+  const { startPositionMonitor, stopPositionMonitor } = await import("./weather-position-monitor.js");
+  await startPositionMonitor();
+
   // Clean up on shutdown
   process.on("SIGINT", async () => {
     console.log("[Server] Shutting down...");
     stopWeatherBackgroundService();
+    stopPositionMonitor();
     await closeDb();
     process.exit(0);
   });

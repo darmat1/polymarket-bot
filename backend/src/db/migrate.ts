@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS weather_triggers (
 CREATE INDEX IF NOT EXISTS idx_weather_triggers_session ON weather_triggers(session_id);
 CREATE INDEX IF NOT EXISTS idx_weather_triggers_token ON weather_triggers(token_id);
 
+-- Add exit tracking columns (idempotent)
+ALTER TABLE weather_triggers ADD COLUMN IF NOT EXISTS executed_at TIMESTAMPTZ;
+ALTER TABLE weather_triggers ADD COLUMN IF NOT EXISTS closed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE weather_triggers ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+ALTER TABLE weather_triggers ADD COLUMN IF NOT EXISTS exit_price NUMERIC NOT NULL DEFAULT 0.99;
+ALTER TABLE weather_triggers ADD COLUMN IF NOT EXISTS exit_minutes INTEGER NOT NULL DEFAULT 10;
+
 -- Create weather_tab_order table
 CREATE TABLE IF NOT EXISTS weather_tab_order (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

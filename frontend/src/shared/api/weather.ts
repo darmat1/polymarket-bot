@@ -28,6 +28,8 @@ export function setWeatherPolymarketTrigger(payload: {
   amount: number;
   icao: string;
   slug?: string | null;
+  exit_price?: number;
+  exit_minutes?: number;
 }) {
   return postJson<WeatherPolymarketSetTriggerPayload>("/api/weather-polymarket/triggers", payload);
 }
