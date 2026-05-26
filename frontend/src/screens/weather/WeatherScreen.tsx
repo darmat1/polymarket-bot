@@ -31,6 +31,7 @@ type WeatherScreenProps = {
   addToast: AddToast;
   shellControls: ShellControls;
   initialUrl?: string;
+  wsWeather?: { temperature_c: number; rounded_c: number; temperature_native?: number; rounded_native?: number; unit?: 'F' | 'C' } | null;
 };
 
 type PendingSellStateLike = {
@@ -64,7 +65,7 @@ type WeatherMarketDetailsPanelProps = {
 
 const DEFAULT_URL = "https://polymarket.com/event/highest-temperature-in-moscow-on-may-11-2026";
 
-export function WeatherScreen({ addToast, shellControls, initialUrl }: WeatherScreenProps) {
+export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather }: WeatherScreenProps) {
   const [url, setUrl] = useState(initialUrl || DEFAULT_URL);
   const [event, setEvent] = useState<WeatherPolymarketEventPayload | null>(null);
   const [weather, setWeather] = useState<WeatherPolymarketWeather | null>(null);
@@ -147,6 +148,14 @@ export function WeatherScreen({ addToast, shellControls, initialUrl }: WeatherSc
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Update weather from backend WebSocket (covers background tabs too)
+  useEffect(() => {
+    if (wsWeather) {
+      setWeather(wsWeather as WeatherPolymarketWeather);
+      setLastWeatherUpdateAt(Date.now());
+    }
+  }, [wsWeather]);
 
   useEffect(() => {
     if (!airport?.icao) {

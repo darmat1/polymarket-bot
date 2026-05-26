@@ -594,9 +594,14 @@ async function start(): Promise<void> {
     process.exit(1);
   }
 
+  // Start background temperature polling + trigger execution (browser-independent)
+  const { startWeatherBackgroundService, stopWeatherBackgroundService } = await import("./weather-background.js");
+  startWeatherBackgroundService();
+
   // Clean up on shutdown
   process.on("SIGINT", async () => {
     console.log("[Server] Shutting down...");
+    stopWeatherBackgroundService();
     await closeDb();
     process.exit(0);
   });

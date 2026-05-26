@@ -100,7 +100,7 @@ function extractSlugFromUrl(url: string): string | null {
   return match?.[1] ?? null;
 }
 
-function extractCityName(
+export function extractCityName(
   title: string,
   airportName: string | null | undefined,
   icao: string | null,

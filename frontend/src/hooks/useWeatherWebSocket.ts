@@ -17,10 +17,19 @@ export interface EnrichedMarket {
   };
 }
 
+export interface WeatherUpdate {
+  temperature_c: number;
+  rounded_c: number;
+  temperature_native?: number;
+  rounded_native?: number;
+  unit?: 'F' | 'C';
+}
+
 interface WebSocketMessage {
   type: string;
   sessionId: string;
   market?: EnrichedMarket;
+  weather?: WeatherUpdate;
   error?: string;
 }
 
@@ -31,10 +40,12 @@ export function useWeatherWebSocket(
   slug: string
 ): {
   markets: EnrichedMarket[];
+  weather: WeatherUpdate | null;
   isConnected: boolean;
   error: string | null;
 } {
   const [markets, setMarkets] = useState<EnrichedMarket[]>([]);
+  const [weather, setWeather] = useState<WeatherUpdate | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -75,6 +86,8 @@ export function useWeatherWebSocket(
                 }
                 return [...prev, message.market!];
               });
+            } else if (message.type === 'temperature_update' && message.weather) {
+              setWeather(message.weather);
             } else if (message.type === 'error') {
               setError(message.error || 'WebSocket error');
             }
@@ -124,5 +137,5 @@ export function useWeatherWebSocket(
     };
   }, [sessionId, slug]);
 
-  return { markets, isConnected, error };
+  return { markets, weather, isConnected, error };
 }

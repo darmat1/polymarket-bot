@@ -9,6 +9,7 @@ interface ActiveSubscription {
   sessionId: string;
   emitter: EventEmitter;
   tokenIds: string[];
+  icao: string | null;
 }
 
 // Map of key -> active subscription
@@ -26,14 +27,15 @@ export async function subscribeToMarketPrices(
 
   const emitter = new EventEmitter();
 
-  // Load token IDs — from DB if available, otherwise fetch fresh
+  // Load token IDs and ICAO — from DB if available, otherwise fetch fresh
   const db = getDb();
   const sessionResult = await db.query(
-    `SELECT event_data FROM weather_sessions WHERE id = $1`,
+    `SELECT event_data, icao FROM weather_sessions WHERE id = $1`,
     [sessionId]
   );
 
   let markets: any[] = sessionResult.rows[0]?.event_data?.markets ?? [];
+  let icao: string | null = sessionResult.rows[0]?.icao ?? null;
 
   if (markets.length === 0) {
     console.log(`[WS] No cached event_data for session ${sessionId}, fetching fresh from Gamma API`);
@@ -44,10 +46,12 @@ export async function subscribeToMarketPrices(
 
       // Cache it in DB
       if (event) {
-        const icao = event.airport?.icao ?? null;
+        icao = event.airport?.icao ?? null;
+        const { extractCityName } = await import('./weather-sessions.js');
+        const city = extractCityName(event.title, event.airport?.name, icao, slug);
         await db.query(
           `UPDATE weather_sessions SET city = $1, icao = $2, event_data = $3, updated_at = NOW() WHERE id = $4`,
-          [icao ?? slug, icao, JSON.stringify(event), sessionId]
+          [city, icao, JSON.stringify(event), sessionId]
         );
       }
     } catch (err) {
@@ -64,7 +68,7 @@ export async function subscribeToMarketPrices(
     console.warn(`[WS] No token IDs found for session ${sessionId}, slug ${slug}`);
   }
 
-  console.log(`[WS] Subscribing to ${tokenIds.length} markets for session ${sessionId}`);
+  console.log(`[WS] Subscribing to ${tokenIds.length} markets for session ${sessionId}, icao=${icao}`);
 
   // Use existing PolymarketMarketWs class (correct URL + format)
   const ws = new PolymarketMarketWs(async (event) => {
@@ -124,7 +128,7 @@ export async function subscribeToMarketPrices(
   // Start listening to the token IDs
   ws.setTrackedAssets(tokenIds);
 
-  activeSubscriptions.set(key, { ws, slug, sessionId, emitter, tokenIds });
+  activeSubscriptions.set(key, { ws, slug, sessionId, emitter, tokenIds, icao });
 
   return emitter;
 }
@@ -137,6 +141,15 @@ export async function unsubscribeFromMarketPrices(sessionId: string, slug: strin
     subscription.ws.setTrackedAssets([]); // closes the WS
     activeSubscriptions.delete(key);
     console.log(`[WS] Unsubscribed from session ${sessionId}`);
+  }
+}
+
+export function pushTemperatureUpdate(sessionId: string, weather: unknown): void {
+  for (const sub of activeSubscriptions.values()) {
+    if (sub.sessionId === sessionId) {
+      sub.emitter.emit('temperature_update', { type: 'temperature_update', sessionId, weather });
+      break;
+    }
   }
 }
 
