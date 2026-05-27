@@ -507,14 +507,18 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather, 
             <div className="markets">
               {activeMarkets.map((market) => {
                 // Match both °F and °C; for ranges like "56-57°F" take the lower (first) number
-                const thresholdMatch = market.question.match(/(\d+(?:\.\d+)?)(?:\s*[-–]\s*\d+(?:\.\d+)?)?\s*°([CF])/i);
+                const thresholdMatch = market.question.match(/(\d+(?:\.\d+)?)(?:\s*[-–]\s*(\d+(?:\.\d+)?))?\s*°([CF])/i);
                 const threshold = thresholdMatch ? Math.round(Number(thresholdMatch[1])) : null;
-                const marketUnit = thresholdMatch ? thresholdMatch[2].toUpperCase() : (weather?.unit ?? "C");
+                const thresholdUpper = thresholdMatch?.[2] ? Math.round(Number(thresholdMatch[2])) : null;
+                const marketUnit = thresholdMatch ? thresholdMatch[3].toUpperCase() : (weather?.unit ?? "C");
                 // Determine comparison operator from market question
                 const q = market.question ?? "";
                 const triggerOp = /or higher|or above|and above|or more/i.test(q) ? "≥"
                   : /or lower|or below|and below|or less|or under/i.test(q) ? "≤"
                   : "=";
+                const thresholdLabel = thresholdUpper != null
+                  ? `${threshold}–${thresholdUpper}°${marketUnit}`
+                  : `${triggerOp} ${threshold ?? "?"}°${marketUnit}`;
 
                 // Use real-time ask prices when available (subscribed for trigger markets)
                 const rtYes = market.yes_token_id ? tokenPrices.get(market.yes_token_id) : null;
@@ -546,7 +550,7 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather, 
                         }
                       }}
                     >
-                      Buy YES at {triggerOp} {threshold ?? "?"}°{marketUnit}
+                      Buy YES at {thresholdLabel}
                     </button>
                   </div>
                 );

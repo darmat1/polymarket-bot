@@ -1,4 +1,4 @@
-import { getMarketDetails, placeMarketOrder } from "./app.js";
+import { getMarketDetails, placeMarketOrder, extractWeatherMarketData } from "./app.js";
 import { matchWeatherStation } from "./weather/stations.js";
 
 type WeatherPolymarketOutcome = {
@@ -76,6 +76,59 @@ const ICAO_COORDS: Record<string, [number, number]> = {
 
 const GAMMA_API = "https://gamma-api.polymarket.com";
 const activeTriggers = new Map<string, WeatherPolymarketTrigger>();
+
+// Groq-extracted metadata cache per ICAO: timezone + unit
+const icaoMetaCache = new Map<string, { timezone: string; unit: "F" | "C"; fetchedAt: number }>();
+const ICAO_META_TTL = 60 * 60 * 1000; // 1 hour — market questions don't change
+
+/**
+ * Get timezone and unit for an ICAO station.
+ * Looks up event_data from DB, calls Groq on the first market question.
+ * Falls back to unit detected from question text, and UTC timezone.
+ */
+async function getIcaoMeta(icao: string): Promise<{ timezone: string; unit: "F" | "C" }> {
+  const now = Date.now();
+  const cached = icaoMetaCache.get(icao);
+  if (cached && now - cached.fetchedAt < ICAO_META_TTL) {
+    return { timezone: cached.timezone, unit: cached.unit };
+  }
+
+  let timezone = "UTC";
+  let unit: "F" | "C" = "C";
+
+  try {
+    const { getDb } = await import("./db/client.js");
+    const db = getDb();
+    const result = await db.query<{ event_data: any }>(
+      `SELECT event_data FROM weather_sessions WHERE icao = $1 AND event_data IS NOT NULL ORDER BY updated_at DESC LIMIT 1`,
+      [icao]
+    );
+    const markets: any[] = result.rows[0]?.event_data?.markets ?? [];
+
+    // Extract unit directly from question text (fast, no API call)
+    for (const m of markets) {
+      if (/°F/i.test(m.question ?? "")) { unit = "F"; break; }
+      if (/°C/i.test(m.question ?? "")) { unit = "C"; break; }
+    }
+
+    // Call Groq for timezone using the first market question
+    if (markets.length > 0) {
+      const first = markets[0];
+      const extracted = await extractWeatherMarketData(
+        first.question ?? "",
+        first.description ?? first.question ?? "",
+        first.slug,
+        null,
+      );
+      if (extracted?.timezone) timezone = extracted.timezone;
+      if (extracted?.t_sys === "F") unit = "F";
+      else if (extracted?.t_sys === "C") unit = "C";
+    }
+  } catch { /* keep defaults */ }
+
+  icaoMetaCache.set(icao, { timezone, unit, fetchedAt: now });
+  return { timezone, unit };
+}
 
 export function extractSlugFromUrl(url: string): string | null {
   // Handles /event/<slug>, /uk/event/<slug>, /us/event/<slug>, etc.
@@ -213,15 +266,15 @@ function getDailyMaxFromHistory(observations: any[], timezone: string, unit: "F"
     if (Number.isFinite(t) && t > maxC) maxC = t;
   }
   if (maxC === -Infinity) return null;
-  return unit === "F" ? Math.round((maxC * 9) / 5 + 32) : Math.round(maxC);
+  return unit === "F" ? round((maxC * 9) / 5 + 32, 1) : round(maxC, 1);
 }
 
 export async function getCurrentTemperature(icao: string, unitHint?: "F" | "C"): Promise<WeatherTemperaturePayload | null> {
   const normalized = icao.trim().toUpperCase();
-  // Determine station unit and timezone upfront
-  const station = matchWeatherStation(normalized);
-  const unit = station?.unit ?? unitHint ?? "C";
-  const timezone = station?.timezone ?? "UTC";
+  // Determine station unit and timezone via Groq extraction (cached per ICAO)
+  const meta = await getIcaoMeta(normalized);
+  const unit: "F" | "C" = unitHint ?? meta.unit;
+  const timezone = meta.timezone;
 
   // Fetch METAR history since 00:00 local time — reuse for current temp AND daily max
   const metarObs = await getMetarHistory(normalized, timezone);
@@ -250,7 +303,7 @@ export async function getCurrentTemperature(icao: string, unitHint?: "F" | "C"):
   // Daily max comes from the same METAR history — no extra request
   const daily_max_native = metarObs ? getDailyMaxFromHistory(metarObs, timezone, unit) : null;
   const reportedMax = daily_max_native !== null
-    ? Math.max(daily_max_native, Math.round(tempNative))
+    ? Math.max(daily_max_native, round(tempNative, 1))
     : null;
 
   return {
@@ -309,8 +362,8 @@ export async function checkWeatherPolymarketTriggers(icao: string, currentRounde
   const normalizedIcao = icao.trim().toUpperCase();
 
   // Convert current temp to native unit for this station before comparing
-  const station = matchWeatherStation(normalizedIcao);
-  const unit = station?.unit ?? "C";
+  const meta = await getIcaoMeta(normalizedIcao);
+  const unit = meta.unit;
   const currentNative = unit === "F" ? Math.round(cToF(currentRounded)) : currentRounded;
 
   const executed: Array<{
