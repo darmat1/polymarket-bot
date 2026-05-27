@@ -80,7 +80,7 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather, 
   const [triggerAmount, setTriggerAmount] = useState("1");
   const [exitPrice, setExitPrice] = useState("0.99");
   const [exitMinutes, setExitMinutes] = useState("10");
-  const [buyPrevNo, setBuyPrevNo] = useState(true);
+  const [buyPrevNo, setBuyPrevNo] = useState(false);
   const [pendingChecks, setPendingChecks] = useState<Record<string, boolean>>({});
 
   const airport = event?.airport ?? null;

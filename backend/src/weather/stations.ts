@@ -201,6 +201,16 @@ const STATIONS: WeatherStation[] = [
     timezone: "America/Sao_Paulo",
     aliases: ["sao paulo", "são paulo", "guarulhos"],
   },
+  {
+    key: "toronto",
+    label: "Toronto",
+    station: "CYYZ",
+    latitude: 43.6777,
+    longitude: -79.6248,
+    unit: "C",
+    timezone: "America/Toronto",
+    aliases: ["toronto", "pearson", "lester pearson"],
+  },
 ];
 
 export function matchWeatherStation(text: string): WeatherStation | null {
