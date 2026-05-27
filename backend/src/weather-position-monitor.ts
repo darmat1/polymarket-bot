@@ -148,19 +148,27 @@ async function sellPosition(
       return;
     }
 
-    // Use limit order at current bid for immediate fill
-    const sellPrice = reason === 'take_profit'
-      ? position.exitPrice
-      : Math.max(currentBid, 0.01);
+    const { placeMarketOrder, placeLimitOrder } = await import('./app.js');
 
-    const { placeLimitOrder } = await import('./app.js');
-    await placeLimitOrder({
-      tokenId: position.tokenId,
-      side: 'sell',
-      price: sellPrice,
-      size,
-      tickSize: '0.01',
-    });
+    if (reason === 'take_profit') {
+      // Limit order at exact exit price — bid is already there, fills immediately
+      await placeLimitOrder({
+        tokenId: position.tokenId,
+        side: 'sell',
+        price: position.exitPrice,
+        size,
+        tickSize: '0.01',
+      });
+    } else {
+      // Timeout: FAK market sell — fills whatever is available immediately, no GTC hang
+      await placeMarketOrder({
+        tokenId: position.tokenId,
+        side: 'sell',
+        amount: size,
+        tickSize: '0.01',
+        orderType: 'FAK',
+      });
+    }
 
     await db.query(
       `UPDATE weather_triggers SET closed = TRUE, closed_at = NOW() WHERE id = $1`,
@@ -168,7 +176,7 @@ async function sellPosition(
     );
 
     console.log(
-      `[PosMon] ✓ Sold position (${reason}): token ${position.tokenId}, size=${size}, price=${sellPrice}`
+      `[PosMon] ✓ Sold position (${reason}): token ${position.tokenId}, size=${size}`
     );
   } catch (err) {
     console.error(`[PosMon] Failed to sell position ${position.triggerId}:`, (err as Error).message);

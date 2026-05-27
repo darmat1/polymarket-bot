@@ -343,6 +343,7 @@ export type WeatherPolymarketWeather = {
   temperature_native?: number;
   rounded_native?: number;
   unit?: "F" | "C";
+  daily_max_native?: number | null;
 };
 
 export type WeatherPolymarketMarket = {
@@ -358,10 +359,15 @@ export type WeatherPolymarketMarket = {
 };
 
 export type WeatherPolymarketTrigger = {
+  id?: string;
   token_id: string;
   temp: number;
   amount: number;
   executed: boolean;
+  executed_at?: string | null;
+  exit_price?: number;
+  exit_minutes?: number;
+  buy_prev_no?: boolean;
   slug: string | null;
   icao: string;
 };

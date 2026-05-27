@@ -52,7 +52,7 @@ export async function fireTriggersForIcao(
 
   for (const { session_id: sessionId } of sessionsResult.rows) {
     const triggers = await db.query(
-      `SELECT id, token_id, temp, amount, exit_price, exit_minutes
+      `SELECT id, token_id, temp, amount, exit_price, exit_minutes, buy_prev_no, is_boundary
        FROM weather_triggers
        WHERE session_id = $1 AND executed = FALSE`,
       [sessionId]
@@ -60,9 +60,12 @@ export async function fireTriggersForIcao(
 
     for (const trigger of triggers.rows) {
       const triggerTemp = Number(trigger.temp);
-      if (weather.rounded_native >= triggerTemp) {
+      const shouldFire = trigger.is_boundary
+        ? weather.rounded_native >= triggerTemp   // "37°C or higher" — fires at 37, 38, 39…
+        : weather.rounded_native === triggerTemp; // exact market — only fires at exactly this temp
+      if (shouldFire) {
         console.log(
-          `[WeatherBg] Firing trigger: ${weather.rounded_native}°${weather.unit} >= ${triggerTemp}°, session=${sessionId}`
+          `[WeatherBg] Firing trigger: ${weather.rounded_native}°${weather.unit} ${trigger.is_boundary ? ">=" : "==="} ${triggerTemp}°, session=${sessionId}`
         );
         try {
           await placeMarketOrder({
@@ -87,6 +90,44 @@ export async function fireTriggersForIcao(
             exitPrice: Number(trigger.exit_price),
             exitMinutes: Number(trigger.exit_minutes),
           });
+
+          // Also buy NO on the previous (lower) temperature market (if enabled for this trigger)
+          if (trigger.buy_prev_no !== false) try {
+            const sessionData = await db.query(
+              `SELECT event_data FROM weather_sessions WHERE id = $1`,
+              [sessionId]
+            );
+            const markets: any[] = sessionData.rows[0]?.event_data?.markets ?? [];
+            const sortedMarkets = markets
+              .map((m: any) => ({
+                ...m,
+                parsedTemp: parseFloat(m.question?.match(/(\d+(?:\.\d+)?)\s*°/)?.[1] ?? 'NaN'),
+              }))
+              .filter((m: any) => !isNaN(m.parsedTemp))
+              .sort((a: any, b: any) => a.parsedTemp - b.parsedTemp);
+
+            const triggerIdx = sortedMarkets.findIndex((m: any) =>
+              Array.isArray(m.clobTokenIds) && m.clobTokenIds.includes(trigger.token_id)
+            );
+
+            if (triggerIdx > 0) {
+              const prevMarket = sortedMarkets[triggerIdx - 1];
+              const noTokenId = prevMarket.clobTokenIds?.[1]; // index 1 = NO token
+              if (noTokenId) {
+                await placeMarketOrder({
+                  tokenId: noTokenId,
+                  side: 'buy',
+                  amount: Number(trigger.amount),
+                  tickSize: '0.01',
+                });
+                console.log(
+                  `[WeatherBg] ✓ Bought NO on previous temp (${prevMarket.parsedTemp}°) token=${noTokenId}`
+                );
+              }
+            }
+          } catch (noErr) {
+            console.warn(`[WeatherBg] Could not buy NO on previous temp:`, (noErr as Error).message);
+          }
         } catch (err) {
           console.error(`[WeatherBg] Failed to execute trigger ${trigger.id}:`, (err as Error).message);
         }

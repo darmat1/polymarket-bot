@@ -16,7 +16,7 @@ export function WeatherScreenWithTabs(props: WeatherScreenWithTabsProps) {
   const { sessions, activeSessionId, error: tabError } = useWeatherTabs();
   const activeSession = sessions.find((s) => s.id === activeSessionId);
 
-  const { markets, weather: wsWeather, isConnected, error: wsError } = useWeatherWebSocket(
+  const { markets, weather: wsWeather, tokenPrices, isConnected, error: wsError } = useWeatherWebSocket(
     activeSessionId || '',
     activeSession?.slug || ''
   );
@@ -45,6 +45,7 @@ export function WeatherScreenWithTabs(props: WeatherScreenWithTabsProps) {
             {...props}
             initialUrl={activeSession.event_url}
             wsWeather={wsWeather}
+            tokenPrices={tokenPrices}
           />
         </div>
       )}

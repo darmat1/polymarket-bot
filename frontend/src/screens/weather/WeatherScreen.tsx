@@ -9,6 +9,7 @@ import {
   getWeatherPolymarketWeather,
   listWeatherPolymarketTriggers,
   setWeatherPolymarketTrigger,
+  updateWeatherPolymarketTrigger,
 } from "../../shared/api/weather";
 import type { ShellControls } from "../../shared/types/app";
 import type {
@@ -30,7 +31,8 @@ type WeatherScreenProps = {
   addToast: AddToast;
   shellControls: ShellControls;
   initialUrl?: string;
-  wsWeather?: { temperature_c: number; rounded_c: number; temperature_native?: number; rounded_native?: number; unit?: 'F' | 'C' } | null;
+  wsWeather?: { temperature_c: number; rounded_c: number; temperature_native?: number; rounded_native?: number; unit?: 'F' | 'C'; daily_max_native?: number | null } | null;
+  tokenPrices?: Map<string, { bid: number; ask: number }>;
 };
 
 type PendingSellStateLike = {
@@ -64,7 +66,7 @@ type WeatherMarketDetailsPanelProps = {
 
 const DEFAULT_URL = "https://polymarket.com/event/highest-temperature-in-moscow-on-may-11-2026";
 
-export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather }: WeatherScreenProps) {
+export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather, tokenPrices = new Map() }: WeatherScreenProps) {
   const [url, setUrl] = useState(initialUrl || DEFAULT_URL);
   const [event, setEvent] = useState<WeatherPolymarketEventPayload | null>(null);
   const [weather, setWeather] = useState<WeatherPolymarketWeather | null>(null);
@@ -78,6 +80,8 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather }
   const [triggerAmount, setTriggerAmount] = useState("1");
   const [exitPrice, setExitPrice] = useState("0.99");
   const [exitMinutes, setExitMinutes] = useState("10");
+  const [buyPrevNo, setBuyPrevNo] = useState(true);
+  const [pendingChecks, setPendingChecks] = useState<Record<string, boolean>>({});
 
   const airport = event?.airport ?? null;
   const activeMarkets = useMemo(
@@ -187,6 +191,7 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather }
         slug: event?.slug ?? null,
         exit_price: Number.isFinite(exitPriceVal) ? exitPriceVal : 0.99,
         exit_minutes: Number.isFinite(exitMinutesVal) ? exitMinutesVal : 10,
+        buy_prev_no: buyPrevNo,
       });
       addToast("success", "Trigger set", payload.message);
       await refreshTriggers(airport.icao);
@@ -197,7 +202,7 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather }
         nextError instanceof Error ? nextError.message : "Failed to set trigger",
       );
     }
-  }, [addToast, airport?.icao, event?.slug, exitMinutes, exitPrice, refreshTriggers, triggerAmount]);
+  }, [addToast, airport?.icao, buyPrevNo, event?.slug, exitMinutes, exitPrice, refreshTriggers, triggerAmount]);
 
   const handleQuickTrigger = useCallback(async () => {
     if (!event || !airport?.icao) {
@@ -342,12 +347,10 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather }
                 </strong>
               </div>
               <div className="weather-poly-stat">
-                <span>Rounded</span>
-                <strong>
-                  {weather
-                    ? weather.unit === "F"
-                      ? `${weather.rounded_native ?? weather.rounded_c}°F`
-                      : `${weather.rounded_c}°C`
+                <span>Max today</span>
+                <strong style={{ color: weather?.daily_max_native != null ? "#fbbf24" : undefined }}>
+                  {weather?.daily_max_native != null
+                    ? `${weather.daily_max_native}°${weather.unit ?? "C"}`
                     : "—"}
                 </strong>
               </div>
@@ -419,13 +422,76 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather }
                   </button>
                 </div>
 
-                <p className="status">
-                  {triggers.length > 0
-                    ? triggers
-                        .map((trigger) => `>=${trigger.temp}°C (${trigger.amount} USDC)${trigger.executed ? " ✓" : ""}`)
-                        .join(", ")
-                    : "No active triggers"}
-                </p>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 4 }}>
+                  {triggers.length === 0 ? (
+                    <span className="status">No active triggers</span>
+                  ) : triggers.map((trigger) => {
+                    const yesPrice = tokenPrices.get(trigger.token_id);
+                    const sortedMarkets = [...(event?.markets ?? [])]
+                      .map((m) => ({ ...m, parsedTemp: parseFloat(String(m.question ?? "").match(/([0-9]+(?:\.[0-9]+)?)\s*°/)?.[1] ?? "NaN") }))
+                      .filter((m) => !isNaN(m.parsedTemp))
+                      .sort((a, b) => a.parsedTemp - b.parsedTemp);
+                    const idx = sortedMarkets.findIndex((m) => m.yes_token_id === trigger.token_id);
+                    const prevNoTokenId = idx > 0 ? sortedMarkets[idx - 1].no_token_id : null;
+                    const noPrice = prevNoTokenId ? tokenPrices.get(prevNoTokenId) : null;
+                    const yesAsk = yesPrice?.ask;
+                    const noAsk = noPrice?.ask;
+                    const isPrevNoExpensive = noAsk != null && noAsk >= 0.80;
+                    return (
+                      <div key={trigger.token_id} style={{
+                        display: "grid",
+                        gridTemplateColumns: "max-content 1fr auto auto auto",
+                        alignItems: "center",
+                        gap: "6px 12px",
+                        padding: "5px 8px",
+                        borderRadius: 6,
+                        background: "rgba(255,255,255,0.04)",
+                        fontSize: "0.88em",
+                      }}>
+                        {/* Checkbox + label */}
+                        <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", whiteSpace: "nowrap" }}>
+                          <input
+                            type="checkbox"
+                            checked={trigger.id && trigger.id in pendingChecks ? pendingChecks[trigger.id] : trigger.buy_prev_no !== false}
+                            style={{ width: "auto", cursor: "pointer", accentColor: "#4ade80" }}
+                            onChange={async (e) => {
+                              if (!trigger.id) return;
+                              const newVal = e.target.checked;
+                              setPendingChecks((prev) => ({ ...prev, [trigger.id!]: newVal }));
+                              try {
+                                await updateWeatherPolymarketTrigger(trigger.id, newVal);
+                                if (airport?.icao) await refreshTriggers(airport.icao);
+                              } finally {
+                                setPendingChecks((prev) => { const next = { ...prev }; delete next[trigger.id!]; return next; });
+                              }
+                            }}
+                          />
+                          <span style={{ color: "#64748b", fontSize: "0.82em" }}>prev NO</span>
+                        </label>
+                        {/* Temp + amount */}
+                        <span style={{ color: "#e2e8f0", fontWeight: 500 }}>
+                          {trigger.temp}°C&nbsp;
+                          <span style={{ color: "#94a3b8", fontWeight: 400 }}>({trigger.amount} USDC)</span>
+                          {trigger.executed && <span style={{ color: "#4ade80", marginLeft: 4 }}>✓</span>}
+                        </span>
+                        {/* YES price */}
+                        <span style={{ color: yesAsk != null ? "#4ade80" : "#64748b", minWidth: 48, textAlign: "right" }}>
+                          {yesAsk != null ? `YES ${Math.round(yesAsk * 100)}¢` : "YES —"}
+                        </span>
+                        {/* prev NO price */}
+                        {trigger.buy_prev_no !== false ? (
+                          <span style={{ color: isPrevNoExpensive ? "#f87171" : "#94a3b8", minWidth: 64, textAlign: "right" }}>
+                            {noAsk != null ? `NO ${Math.round(noAsk * 100)}¢${isPrevNoExpensive ? " ⚠" : ""}` : "NO —"}
+                          </span>
+                        ) : (
+                          <span style={{ color: "#475569", minWidth: 64, textAlign: "right", fontStyle: "italic" }}>no prev NO</span>
+                        )}
+                        {/* Executed label or placeholder */}
+                        <span style={{ minWidth: 8 }} />
+                      </div>
+                    );
+                  })}
+                </div>
               </>
             ) : null}
           </section>
@@ -440,18 +506,32 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather }
 
             <div className="markets">
               {activeMarkets.map((market) => {
-                const yesPercent = Math.round(market.yes_price * 100);
                 // Match both °F and °C; for ranges like "56-57°F" take the lower (first) number
                 const thresholdMatch = market.question.match(/(\d+(?:\.\d+)?)(?:\s*[-–]\s*\d+(?:\.\d+)?)?\s*°([CF])/i);
                 const threshold = thresholdMatch ? Math.round(Number(thresholdMatch[1])) : null;
                 const marketUnit = thresholdMatch ? thresholdMatch[2].toUpperCase() : (weather?.unit ?? "C");
+                // Determine comparison operator from market question
+                const q = market.question ?? "";
+                const triggerOp = /or higher|or above|and above|or more/i.test(q) ? "≥"
+                  : /or lower|or below|and below|or less|or under/i.test(q) ? "≤"
+                  : "=";
+
+                // Use real-time ask prices when available (subscribed for trigger markets)
+                const rtYes = market.yes_token_id ? tokenPrices.get(market.yes_token_id) : null;
+                const rtNo = market.no_token_id ? tokenPrices.get(market.no_token_id) : null;
+                const yesAskCents = rtYes ? Math.round(rtYes.ask * 100) : null;
+                const noAskCents = rtNo ? Math.round(rtNo.ask * 100) : null;
+                const yesStaticPct = Math.round(market.yes_price * 100);
+                const noStaticPct = 100 - yesStaticPct;
 
                 return (
                   <div key={`${event.slug}-${market.question}`} className="market-card">
                     <span className="market-slug">{event.slug}</span>
                     <strong>{market.question}</strong>
                     <span className="market-category">
-                      YES {yesPercent}% / NO {100 - yesPercent}%
+                      {yesAskCents != null
+                        ? <><span style={{ color: "#4ade80" }}>YES {yesAskCents}¢</span>{" / "}<span style={{ color: "#f87171" }}>NO {noAskCents != null ? `${noAskCents}¢` : `${noStaticPct}%`}</span></>
+                        : `YES ${yesStaticPct}% / NO ${noStaticPct}%`}
                     </span>
                     <span className="market-outcomes">
                       Vol ${market.volume.toFixed(2)} | Liq ${market.liquidity.toFixed(2)}
@@ -466,7 +546,7 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather }
                         }
                       }}
                     >
-                      Buy YES at ≥ {threshold ?? "?"}°{marketUnit}
+                      Buy YES at {triggerOp} {threshold ?? "?"}°{marketUnit}
                     </button>
                   </div>
                 );

@@ -139,6 +139,9 @@ export interface UserWebSocketAuthPayload {
 
 const extractionCache = new Map<string, { data: any; expires: number }>();
 const EXTRACTION_TTL = 30 * 60 * 1000; // 30 minutes
+
+// Cache negRisk status to avoid repeated API calls before each order (latency killer)
+const negRiskCache = new Map<string, boolean>();
 const GROQ_RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1000;
 
 let groqCooldownUntil = 0;
@@ -614,8 +617,16 @@ export async function placeLimitOrder(params: {
 
     const client = await getRuntimeTradingClient();
     
-    // Auto-detect negRisk if not provided
-    const isNegRisk = params.negRisk !== undefined ? params.negRisk : await client.getNegRisk(params.tokenId);
+    // Auto-detect negRisk with cache to avoid extra API round-trip before order
+    let isNegRisk: boolean;
+    if (params.negRisk !== undefined) {
+      isNegRisk = params.negRisk;
+    } else if (negRiskCache.has(params.tokenId)) {
+      isNegRisk = negRiskCache.get(params.tokenId)!;
+    } else {
+      isNegRisk = await client.getNegRisk(params.tokenId);
+      negRiskCache.set(params.tokenId, isNegRisk);
+    }
     console.log(`[Trading] Token ${params.tokenId} negRisk status: ${isNegRisk}`);
 
     if (settings.dryRun) {
@@ -642,6 +653,7 @@ export async function placeMarketOrder(params: {
   amount: number;
   tickSize?: "0.1" | "0.01" | "0.001" | "0.0001";
   negRisk?: boolean;
+  orderType?: "FOK" | "FAK";
 }): Promise<unknown> {
   const settings = loadSettings();
 
@@ -652,7 +664,16 @@ export async function placeMarketOrder(params: {
   }
 
   const client = await getRuntimeTradingClient();
-  const isNegRisk = params.negRisk !== undefined ? params.negRisk : await client.getNegRisk(params.tokenId);
+  // Use cached negRisk to avoid extra API round-trip before order
+  let isNegRisk: boolean;
+  if (params.negRisk !== undefined) {
+    isNegRisk = params.negRisk;
+  } else if (negRiskCache.has(params.tokenId)) {
+    isNegRisk = negRiskCache.get(params.tokenId)!;
+  } else {
+    isNegRisk = await client.getNegRisk(params.tokenId);
+    negRiskCache.set(params.tokenId, isNegRisk);
+  }
   console.log(`[Trading] Token ${params.tokenId} negRisk status: ${isNegRisk}`);
 
   if (settings.dryRun) {
@@ -663,11 +684,19 @@ export async function placeMarketOrder(params: {
       amount: params.amount,
       tick_size: params.tickSize ?? "0.01",
       negRisk: isNegRisk,
+      orderType: params.orderType ?? "FOK",
     };
   }
 
+  const { OrderType } = await import("@polymarket/clob-client");
+  const orderTypeEnum = params.orderType === "FAK" ? OrderType.FAK : OrderType.FOK;
+
   return client.placeMarketOrder({
-    ...params,
+    tokenId: params.tokenId,
+    side: params.side,
+    amount: params.amount,
+    tickSize: (params.tickSize as any) ?? "0.01",
     negRisk: isNegRisk,
+    orderType: orderTypeEnum,
   });
 }

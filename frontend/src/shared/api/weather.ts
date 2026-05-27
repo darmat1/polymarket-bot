@@ -30,6 +30,7 @@ export function setWeatherPolymarketTrigger(payload: {
   slug?: string | null;
   exit_price?: number;
   exit_minutes?: number;
+  buy_prev_no?: boolean;
 }) {
   return postJson<WeatherPolymarketSetTriggerPayload>("/api/weather-polymarket/triggers", payload);
 }
@@ -39,6 +40,14 @@ export function listWeatherPolymarketTriggers(icao: string) {
   return getJson<WeatherPolymarketTriggersPayload>(
     `/api/weather-polymarket/triggers?${params.toString()}`,
   );
+}
+
+export function updateWeatherPolymarketTrigger(id: string, buy_prev_no: boolean) {
+  return fetch("/api/weather-polymarket/triggers", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id, buy_prev_no }),
+  }).then((r) => r.json());
 }
 
 export function clearWeatherPolymarketTriggers(icao: string, token_id?: string) {

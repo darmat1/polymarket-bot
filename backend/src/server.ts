@@ -176,12 +176,14 @@ const server = createServer(async (req, res) => {
         slug?: string | null;
         exit_price?: number;
         exit_minutes?: number;
+        buy_prev_no?: boolean;
       };
       if (!body.token_id || body.temp_threshold === undefined || !body.icao) {
         return json(res, 400, { error: "token_id, temp_threshold, and icao are required" });
       }
       const exitPrice = Number(body.exit_price ?? 0.99);
       const exitMinutes = Number(body.exit_minutes ?? 10);
+      const buyPrevNo = body.buy_prev_no !== false; // default true
       const trigger = setWeatherPolymarketTrigger({
         token_id: String(body.token_id),
         temp_threshold: Number(body.temp_threshold),
@@ -200,11 +202,32 @@ const server = createServer(async (req, res) => {
           );
           const sessionId = sessionRow.rows[0]?.id;
           if (sessionId) {
-            await db.query(
-              `INSERT INTO weather_triggers (session_id, token_id, temp, amount, exit_price, exit_minutes)
-               VALUES ($1, $2, $3, $4, $5, $6)`,
-              [sessionId, body.token_id, trigger.temp, trigger.amount, exitPrice, exitMinutes]
+            const sessionData = await db.query(
+              `SELECT event_data FROM weather_sessions WHERE id = $1`,
+              [sessionId]
             );
+            // Detect boundary markets ("37°C or higher", "below 28°C") — use >= / <= instead of ===
+            const eventMarkets: any[] = sessionData.rows[0]?.event_data?.markets ?? [];
+            const triggerMarket = eventMarkets.find((m: any) =>
+              m.clobTokenIds?.[0] === body.token_id || m.yes_token_id === body.token_id
+            );
+            const question: string = triggerMarket?.question ?? "";
+            const isBoundary = /or higher|or above|and above|or more|or lower|or below|and below|or less/i.test(question);
+
+            await db.query(
+              `INSERT INTO weather_triggers (session_id, token_id, temp, amount, exit_price, exit_minutes, buy_prev_no, is_boundary)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+              [sessionId, body.token_id, trigger.temp, trigger.amount, exitPrice, exitMinutes, buyPrevNo, isBoundary]
+            );
+            if (isBoundary) {
+              console.log(`[Trigger] Boundary market detected: "${question}" → using >= comparison`);
+            }
+            // Track YES token + same-market NO token + prev-temp NO token for real-time prices
+            const { addTrackedTokens, findNoTokenForYes, findPrevNoToken } = await import("./weather-price-tracker.js");
+            const eventData = sessionData.rows[0]?.event_data;
+            const noToken = findNoTokenForYes(String(body.token_id), eventData);
+            const prevNoToken = findPrevNoToken(String(body.token_id), eventData);
+            addTrackedTokens(sessionId, [String(body.token_id), noToken, prevNoToken].filter(Boolean) as string[]);
           }
         } catch (dbErr) {
           console.warn("[Trigger] Failed to persist trigger to DB:", (dbErr as Error).message);
@@ -226,7 +249,7 @@ const server = createServer(async (req, res) => {
       const db = getDb();
       const triggersResult = await db.query(
         `SELECT wt.id, wt.token_id, wt.temp, wt.amount, wt.executed, wt.executed_at,
-                wt.closed, wt.exit_price, wt.exit_minutes
+                wt.closed, wt.exit_price, wt.exit_minutes, wt.buy_prev_no, wt.is_boundary
          FROM weather_triggers wt
          JOIN weather_sessions ws ON ws.id = wt.session_id
          WHERE ws.icao = \$1 AND wt.closed = FALSE
@@ -242,8 +265,22 @@ const server = createServer(async (req, res) => {
         executed_at: r.executed_at,
         exit_price: Number(r.exit_price),
         exit_minutes: Number(r.exit_minutes),
+        buy_prev_no: r.buy_prev_no !== false,
       }));
       return json(res, 200, { triggers });
+    }
+
+    if (requestUrl.pathname === "/api/weather-polymarket/triggers" && req.method === "PATCH") {
+      const body = await readJsonBody(req) as { id?: string; buy_prev_no?: boolean };
+      if (!body.id || body.buy_prev_no === undefined) {
+        return json(res, 400, { error: "id and buy_prev_no are required" });
+      }
+      const db = getDb();
+      await db.query(
+        `UPDATE weather_triggers SET buy_prev_no = $1 WHERE id = $2`,
+        [body.buy_prev_no, body.id]
+      );
+      return json(res, 200, { status: "ok" });
     }
 
     if (requestUrl.pathname === "/api/weather-polymarket/triggers" && req.method === "DELETE") {
@@ -652,6 +689,9 @@ async function start(): Promise<void> {
   // Start position monitor (take-profit at 95¢, timeout after 10min)
   const { startPositionMonitor, stopPositionMonitor } = await import("./weather-position-monitor.js");
   await startPositionMonitor();
+
+  const { initPriceTrackerFromDb } = await import("./weather-price-tracker.js");
+  await initPriceTrackerFromDb();
 
   // Clean up on shutdown
   process.on("SIGINT", async () => {

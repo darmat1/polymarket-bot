@@ -41,11 +41,13 @@ export function useWeatherWebSocket(
 ): {
   markets: EnrichedMarket[];
   weather: WeatherUpdate | null;
+  tokenPrices: Map<string, { bid: number; ask: number }>;
   isConnected: boolean;
   error: string | null;
 } {
   const [markets, setMarkets] = useState<EnrichedMarket[]>([]);
   const [weather, setWeather] = useState<WeatherUpdate | null>(null);
+  const [tokenPrices, setTokenPrices] = useState<Map<string, { bid: number; ask: number }>>(new Map());
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -88,6 +90,15 @@ export function useWeatherWebSocket(
               });
             } else if (message.type === 'temperature_update' && message.weather) {
               setWeather(message.weather);
+            } else if (message.type === 'trigger_price_update') {
+              const msg = message as any;
+              if (msg.tokenId) {
+                setTokenPrices((prev) => {
+                  const next = new Map(prev);
+                  next.set(msg.tokenId, { bid: msg.bid ?? 0, ask: msg.ask ?? 0 });
+                  return next;
+                });
+              }
             } else if (message.type === 'error') {
               setError(message.error || 'WebSocket error');
             }
@@ -137,5 +148,5 @@ export function useWeatherWebSocket(
     };
   }, [sessionId, slug]);
 
-  return { markets, weather, isConnected, error };
+  return { markets, weather, tokenPrices, isConnected, error };
 }

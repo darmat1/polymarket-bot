@@ -35,6 +35,7 @@ export type WeatherTemperaturePayload = {
   temperature_native: number;
   rounded_native: number;
   unit: "F" | "C";
+  daily_max_native: number | null; // today's observed max in native unit
 };
 
 export type WeatherPolymarketTrigger = {
@@ -154,6 +155,52 @@ function cToF(c: number): number {
   return c * 9 / 5 + 32;
 }
 
+// Cache: icao -> { data: obs[], fetchedAt: number }
+const metarHistoryCache = new Map<string, { data: any[]; fetchedAt: number }>();
+const METAR_CACHE_TTL = 5 * 60 * 1000; // 5 minutes — METAR reports come every ~30min
+
+async function getDailyMaxNative(icao: string, timezone: string, unit: "F" | "C"): Promise<number | null> {
+  try {
+    const now = Date.now();
+    const cached = metarHistoryCache.get(icao);
+    let observations: any[];
+
+    if (cached && now - cached.fetchedAt < METAR_CACHE_TTL && cached.data.length > 0) {
+      observations = cached.data;
+    } else {
+      const url = `https://aviationweather.gov/api/data/metar?ids=${encodeURIComponent(icao)}&format=json&hours=36`;
+      const res = await fetch(url, { headers: { "User-Agent": "WeatherPolymarketBot/1.0" } });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (!Array.isArray(data) || data.length === 0) return null;
+      metarHistoryCache.set(icao, { data, fetchedAt: now });
+      observations = data;
+    }
+
+    // Today's date in the city's local timezone (YYYY-MM-DD)
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: timezone });
+
+    // Filter to today only — avoid yesterday's data
+    const todayObs = observations.filter((obs: any) => {
+      const d = new Date((obs.obsTime ?? 0) * 1000);
+      return d.toLocaleDateString("en-CA", { timeZone: timezone }) === today;
+    });
+
+    if (todayObs.length === 0) return null;
+
+    let maxC = -Infinity;
+    for (const obs of todayObs) {
+      const t = typeof obs.temp === "number" ? obs.temp : parseFloat(String(obs.temp ?? ""));
+      if (Number.isFinite(t) && t > maxC) maxC = t;
+    }
+
+    if (maxC === -Infinity) return null;
+    return unit === "F" ? Math.round((maxC * 9) / 5 + 32) : Math.round(maxC);
+  } catch {
+    return null;
+  }
+}
+
 export async function getCurrentTemperature(icao: string, unitHint?: "F" | "C"): Promise<WeatherTemperaturePayload | null> {
   const normalized = icao.trim().toUpperCase();
   let tempC = await getTemperatureFromNws(normalized);
@@ -177,6 +224,14 @@ export async function getCurrentTemperature(icao: string, unitHint?: "F" | "C"):
   const station = matchWeatherStation(normalized);
   const unit = station?.unit ?? unitHint ?? "C";
   const tempNative = unit === "F" ? cToF(tempC) : tempC;
+  const timezone = station?.timezone ?? "UTC";
+
+  // Fetch today's daily max in background (non-blocking) — use current temp as lower bound
+  const daily_max_native = await getDailyMaxNative(normalized, timezone, unit);
+  // Ensure current reading is not less than daily max (e.g. if history fetch fails)
+  const reportedMax = daily_max_native !== null
+    ? Math.max(daily_max_native, Math.round(tempNative))
+    : null;
 
   return {
     temperature_c: round(tempC, 1),
@@ -184,6 +239,7 @@ export async function getCurrentTemperature(icao: string, unitHint?: "F" | "C"):
     temperature_native: round(tempNative, 1),
     rounded_native: Math.round(tempNative),
     unit,
+    daily_max_native: reportedMax,
   };
 }
 

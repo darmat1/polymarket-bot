@@ -153,6 +153,21 @@ export function pushTemperatureUpdate(sessionId: string, weather: unknown): void
   }
 }
 
+export function pushPriceUpdate(sessionId: string, tokenId: string, bid: number, ask: number): void {
+  for (const sub of activeSubscriptions.values()) {
+    if (sub.sessionId === sessionId) {
+      sub.emitter.emit('price_update', {
+        type: 'trigger_price_update',
+        sessionId,
+        tokenId,
+        bid,
+        ask,
+      });
+      break;
+    }
+  }
+}
+
 export function getActiveSubscriptions(): Array<{ sessionId: string; slug: string }> {
   return Array.from(activeSubscriptions.values()).map((s) => ({
     sessionId: s.sessionId,

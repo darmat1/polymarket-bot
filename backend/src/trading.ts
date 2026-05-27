@@ -53,6 +53,7 @@ export class TradingClient extends BasePolymarketClient {
     side: "buy" | "sell";
     tickSize?: string;
     negRisk?: boolean;
+    orderType?: import("@polymarket/clob-client").OrderType.FOK | import("@polymarket/clob-client").OrderType.FAK;
   }): Promise<unknown> {
     return super.placeMarketOrder(params);
   }
