@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
+import { getMarketBotStatus, getStationHistory, updateBotSettings } from "../../shared/api/positions";
 import {
   getMarketDetails as getMarketDetailsRequest,
   clearWeatherPolymarketTriggers,
@@ -565,12 +566,25 @@ export function WeatherScreen({ addToast, shellControls, initialUrl, wsWeather, 
 
 export function WeatherMarketDetailsPanel({
   marketSlug,
+  activeBotSlugs,
+  botLoading,
+  expectHigher,
   onBack,
+  onExpectHigherChange,
+  onToggleBot,
 }: WeatherMarketDetailsPanelProps) {
   const [details, setDetails] = useState<MarketDetailsPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [todayObs, setTodayObs] = useState<Array<{ time: string; temp: number }>>([]);
+  const [botLogs, setBotLogs] = useState<Array<{ timestamp: number; message: string; type: string }>>([]);
+  const [lastPollTime, setLastPollTime] = useState<number | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const obsTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const isBotActive = activeBotSlugs.includes(marketSlug);
+
+  // Load market details (question + groq extraction)
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -578,24 +592,94 @@ export function WeatherMarketDetailsPanel({
       setError(null);
       try {
         const payload = await getMarketDetailsRequest(marketSlug);
-        if (!cancelled) {
-          setDetails(payload);
-        }
-      } catch (nextError) {
-        if (!cancelled) {
-          setError(nextError instanceof Error ? nextError.message : "Failed to load market details");
-        }
+        if (!cancelled) setDetails(payload);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load market details");
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     }
     void load();
+    return () => { cancelled = true; };
+  }, [marketSlug]);
+
+  // Load initial bot logs + lastPollTime from REST on mount
+  useEffect(() => {
+    getMarketBotStatus(marketSlug).then(s => {
+      setBotLogs(s.logs ?? []);
+      setLastPollTime(s.lastPollTime ?? null);
+    }).catch(() => {});
+  }, [marketSlug]);
+
+  // WebSocket — real-time bot_log and bot_heartbeat events
+  useEffect(() => {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${protocol}//${window.location.host}`);
+    wsRef.current = ws;
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(String(event.data)) as any;
+        if (msg.marketSlug !== marketSlug) return;
+
+        if (msg.type === "bot_log" && msg.log) {
+          setBotLogs(prev => {
+            const next = [msg.log, ...prev];
+            return next.slice(0, 50);
+          });
+        }
+        if (msg.type === "bot_heartbeat" && msg.lastPollTime) {
+          setLastPollTime(msg.lastPollTime);
+        }
+      } catch { /* ignore */ }
+    };
+
     return () => {
-      cancelled = true;
+      ws.close();
+      wsRef.current = null;
     };
   }, [marketSlug]);
+
+  // Fetch temperature table — refresh every 30s independently
+  const refreshObs = useCallback(async (stationCode: string, tz: string) => {
+    try {
+      const historyRes = await getStationHistory(stationCode);
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: tz });
+      const filtered = (historyRes.history ?? [])
+        .filter(obs => {
+          const d = new Date(obs.obsTime * 1000);
+          return d.toLocaleDateString("en-CA", { timeZone: tz }) === today;
+        })
+        .map(obs => ({
+          time: new Date(obs.obsTime * 1000).toLocaleTimeString("en-GB", {
+            timeZone: tz,
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+          temp: obs.temp,
+        }));
+      setTodayObs(filtered);
+    } catch { /* best-effort */ }
+  }, []);
+
+  useEffect(() => {
+    const stationCode = details?.extractedData?.station_code;
+    const tz = details?.extractedData?.timezone ?? "UTC";
+    if (!stationCode) return;
+
+    void refreshObs(stationCode, tz);
+    obsTimerRef.current = setInterval(() => void refreshObs(stationCode, tz), 30_000);
+    return () => {
+      if (obsTimerRef.current) clearInterval(obsTimerRef.current);
+    };
+  }, [details?.extractedData?.station_code, details?.extractedData?.timezone, refreshObs]);
+
+  const logColor: Record<string, string> = {
+    info: "#ccc",
+    warn: "#ffd93d",
+    error: "#ff6b6b",
+    success: "#6bcb77",
+  };
 
   return (
     <section className="panel">
@@ -608,10 +692,165 @@ export function WeatherMarketDetailsPanel({
           Back to Positions
         </button>
       </div>
+
       <p className={`status ${error ? "status-error" : ""}`}>
         {error ? error : loading ? "Loading market details..." : details?.question ?? "No details"}
       </p>
       {details?.description ? <p className="status-muted">{details.description}</p> : null}
+
+      {/* Bot controls */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
+        <button
+          className={`button ${isBotActive ? "button-danger" : "button-primary"}`}
+          disabled={botLoading}
+          type="button"
+          onClick={() => void onToggleBot(marketSlug, isBotActive)}
+        >
+          {botLoading ? "..." : isBotActive ? "Stop Bot" : "Start Bot"}
+        </button>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#ccc", cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={expectHigher}
+            onChange={e => {
+              const val = e.target.checked;
+              onExpectHigherChange(val);
+              if (isBotActive) {
+                updateBotSettings(marketSlug, { expectHigher: val }).catch(() => {});
+              }
+            }}
+          />
+          Hold through target
+        </label>
+        {isBotActive && (
+          <span style={{ fontSize: 12, color: "#6bcb77" }}>
+            ● Bot active{lastPollTime ? ` · last poll ${new Date(lastPollTime).toLocaleTimeString()}` : ""}
+          </span>
+        )}
+      </div>
+
+      {/* Groq extraction */}
+      {details?.extractedData ? (
+        <div style={{ marginTop: 16 }}>
+          <p className="section-kicker" style={{ marginBottom: 8 }}>Groq Extraction</p>
+          <pre style={{
+            background: "rgba(255,255,255,0.05)",
+            border: "1px solid rgba(255,255,255,0.1)",
+            borderRadius: 8,
+            padding: "12px 16px",
+            fontSize: 12,
+            color: "#a8ff78",
+            overflowX: "auto",
+            lineHeight: 1.6,
+          }}>
+            {(() => {
+              const d = details.extractedData!;
+              const urlFields = new Set(["url", "res_source"]);
+              const lines = Object.entries(d).map(([key, val]) => {
+                const isUrl = urlFields.has(key) && typeof val === "string" && val.startsWith("http");
+                return (
+                  <div key={key}>
+                    {"  "}<span style={{ color: "#79c0ff" }}>"{key}"</span>:{" "}
+                    {isUrl ? (
+                      <a href={val as string} target="_blank" rel="noopener noreferrer"
+                        style={{ color: "#a8ff78", textDecoration: "underline" }}>
+                        "{val}"
+                      </a>
+                    ) : (
+                      <span>{JSON.stringify(val)}</span>
+                    )}
+                  </div>
+                );
+              });
+              return <>{`{\n`}{lines}{`}`}</>;
+            })()}
+          </pre>
+        </div>
+      ) : details && !loading ? (
+        <p className="status-muted" style={{ marginTop: 12, color: "#ff6b6b" }}>
+          ⚠ Groq extraction returned no data
+        </p>
+      ) : null}
+
+      {/* Today's temperature table */}
+      {todayObs.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <p className="section-kicker" style={{ marginBottom: 8 }}>
+            Today's Temperatures ({todayObs.length} observations)
+          </p>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                  <th style={{ textAlign: "left", padding: "4px 12px", color: "#888" }}>Time</th>
+                  <th style={{ textAlign: "right", padding: "4px 12px", color: "#888" }}>Temp</th>
+                </tr>
+              </thead>
+              <tbody>
+                {todayObs.map((obs, i) => {
+                  const unit = details?.extractedData?.t_sys ?? "C";
+                  const target = details?.extractedData?.t ?? null;
+                  // obs.temp is always Celsius from METAR — convert to market unit for display
+                  const displayTemp = unit === "F" ? (obs.temp * 9 / 5 + 32) : obs.temp;
+                  const displayPeak = unit === "F" ? (todayObs[0].temp * 9 / 5 + 32) : todayObs[0].temp;
+                  const isMax = displayTemp >= displayPeak - 0.01;
+                  const isClose = target !== null && Math.abs(displayTemp - target) <= 2;
+                  return (
+                    <tr
+                      key={i}
+                      style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}
+                    >
+                      <td style={{ padding: "4px 12px", color: "#aaa" }}>{obs.time}</td>
+                      <td style={{
+                        padding: "4px 12px",
+                        textAlign: "right",
+                        fontWeight: isMax ? 700 : 400,
+                        color: isClose ? "#ffd93d" : isMax ? "#6bcb77" : "#ccc",
+                      }}>
+                        {displayTemp % 1 === 0 ? displayTemp : displayTemp.toFixed(1)}°{unit}
+                        {isMax && i === 0 ? " ↑ peak" : ""}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Bot activity log */}
+      {(botLogs.length > 0 || lastPollTime) && (
+        <div style={{ marginTop: 20 }}>
+          <p className="section-kicker" style={{ marginBottom: 8 }}>
+            Bot Activity Log
+            {lastPollTime ? (
+              <span style={{ fontWeight: 400, color: "#888", marginLeft: 8 }}>
+                — last poll {new Date(lastPollTime).toLocaleTimeString()}
+              </span>
+            ) : null}
+          </p>
+          <div style={{
+            background: "rgba(0,0,0,0.3)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            borderRadius: 8,
+            padding: "8px 0",
+            maxHeight: 260,
+            overflowY: "auto",
+            fontSize: 11,
+            fontFamily: "monospace",
+          }}>
+            {botLogs.map((log, i) => (
+              <div key={i} style={{ padding: "3px 12px", color: logColor[log.type] ?? "#ccc" }}>
+                <span style={{ color: "#555", marginRight: 8 }}>
+                  {new Date(log.timestamp).toLocaleTimeString()}
+                </span>
+                {log.message}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </section>
   );
 }

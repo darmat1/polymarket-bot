@@ -1,8 +1,8 @@
 # Polymarket Weather Bot Rules
 
 ## Bot Logic Rules
-- **Polling Interval**: The active bot task polling interval MUST be exactly **65 seconds** (65000ms). Do not change this without explicit user permission.
-- **Weather Cache**: Weather station history cache TTL MUST be **60 seconds** (60000ms) to ensure fresh data for the 65s polling cycle.
+- **Polling Interval**: The bot uses **adaptive polling** based on temperature diff to target: >10° → 15min, >5° → 10min, >2° → 2min, >1° → 30sec, ≤1° → METAR-window-aware (15s during :00-:05 and :30-:35 min of each hour, 60s otherwise). Do not change this without explicit user permission.
+- **Weather Cache**: Weather station history cache TTL MUST be **25 seconds** (25000ms) to ensure fresh data for the fastest 30s poll interval.
 - **Temperature Ranges**: If a market uses a temperature range (e.g., "62-63°F"), ALWAYS use the **LOWER** value of the range as the target `t`. This applies to both AI extraction and regex parsing.
 - **Trading Safety**: Always check `dryRun` setting before placing real orders.
 

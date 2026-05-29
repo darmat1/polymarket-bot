@@ -42,9 +42,11 @@ export class ClobPublicClient {
     const bids = book.bids ?? [];
     const asks = book.asks ?? [];
 
+    // Polymarket CLOB sorts bids ascending (lowest first) and asks descending (highest first)
+    // so best bid = bids[last], best ask = asks[last]
     return new TopOfBook(
-      bids.length > 0 ? extractPrice(bids[0]) : null,
-      asks.length > 0 ? extractPrice(asks[0]) : null,
+      bids.length > 0 ? extractPrice(bids[bids.length - 1]) : null,
+      asks.length > 0 ? extractPrice(asks[asks.length - 1]) : null,
     );
   }
 

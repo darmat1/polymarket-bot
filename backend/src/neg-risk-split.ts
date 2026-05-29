@@ -68,7 +68,7 @@ export interface SplitAnalysis {
 }
 
 export function parseEventSlug(url: string): string {
-  const match = url.match(/polymarket\.com\/event\/([^/?#]+)/);
+  const match = url.match(/polymarket\.com(?:\/[a-z]{2})?\/event\/([^/?#]+)/);
   if (!match) throw new Error("Could not parse Polymarket event URL");
   return match[1];
 }

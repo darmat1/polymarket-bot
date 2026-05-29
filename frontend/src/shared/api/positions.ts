@@ -30,3 +30,12 @@ export function activateMarketBot(payload: ActivateMarketBotPayload) {
 export function deactivateMarketBot(marketSlug: string) {
   return postJson<BasicOkPayload>("/api/bot/deactivate", { marketSlug });
 }
+
+export function updateBotSettings(marketSlug: string, patch: { expectHigher?: boolean }) {
+  return postJson<BasicOkPayload>("/api/bot/update-settings", { marketSlug, ...patch });
+}
+
+export function getStationHistory(stationCode: string) {
+  const params = new URLSearchParams({ station: stationCode });
+  return getJson<{ history: Array<{ obsTime: number; temp: number }> }>(`/api/station-history?${params.toString()}`);
+}

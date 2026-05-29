@@ -18,7 +18,7 @@ import { createPublicClient, erc20Abi, formatUnits, http } from "viem";
 import { polygon } from "viem/chains";
 import { ethers } from "ethers";
 
-const CTF_ADDRESS = "0x4d97dcd97ec945f40cf65f87097cae4b54fafa76";
+const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
 const CTF_ABI = [
   "event ConditionPreparation(bytes32 indexed conditionId, address indexed oracle, bytes32 indexed questionId, uint outcomeSlotCount)",
 ];
@@ -332,9 +332,10 @@ export async function getAccountSummary(): Promise<AccountSummaryPayload> {
     ? settings.privateKey
     : `0x${settings.privateKey}`;
   const accountAddress = new ethers.Wallet(normalized).address;
+  const rpcUrl = process.env.POLYGON_RPC_URL || "https://polygon.llamarpc.com";
   const client = createPublicClient({
     chain: polygon,
-    transport: http(),
+    transport: http(rpcUrl),
   });
 
   const balance = await client.readContract({
@@ -480,10 +481,19 @@ function normalizeWeatherExtraction(payload: any, context?: {
     ? payload.market_parameters
     : payload;
 
-  const fallbackUrl = context?.marketSlug ? `https://polymarket.com/event/${context.marketSlug}` : null;
+  const fallbackUrl = context?.marketSlug
+    ? `https://polymarket.com/event/${stripTempSuffixFromSlug(context.marketSlug)}`
+    : null;
   const fallbackResSource = extractFirstHttpUrl(
     typeof base?.res_source === "string" ? base.res_source : context?.description,
   );
+
+  const rawUrl = typeof base?.url === "string" ? base.url : fallbackUrl;
+  const cleanUrl = rawUrl ? stripTempSuffixFromUrl(rawUrl) : null;
+
+  const rawResSource = typeof base?.res_source === "string"
+    ? base.res_source.replace(/[.,;:!?]+$/, "")
+    : fallbackResSource;
 
   return {
     city: base?.city ?? base?.location ?? null,
@@ -492,8 +502,8 @@ function normalizeWeatherExtraction(payload: any, context?: {
     t_sys: base?.t_sys ?? base?.temperature_unit ?? null,
     day: base?.day ?? base?.date ?? null,
     station_code: base?.station_code ?? null,
-    url: typeof base?.url === "string" ? base.url : fallbackUrl,
-    res_source: typeof base?.res_source === "string" ? base.res_source : fallbackResSource,
+    url: cleanUrl,
+    res_source: rawResSource,
   };
 }
 
@@ -503,7 +513,29 @@ function extractFirstHttpUrl(value: unknown): string | null {
   }
 
   const match = value.match(/https?:\/\/[^\s)"'>]+/i);
-  return match?.[0] ?? null;
+  if (!match) return null;
+  // Strip trailing punctuation that leaked from surrounding prose
+  return match[0].replace(/[.,;:!?]+$/, "");
+}
+
+/**
+ * Strip the temperature suffix from a Polymarket event slug or URL.
+ * e.g. "highest-temperature-in-paris-on-may-28-2026-32c"
+ *   → "highest-temperature-in-paris-on-may-28-2026"
+ * Handles: -32c, -95f, -62-63f, -100f, etc.
+ */
+function stripTempSuffixFromSlug(slug: string): string {
+  return slug.replace(/-\d+(?:-\d+)?[cf]$/i, "");
+}
+
+function stripTempSuffixFromUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    u.pathname = stripTempSuffixFromSlug(u.pathname);
+    return u.toString();
+  } catch {
+    return stripTempSuffixFromSlug(url);
+  }
 }
 
 function getWeatherExtractionExpiry(now: number, marketEndDateIso?: string | null) {
@@ -647,6 +679,20 @@ export async function placeLimitOrder(params: {
     });
 }
 
+/**
+ * Cancel all open orders for a specific token.
+ * Called before emergency market sells so locked shares are freed first.
+ */
+export async function cancelOpenOrdersForToken(tokenId: string): Promise<number> {
+  const client = await getRuntimeTradingClient();
+  const orders = await client.getOpenOrders({ asset_id: tokenId }, true);
+  const ids: string[] = (orders ?? []).map((o: any) => o.id ?? o.order_id).filter(Boolean);
+  if (ids.length === 0) return 0;
+  await client.cancelOrders(ids);
+  console.log(`[Trading] Cancelled ${ids.length} open order(s) for token ${tokenId}`);
+  return ids.length;
+}
+
 export async function placeMarketOrder(params: {
   tokenId: string;
   side: "buy" | "sell";
@@ -654,10 +700,11 @@ export async function placeMarketOrder(params: {
   tickSize?: "0.1" | "0.01" | "0.001" | "0.0001";
   negRisk?: boolean;
   orderType?: "FOK" | "FAK";
+  skipLimits?: boolean; // true for emergency sells — bypass BOT_MAX_ORDER_USDC
 }): Promise<unknown> {
   const settings = loadSettings();
 
-  if (params.amount > settings.maxOrderUsdc) {
+  if (!params.skipLimits && params.amount > settings.maxOrderUsdc) {
     throw new Error(
       `Order amount ${params.amount.toFixed(2)} exceeds BOT_MAX_ORDER_USDC=${settings.maxOrderUsdc.toFixed(2)}`,
     );
