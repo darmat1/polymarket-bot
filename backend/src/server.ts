@@ -23,7 +23,7 @@ import {
   forceReloadApiCreds,
 } from "./runtime-auth.js";
 import { WebSocketServer, WebSocket } from "ws";
-import { initBotManager, activateBot, deactivateBot, getBotStatus, getAllActiveBots, getOrFetchStationHistory, type BotTask } from "./bot-manager.js";
+import { initBotManager, activateBot, deactivateBot, getBotStatus, getAllActiveBots, getOrFetchStationHistory, updateBotSettings, type BotTask } from "./bot-manager.js";
 import { getEventLog, clearEventLog, logEvent } from "./event-log.js";
 import { loadSettings } from "./config.js";
 import { getDb } from "./db/client.js";
@@ -63,6 +63,7 @@ import {
   getWeatherPolymarketEvent,
   setWeatherPolymarketTrigger,
 } from "./weather-polymarket.js";
+import { analyzeNegRiskEvent, executeNegRiskSplit } from "./neg-risk-split.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const FRONTEND_DIST = join(__dirname, "..", "..", "frontend", "dist");
@@ -410,6 +411,14 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
 
+    if (requestUrl.pathname === "/api/bot/update-settings" && req.method === "POST") {
+      const body = await readJsonBody(req) as any;
+      if (!body.marketSlug) return json(res, 400, { error: "Missing marketSlug" });
+      const updated = updateBotSettings(body.marketSlug, { expectHigher: body.expectHigher });
+      if (!updated) return json(res, 404, { error: "Bot not active" });
+      return json(res, 200, { ok: true });
+    }
+
     if (requestUrl.pathname === "/api/bot/active-slugs" && req.method === "GET") {
       return json(res, 200, { slugs: getAllActiveBots() });
     }
@@ -629,6 +638,40 @@ const server = createServer(async (req, res) => {
         const message = error instanceof Error ? error.message : "Unknown error";
         console.error("[Weather] Delete session error:", error);
         return json(res, 500, { error: message });
+      }
+    }
+
+    // POST /api/split/analyze
+    if (requestUrl.pathname === "/api/split/analyze" && req.method === "POST") {
+      const { eventUrl } = (await readJsonBody(req)) as { eventUrl?: string };
+      if (!eventUrl?.trim()) {
+        return json(res, 400, { error: "eventUrl is required" });
+      }
+      try {
+        const analysis = await analyzeNegRiskEvent(eventUrl.trim());
+        return json(res, 200, analysis);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return json(res, 400, { error: msg });
+      }
+    }
+
+    // POST /api/split/execute
+    if (requestUrl.pathname === "/api/split/execute" && req.method === "POST") {
+      const { conditionId, amountUsdc, binCount } = (await readJsonBody(req)) as {
+        conditionId?: string;
+        amountUsdc?: number;
+        binCount?: number;
+      };
+      if (!conditionId || !amountUsdc || !binCount) {
+        return json(res, 400, { error: "conditionId, amountUsdc, binCount are required" });
+      }
+      try {
+        const result = await executeNegRiskSplit(conditionId, amountUsdc, binCount);
+        return json(res, 200, result);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return json(res, 500, { error: msg });
       }
     }
 
