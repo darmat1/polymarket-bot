@@ -663,7 +663,7 @@ const server = createServer(async (req, res) => {
         amountUsdc?: number;
         binCount?: number;
       };
-      if (!conditionId || !amountUsdc || !binCount) {
+      if (!conditionId || !amountUsdc || amountUsdc <= 0 || !binCount || binCount <= 0) {
         return json(res, 400, { error: "conditionId, amountUsdc, binCount are required" });
       }
       try {

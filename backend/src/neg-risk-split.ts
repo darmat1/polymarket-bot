@@ -177,6 +177,14 @@ export async function executeNegRiskSplit(
     return { approveTxHash: null, splitTxHash: "dry-run-no-tx", amountUsdc, binCount };
   }
 
+  if (!/^0x[0-9a-fA-F]{64}$/.test(negRiskConditionId)) {
+    throw new Error(`Invalid conditionId format: expected 0x + 64 hex chars`);
+  }
+
+  if (binCount > 256) {
+    throw new Error(`binCount ${binCount} exceeds maximum of 256`);
+  }
+
   const rpcUrl = process.env.POLYGON_RPC_URL ?? "https://polygon.llamarpc.com";
   const normalized = settings.privateKey.startsWith("0x")
     ? settings.privateKey as `0x${string}`

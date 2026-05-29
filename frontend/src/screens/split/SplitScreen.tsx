@@ -51,7 +51,7 @@ export function SplitScreen() {
 
   const arbColor =
     analysis?.arbOpportunity === "split" ? "#6bcb77" :
-    analysis?.arbOpportunity === "merge" ? "#6bcb77" : "#888";
+    analysis?.arbOpportunity === "merge" ? "#ffd93d" : "#888";
 
   const arbLabel =
     analysis?.arbOpportunity === "split"
@@ -177,7 +177,7 @@ export function SplitScreen() {
               />
               <button
                 onClick={handleSplit}
-                disabled={splitting || !amount}
+                disabled={splitting || !amount || analysis?.arbOpportunity === "merge"}
                 style={{
                   padding: "8px 20px", background: "#ffd93d", border: "none", borderRadius: 6,
                   color: "#000", fontWeight: 700, cursor: "pointer", fontSize: 13,
@@ -185,6 +185,11 @@ export function SplitScreen() {
               >
                 {splitting ? "Splitting…" : `Split $${amount}`}
               </button>
+              {analysis?.arbOpportunity === "merge" && !splitResult && (
+                <span style={{ fontSize: 12, color: "#ffd93d" }}>
+                  ⚠ Merge opportunity — buy all bins on CLOB then Merge for profit
+                </span>
+              )}
               {splitResult && (
                 <span style={{
                   fontSize: 12,
