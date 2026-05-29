@@ -89,15 +89,20 @@ export async function analyzeNegRiskEvent(eventUrl: string): Promise<SplitAnalys
 
   const event = events[0];
   const markets: any[] = event.markets ?? [];
-  const negRiskConditionId: string | null = event.negRiskId ?? null;
-  const isNegRisk = !!negRiskConditionId && markets.length > 1;
+  const negRiskConditionId: string | null = event.negRiskMarketID ?? event.negRiskId ?? null;
+  const isNegRisk = (event.negRisk === true || !!negRiskConditionId) && markets.length > 1;
 
   const clobHost = settings.polymarketHost;
   const clob = new ClobPublicClient(clobHost);
 
   const bins: SplitBin[] = await Promise.all(
     markets.map(async (m: any) => {
-      const tokenIds: string[] = m.clobTokenIds ?? [];
+      const rawTokenIds = m.clobTokenIds;
+      const tokenIds: string[] = Array.isArray(rawTokenIds)
+        ? rawTokenIds
+        : typeof rawTokenIds === "string"
+          ? JSON.parse(rawTokenIds)
+          : [];
       const yesTokenId = tokenIds[0] ?? "";
 
       let bestBid: number | null = null;
