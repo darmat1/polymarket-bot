@@ -1,6 +1,51 @@
 // backend/src/neg-risk-split.ts
 import { loadSettings } from "./config.js";
 import { ClobPublicClient } from "./clob.js";
+import { createWalletClient, createPublicClient, http, parseUnits } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { polygon } from "viem/chains";
+
+const NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296" as const;
+const USDC_ADDRESS     = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174" as const;
+
+const ERC20_ABI = [
+  {
+    name: "allowance",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "owner",   type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    name: "approve",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "spender", type: "address" },
+      { name: "amount",  type: "uint256" },
+    ],
+    outputs: [{ type: "bool" }],
+  },
+] as const;
+
+const NEG_RISK_ADAPTER_ABI = [
+  {
+    name: "splitPosition",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "collateralToken",    type: "address" },
+      { name: "parentCollectionId", type: "bytes32" },
+      { name: "conditionId",        type: "bytes32" },
+      { name: "partition",          type: "uint256[]" },
+      { name: "amount",             type: "uint256" },
+    ],
+    outputs: [],
+  },
+] as const;
 
 export interface SplitBin {
   label: string;
@@ -99,4 +144,72 @@ export async function analyzeNegRiskEvent(eventUrl: string): Promise<SplitAnalys
     arbOpportunity,
     isWeatherMarket,
   };
+}
+
+export interface SplitResult {
+  approveTxHash: string | null;
+  splitTxHash: string;
+  amountUsdc: number;
+  binCount: number;
+}
+
+export async function executeNegRiskSplit(
+  negRiskConditionId: string,
+  amountUsdc: number,
+  binCount: number,
+): Promise<SplitResult> {
+  const settings = loadSettings();
+  if (!settings.privateKey) throw new Error("No private key configured");
+
+  const rpcUrl = process.env.POLYGON_RPC_URL ?? "https://polygon.llamarpc.com";
+  const normalized = settings.privateKey.startsWith("0x")
+    ? settings.privateKey as `0x${string}`
+    : `0x${settings.privateKey}` as `0x${string}`;
+
+  const account = privateKeyToAccount(normalized);
+  const publicClient  = createPublicClient({ chain: polygon, transport: http(rpcUrl) });
+  const walletClient  = createWalletClient({ account, chain: polygon, transport: http(rpcUrl) });
+
+  const amountRaw = parseUnits(amountUsdc.toFixed(6), 6);
+
+  // 1. Check allowance
+  const allowance = await publicClient.readContract({
+    address: USDC_ADDRESS,
+    abi: ERC20_ABI,
+    functionName: "allowance",
+    args: [account.address, NEG_RISK_ADAPTER],
+  }) as bigint;
+
+  let approveTxHash: string | null = null;
+  if (allowance < amountRaw) {
+    const MAX = BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+    const hash = await walletClient.writeContract({
+      address: USDC_ADDRESS,
+      abi: ERC20_ABI,
+      functionName: "approve",
+      args: [NEG_RISK_ADAPTER, MAX],
+    });
+    await publicClient.waitForTransactionReceipt({ hash });
+    approveTxHash = hash;
+  }
+
+  // 2. Build partition bitmask: [1, 2, 4, 8, ...] for N bins
+  const partition = Array.from({ length: binCount }, (_, i) => BigInt(1 << i));
+
+  // 3. Execute splitPosition
+  const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
+  const splitTxHash = await walletClient.writeContract({
+    address: NEG_RISK_ADAPTER,
+    abi: NEG_RISK_ADAPTER_ABI,
+    functionName: "splitPosition",
+    args: [
+      USDC_ADDRESS,
+      ZERO_BYTES32,
+      negRiskConditionId as `0x${string}`,
+      partition,
+      amountRaw,
+    ],
+  });
+
+  return { approveTxHash, splitTxHash, amountUsdc, binCount };
 }
