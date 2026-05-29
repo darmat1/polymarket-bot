@@ -98,11 +98,17 @@ export async function analyzeNegRiskEvent(eventUrl: string): Promise<SplitAnalys
   const bins: SplitBin[] = await Promise.all(
     markets.map(async (m: any) => {
       const rawTokenIds = m.clobTokenIds;
-      const tokenIds: string[] = Array.isArray(rawTokenIds)
-        ? rawTokenIds
-        : typeof rawTokenIds === "string"
-          ? JSON.parse(rawTokenIds)
-          : [];
+      let tokenIds: string[] = [];
+      if (Array.isArray(rawTokenIds)) {
+        tokenIds = rawTokenIds;
+      } else if (typeof rawTokenIds === "string") {
+        try {
+          const parsed = JSON.parse(rawTokenIds);
+          tokenIds = Array.isArray(parsed) ? parsed : [];
+        } catch {
+          tokenIds = [];
+        }
+      }
       const yesTokenId = tokenIds[0] ?? "";
 
       let bestBid: number | null = null;
@@ -166,6 +172,11 @@ export async function executeNegRiskSplit(
   const settings = loadSettings();
   if (!settings.privateKey) throw new Error("No private key configured");
 
+  if (settings.dryRun) {
+    console.log(`[DryRun] Would split $${amountUsdc} USDC for conditionId ${negRiskConditionId}`);
+    return { approveTxHash: null, splitTxHash: "dry-run-no-tx", amountUsdc, binCount };
+  }
+
   const rpcUrl = process.env.POLYGON_RPC_URL ?? "https://polygon.llamarpc.com";
   const normalized = settings.privateKey.startsWith("0x")
     ? settings.privateKey as `0x${string}`
@@ -199,7 +210,7 @@ export async function executeNegRiskSplit(
   }
 
   // 2. Build partition bitmask: [1, 2, 4, 8, ...] for N bins
-  const partition = Array.from({ length: binCount }, (_, i) => BigInt(1 << i));
+  const partition = Array.from({ length: binCount }, (_, i) => BigInt(1) << BigInt(i));
 
   // 3. Execute splitPosition
   const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
@@ -216,5 +227,6 @@ export async function executeNegRiskSplit(
     ],
   });
 
+  await publicClient.waitForTransactionReceipt({ hash: splitTxHash });
   return { approveTxHash, splitTxHash, amountUsdc, binCount };
 }
