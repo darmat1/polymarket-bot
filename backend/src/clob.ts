@@ -2,11 +2,23 @@ import { TopOfBook } from "./models.js";
 
 interface BookLevel {
   price?: string | number;
+  size?: string | number;
+  quantity?: string | number;
 }
 
 interface OrderBookResponse {
   bids?: BookLevel[];
   asks?: BookLevel[];
+}
+
+export interface OrderBookLevel {
+  price: number;
+  size: number;
+}
+
+export interface OrderBookDepth {
+  bids: OrderBookLevel[];
+  asks: OrderBookLevel[];
 }
 
 interface PriceHistoryPoint {
@@ -38,16 +50,22 @@ export class ClobPublicClient {
   }
 
   async getTopOfBook(tokenId: string): Promise<TopOfBook> {
-    const book = await this.getOrderBook(tokenId);
-    const bids = book.bids ?? [];
-    const asks = book.asks ?? [];
+    const book = await this.getOrderBookDepth(tokenId);
+    const bids = book.bids;
+    const asks = book.asks;
 
-    // Polymarket CLOB sorts bids ascending (lowest first) and asks descending (highest first)
-    // so best bid = bids[last], best ask = asks[last]
     return new TopOfBook(
-      bids.length > 0 ? extractPrice(bids[bids.length - 1]) : null,
-      asks.length > 0 ? extractPrice(asks[asks.length - 1]) : null,
+      bids.length > 0 ? bids[0].price : null,
+      asks.length > 0 ? asks[0].price : null,
     );
+  }
+
+  async getOrderBookDepth(tokenId: string): Promise<OrderBookDepth> {
+    const book = await this.getOrderBook(tokenId);
+    return {
+      bids: normalizeLevels(book.bids ?? []).sort((a, b) => b.price - a.price),
+      asks: normalizeLevels(book.asks ?? []).sort((a, b) => a.price - b.price),
+    };
   }
 
   async getBatchPricesHistory(params: {
@@ -100,4 +118,31 @@ function extractPrice(level: BookLevel): number | null {
 
   const parsed = Number(level.price);
   return Number.isNaN(parsed) ? null : parsed;
+}
+
+function extractSize(level: BookLevel): number | null {
+  const raw = level.size ?? level.quantity;
+  if (raw === undefined) {
+    return null;
+  }
+
+  const parsed = Number(raw);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function normalizeLevels(levels: BookLevel[]): OrderBookLevel[] {
+  return levels
+    .map((level) => ({
+      price: extractPrice(level),
+      size: extractSize(level),
+    }))
+    .filter((level): level is OrderBookLevel =>
+      level.price !== null &&
+      level.size !== null &&
+      Number.isFinite(level.price) &&
+      Number.isFinite(level.size) &&
+      level.price > 0 &&
+      level.price < 1 &&
+      level.size > 0,
+    );
 }

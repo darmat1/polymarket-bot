@@ -64,6 +64,7 @@ import {
   setWeatherPolymarketTrigger,
 } from "./weather-polymarket.js";
 import { analyzeNegRiskEvent, executeNegRiskSplit } from "./neg-risk-split.js";
+import { scanArbOpportunities, scanArbOpportunityBatches } from "./arb-scanner.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const FRONTEND_DIST = join(__dirname, "..", "..", "frontend", "dist");
@@ -673,6 +674,43 @@ const server = createServer(async (req, res) => {
         const msg = err instanceof Error ? err.message : String(err);
         return json(res, 500, { error: msg });
       }
+    }
+
+    // GET /api/arb/scan
+    if (requestUrl.pathname === "/api/arb/scan" && req.method === "GET") {
+      try {
+        const result = await scanArbOpportunities();
+        return json(res, 200, result);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return json(res, 500, { error: msg });
+      }
+    }
+
+    // GET /api/arb/scan/stream
+    if (requestUrl.pathname === "/api/arb/scan/stream" && req.method === "GET") {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+      });
+
+      const sendSse = (payload: unknown) => {
+        res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      };
+
+      try {
+        sendSse({ type: "started", scannedAt: new Date().toISOString() });
+        for await (const batch of scanArbOpportunityBatches()) {
+          sendSse({ type: batch.done ? "done" : "batch", ...batch });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        sendSse({ type: "error", error: msg });
+      } finally {
+        res.end();
+      }
+      return;
     }
 
     // Static file serving from frontend/dist
