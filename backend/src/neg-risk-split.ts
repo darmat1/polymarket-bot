@@ -1,6 +1,5 @@
 // backend/src/neg-risk-split.ts
 import { loadSettings } from "./config.js";
-import { GammaClient } from "./gamma.js";
 import { ClobPublicClient } from "./clob.js";
 
 export interface SplitBin {
@@ -46,7 +45,7 @@ export async function analyzeNegRiskEvent(eventUrl: string): Promise<SplitAnalys
   const event = events[0];
   const markets: any[] = event.markets ?? [];
   const negRiskConditionId: string | null = event.negRiskId ?? null;
-  const isNegRisk = !!negRiskConditionId && markets.length > 2;
+  const isNegRisk = !!negRiskConditionId && markets.length > 1;
 
   const clobHost = settings.polymarketHost;
   const clob = new ClobPublicClient(clobHost);
@@ -58,17 +57,15 @@ export async function analyzeNegRiskEvent(eventUrl: string): Promise<SplitAnalys
 
       let bestBid: number | null = null;
       let bestAsk: number | null = null;
+      let midPrice: number | null = null;
       if (yesTokenId) {
         try {
           const top = await clob.getTopOfBook(yesTokenId);
           bestBid = top.bestBid;
           bestAsk = top.bestAsk;
+          midPrice = top.midpoint;
         } catch { /* no liquidity */ }
       }
-
-      const midPrice = bestBid !== null && bestAsk !== null
-        ? (bestBid + bestAsk) / 2
-        : (bestBid ?? bestAsk);
 
       return {
         label: m.groupItemTitle ?? m.outcomes?.[0] ?? m.question ?? "?",
@@ -87,7 +84,9 @@ export async function analyzeNegRiskEvent(eventUrl: string): Promise<SplitAnalys
     sumYesMid > 1.0 + ARB_THRESHOLD ? "split" : "none";
 
   const titleLower = (event.title ?? eventSlug).toLowerCase();
-  const isWeatherMarket = titleLower.includes("temperature") || titleLower.includes("temp");
+  const isWeatherMarket = titleLower.includes("temperature") ||
+    titleLower.includes("highest temp") ||
+    titleLower.includes("weather");
 
   return {
     eventSlug,
