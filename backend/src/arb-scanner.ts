@@ -5,14 +5,21 @@ import { ClobPublicClient, type OrderBookLevel } from "./clob.js";
 export interface ArbBin {
   label: string;
   yesTokenId: string;
+  noTokenId: string;
   bestBid: number | null;
   bestAsk: number | null;
   bestBidSize: number | null;
   bestAskSize: number | null;
+  bestNoBid: number | null;
+  bestNoAsk: number | null;
+  bestNoBidSize: number | null;
+  bestNoAskSize: number | null;
   executableDepth: number;
   avgExecutionPrice: number | null;
   executionValue: number | null;
   isLimiting: boolean;
+  isConvertInput: boolean;
+  isConvertOutput: boolean;
 }
 
 export interface ArbExecution {
@@ -66,6 +73,22 @@ export interface ArbWatchPlan {
   reason: string;
 }
 
+export interface ArbConvertPlan {
+  mode: "no_to_yes_complement" | "none";
+  selectedBin: string | null;
+  selectedIndex: number | null;
+  indexSet: string | null;
+  indexSetHex: string | null;
+  marketId: string | null;
+  inputNoTokenId: string | null;
+  inputNoAsk: number | null;
+  outputYesBidSum: number | null;
+  rawProfitPerShare: number | null;
+  outputBinCount: number;
+  missingOutputBins: string[];
+  reason: string;
+}
+
 export interface ArbOpportunity {
   eventSlug: string;
   eventTitle: string;
@@ -76,14 +99,15 @@ export interface ArbOpportunity {
   sumBids: number;
   sumAsks: number;
   topLineProfitPerDollar: number;
-  /** "split": split $1 → sell all YES at bid → profit = sumBids - $1 */
-  arbType: "split" | "merge" | "none";
+  /** "split": split $1 → sell all YES at bid; "merge": buy all YES → merge; "convert": buy one NO → convert to complementary YES */
+  arbType: "split" | "merge" | "convert" | "none";
   /** net executable profit per dollar when depth allows it; otherwise indicative top-line profit */
   profitPerDollar: number;
   /** true = current book depth supports an executable positive-net arb */
   isClean: boolean;
   execution: ArbExecution;
   watchPlan: ArbWatchPlan;
+  convertPlan: ArbConvertPlan;
   bins: ArbBin[];
   volume: number;
   liquidity: number;
@@ -112,28 +136,42 @@ const INVESTOR_INPUT_USD = 1;
 
 interface BookBin {
   label: string;
+  index: number;
   yesTokenId: string;
+  noTokenId: string;
   bids: OrderBookLevel[];
   asks: OrderBookLevel[];
+  noBids: OrderBookLevel[];
+  noAsks: OrderBookLevel[];
 }
 
-async function fetchEventPrices(event: any, clob: ClobPublicClient): Promise<ArbOpportunity | null> {
+interface ConvertCandidate {
+  selectedIndex: number;
+  selectedBin: BookBin;
+  outputBins: BookBin[];
+  inputNoAsk: number;
+  outputYesBidSum: number;
+  rawProfitPerShare: number;
+  topLineProfitPerDollar: number;
+  missingOutputBins: string[];
+  indexSet: string;
+  indexSetHex: string;
+}
+
+async function fetchEventPrices(event: any, clob: ClobPublicClient): Promise<ArbOpportunity[]> {
   const markets: any[] = event.markets ?? [];
   const gasBufferUsd = parseEnvNumber("ARB_GAS_BUFFER_USD", 0.02);
   const slippageBufferBps = parseEnvNumber("ARB_SLIPPAGE_BUFFER_BPS", 10);
 
   const bookBins: BookBin[] = await Promise.all(
-    markets.map(async (m: any) => {
-      const rawTokenIds = m.clobTokenIds;
-      let tokenIds: string[] = [];
-      if (Array.isArray(rawTokenIds)) {
-        tokenIds = rawTokenIds;
-      } else if (typeof rawTokenIds === "string") {
-        try { const p = JSON.parse(rawTokenIds); if (Array.isArray(p)) tokenIds = p; } catch { /* */ }
-      }
+    markets.map(async (m: any, index: number) => {
+      const tokenIds = parseTokenIds(m.clobTokenIds ?? m.tokenIds);
       const yesTokenId = tokenIds[0] ?? "";
+      const noTokenId = tokenIds[1] ?? "";
       let bids: OrderBookLevel[] = [];
       let asks: OrderBookLevel[] = [];
+      let noBids: OrderBookLevel[] = [];
+      let noAsks: OrderBookLevel[] = [];
       if (yesTokenId) {
         try {
           const depth = await clob.getOrderBookDepth(yesTokenId);
@@ -141,11 +179,22 @@ async function fetchEventPrices(event: any, clob: ClobPublicClient): Promise<Arb
           asks = depth.asks;
         } catch { /* no liquidity */ }
       }
+      if (noTokenId) {
+        try {
+          const depth = await clob.getOrderBookDepth(noTokenId);
+          noBids = depth.bids;
+          noAsks = depth.asks;
+        } catch { /* no liquidity */ }
+      }
       return {
         label: m.groupItemTitle ?? m.outcomes?.[0] ?? m.question ?? "?",
+        index,
         yesTokenId,
+        noTokenId,
         bids,
         asks,
+        noBids,
+        noAsks,
       };
     })
   );
@@ -158,77 +207,60 @@ async function fetchEventPrices(event: any, clob: ClobPublicClient): Promise<Arb
   const splitProfit = sumBids > 1.0 ? sumBids - 1.0 : 0;
   const allHaveAsk  = binsWithAsk === bookBins.length;
   const mergeProfit = (allHaveAsk && sumAsks < 1.0) ? 1.0 - sumAsks : 0;
+  const convertCandidate = findBestConvertCandidate(bookBins);
 
-  let arbType: "split" | "merge" | "none" = "none";
-  let profitPerDollar = 0;
-  let isClean = false;
-
-  if (splitProfit > mergeProfit && splitProfit > MIN_PROFIT) {
-    arbType = "split";
-    profitPerDollar = splitProfit;
-    isClean = binsWithBid === bookBins.length;
-  } else if (mergeProfit > splitProfit && mergeProfit > MIN_PROFIT) {
-    arbType = "merge";
-    profitPerDollar = mergeProfit;
-    isClean = allHaveAsk;
-  }
-
-  if (arbType === "none") return null;
-  const execution = arbType === "split"
-    ? analyzeSplitExecution(bookBins, gasBufferUsd, slippageBufferBps)
-    : analyzeMergeExecution(bookBins, gasBufferUsd, slippageBufferBps);
-  const watchPlan = arbType === "split"
-    ? analyzeSplitWatchPlan(bookBins, gasBufferUsd, slippageBufferBps)
-    : noWatchPlan("Watch mode is only defined for split/hold candidates.");
-  const topLineProfitPerDollar = arbType === "split" ? splitProfit : mergeProfit;
-  profitPerDollar = execution.netProfitPerDollar > 0
-    ? execution.netProfitPerDollar
-    : topLineProfitPerDollar;
-  isClean = execution.executable && execution.netProfitUsd > 0;
-  const limitingLabel = execution.limitingBin;
-  const bins: ArbBin[] = bookBins.map((bin) => {
-    const sideLevels = arbType === "split" ? bin.bids : bin.asks;
-    const executableDepth = cumulativeSize(sideLevels);
-    const avgExecutionPrice = execution.executable && execution.maxInvestmentUsd > 0
-      ? weightedAverageForSide(arbType, sideLevels, execution.executableShares)
-      : null;
-    const executionValue = avgExecutionPrice !== null
-      ? avgExecutionPrice * execution.executableShares
-      : null;
-
-    return {
-      label: bin.label,
-      yesTokenId: bin.yesTokenId,
-      bestBid: bin.bids[0]?.price ?? null,
-      bestAsk: bin.asks[0]?.price ?? null,
-      bestBidSize: bin.bids[0]?.size ?? null,
-      bestAskSize: bin.asks[0]?.size ?? null,
-      executableDepth: roundShares(executableDepth),
-      avgExecutionPrice,
-      executionValue: executionValue === null ? null : roundUsd(executionValue),
-      isLimiting: limitingLabel === bin.label,
-    };
-  });
-
-  return {
+  const opportunities: ArbOpportunity[] = [];
+  const base = {
     eventSlug: event.slug,
     eventTitle: event.title ?? event.slug,
-    negRiskConditionId: event.negRiskMarketID,
+    negRiskConditionId: event.negRiskMarketID ?? event.negRiskId ?? "",
     binCount: markets.length,
     binsWithBid,
     binsWithAsk,
     sumBids,
     sumAsks,
-    topLineProfitPerDollar,
-    arbType,
-    profitPerDollar,
-    isClean,
-    execution,
-    watchPlan,
-    bins,
     volume: parseFloat(event.volume ?? "0"),
     liquidity: parseFloat(event.liquidity ?? "0"),
   };
+
+  if (splitProfit > MIN_PROFIT) {
+    opportunities.push(buildOpportunity({
+      ...base,
+      bookBins,
+      arbType: "split",
+      topLineProfitPerDollar: splitProfit,
+      execution: analyzeSplitExecution(bookBins, gasBufferUsd, slippageBufferBps),
+      watchPlan: analyzeSplitWatchPlan(bookBins, gasBufferUsd, slippageBufferBps),
+      convertPlan: noConvertPlan("Convert mode is not used for split opportunities."),
+    }));
+  }
+
+  if (mergeProfit > MIN_PROFIT) {
+    opportunities.push(buildOpportunity({
+      ...base,
+      bookBins,
+      arbType: "merge",
+      topLineProfitPerDollar: mergeProfit,
+      execution: analyzeMergeExecution(bookBins, gasBufferUsd, slippageBufferBps),
+      watchPlan: noWatchPlan("Watch mode is only defined for split/hold candidates."),
+      convertPlan: noConvertPlan("Convert mode is not used for merge opportunities."),
+    }));
+  }
+
+  if (convertCandidate && convertCandidate.rawProfitPerShare > MIN_PROFIT) {
+    opportunities.push(buildOpportunity({
+      ...base,
+      bookBins,
+      arbType: "convert",
+      topLineProfitPerDollar: convertCandidate.topLineProfitPerDollar,
+      execution: analyzeConvertExecution(bookBins, convertCandidate, gasBufferUsd, slippageBufferBps),
+      watchPlan: noWatchPlan("Watch mode is only defined for split/hold candidates."),
+      convertPlan: buildConvertPlan(event.negRiskMarketID ?? event.negRiskId ?? null, convertCandidate),
+      convertCandidate,
+    }));
+  }
+
+  return opportunities;
 }
 
 function analyzeSplitExecution(
@@ -311,6 +343,59 @@ function analyzeMergeExecution(
     investorGrossReturnUsd,
     investorGrossProfitUsd,
     avgExecutionSum: executableShares > 0 ? maxInvestmentUsd / executableShares : null,
+    limitingBin: executable ? limiting.label : null,
+    unfillableBins,
+    gasBufferUsd,
+    slippageBufferBps,
+    slippageBufferUsd,
+  });
+}
+
+function analyzeConvertExecution(
+  bins: BookBin[],
+  candidate: ConvertCandidate,
+  gasBufferUsd: number,
+  slippageBufferBps: number,
+): ArbExecution {
+  const outputBins = candidate.outputBins;
+  const depths = [
+    { label: `NO ${candidate.selectedBin.label}`, depth: cumulativeSize(candidate.selectedBin.noAsks) },
+    ...outputBins.map((bin) => ({ label: bin.label, depth: cumulativeSize(bin.bids) })),
+  ];
+  const unfillableBins = depths.filter((bin) => bin.depth <= 0).map((bin) => bin.label);
+  const limiting = findLimitingDepth(depths);
+  const depthLimit = unfillableBins.length === 0 ? limiting.depth : 0;
+  const executable = depthLimit > 0;
+  const best = executable
+    ? findBestConvertExecution(candidate, depthLimit, gasBufferUsd, slippageBufferBps)
+    : null;
+  const executableShares = best?.shares ?? 0;
+  const maxInvestmentUsd = best?.investmentUsd ?? 0;
+  const maxReturnUsd = best?.returnUsd ?? 0;
+  const slippageBufferUsd = best?.slippageBufferUsd ?? 0;
+  const maxProfitUsd = best?.grossProfitUsd ?? 0;
+  const netProfitUsd = best?.netProfitUsd ?? 0;
+
+  const investorShares = executable
+    ? findSharesForSingleBudget(candidate.selectedBin.noAsks, INVESTOR_INPUT_USD)
+    : null;
+  const investorGrossReturnUsd = investorShares === null
+    ? null
+    : sumRequired(outputBins.map((bin) => sellValue(bin.bids, investorShares)));
+  const investorGrossProfitUsd = investorGrossReturnUsd === null
+    ? null
+    : investorGrossReturnUsd - INVESTOR_INPUT_USD;
+
+  return buildExecution({
+    executable,
+    executableShares,
+    maxInvestmentUsd,
+    maxReturnUsd,
+    maxProfitUsd,
+    netProfitUsd,
+    investorGrossReturnUsd,
+    investorGrossProfitUsd,
+    avgExecutionSum: executableShares > 0 ? maxReturnUsd / executableShares : null,
     limitingBin: executable ? limiting.label : null,
     unfillableBins,
     gasBufferUsd,
@@ -403,6 +488,124 @@ function noWatchPlan(reason: string): ArbWatchPlan {
     heldShares: 0,
     heldBins: [],
     reason,
+  };
+}
+
+function buildOpportunity(args: {
+  eventSlug: string;
+  eventTitle: string;
+  negRiskConditionId: string;
+  binCount: number;
+  binsWithBid: number;
+  binsWithAsk: number;
+  sumBids: number;
+  sumAsks: number;
+  volume: number;
+  liquidity: number;
+  bookBins: BookBin[];
+  arbType: "split" | "merge" | "convert";
+  topLineProfitPerDollar: number;
+  execution: ArbExecution;
+  watchPlan: ArbWatchPlan;
+  convertPlan: ArbConvertPlan;
+  convertCandidate?: ConvertCandidate;
+}): ArbOpportunity {
+  const profitPerDollar = args.execution.netProfitPerDollar > 0
+    ? args.execution.netProfitPerDollar
+    : args.topLineProfitPerDollar;
+  const isClean = args.execution.executable && args.execution.netProfitUsd > 0;
+  const limitingLabel = args.execution.limitingBin;
+  const bins: ArbBin[] = args.bookBins.map((bin) => {
+    const isConvertInput = args.arbType === "convert" && args.convertCandidate?.selectedIndex === bin.index;
+    const isConvertOutput = args.arbType === "convert" && args.convertCandidate?.selectedIndex !== bin.index;
+    const sideLevels =
+      args.arbType === "split" ? bin.bids :
+      args.arbType === "merge" ? bin.asks :
+      isConvertInput ? bin.noAsks : bin.bids;
+    const executableDepth = cumulativeSize(sideLevels);
+    const avgExecutionPrice = args.execution.executable && args.execution.executableShares > 0
+      ? weightedAverage(sideLevels, args.execution.executableShares)
+      : null;
+    const executionValue = avgExecutionPrice !== null
+      ? avgExecutionPrice * args.execution.executableShares
+      : null;
+
+    return {
+      label: bin.label,
+      yesTokenId: bin.yesTokenId,
+      noTokenId: bin.noTokenId,
+      bestBid: bin.bids[0]?.price ?? null,
+      bestAsk: bin.asks[0]?.price ?? null,
+      bestBidSize: bin.bids[0]?.size ?? null,
+      bestAskSize: bin.asks[0]?.size ?? null,
+      bestNoBid: bin.noBids[0]?.price ?? null,
+      bestNoAsk: bin.noAsks[0]?.price ?? null,
+      bestNoBidSize: bin.noBids[0]?.size ?? null,
+      bestNoAskSize: bin.noAsks[0]?.size ?? null,
+      executableDepth: roundShares(executableDepth),
+      avgExecutionPrice,
+      executionValue: executionValue === null ? null : roundUsd(executionValue),
+      isLimiting: limitingLabel === bin.label,
+      isConvertInput,
+      isConvertOutput,
+    };
+  });
+
+  return {
+    eventSlug: args.eventSlug,
+    eventTitle: args.eventTitle,
+    negRiskConditionId: args.negRiskConditionId,
+    binCount: args.binCount,
+    binsWithBid: args.binsWithBid,
+    binsWithAsk: args.binsWithAsk,
+    sumBids: args.sumBids,
+    sumAsks: args.sumAsks,
+    topLineProfitPerDollar: args.topLineProfitPerDollar,
+    arbType: args.arbType,
+    profitPerDollar,
+    isClean,
+    execution: args.execution,
+    watchPlan: args.watchPlan,
+    convertPlan: args.convertPlan,
+    bins,
+    volume: args.volume,
+    liquidity: args.liquidity,
+  };
+}
+
+function noConvertPlan(reason: string): ArbConvertPlan {
+  return {
+    mode: "none",
+    selectedBin: null,
+    selectedIndex: null,
+    indexSet: null,
+    indexSetHex: null,
+    marketId: null,
+    inputNoTokenId: null,
+    inputNoAsk: null,
+    outputYesBidSum: null,
+    rawProfitPerShare: null,
+    outputBinCount: 0,
+    missingOutputBins: [],
+    reason,
+  };
+}
+
+function buildConvertPlan(marketId: string | null, candidate: ConvertCandidate): ArbConvertPlan {
+  return {
+    mode: "no_to_yes_complement",
+    selectedBin: candidate.selectedBin.label,
+    selectedIndex: candidate.selectedIndex,
+    indexSet: candidate.indexSet,
+    indexSetHex: candidate.indexSetHex,
+    marketId,
+    inputNoTokenId: candidate.selectedBin.noTokenId,
+    inputNoAsk: roundRate(candidate.inputNoAsk),
+    outputYesBidSum: roundRate(candidate.outputYesBidSum),
+    rawProfitPerShare: roundRate(candidate.rawProfitPerShare),
+    outputBinCount: candidate.outputBins.length,
+    missingOutputBins: candidate.missingOutputBins,
+    reason: "Buy NO on the selected bin, convert through Neg Risk CTF Collateral Adapter, then sell complementary YES bins into bids.",
   };
 }
 
@@ -552,6 +755,81 @@ function findBestMergeExecution(
   });
 }
 
+function findBestConvertExecution(
+  candidate: ConvertCandidate,
+  depthLimit: number,
+  gasBufferUsd: number,
+  slippageBufferBps: number,
+): {
+  shares: number;
+  investmentUsd: number;
+  returnUsd: number;
+  grossProfitUsd: number;
+  netProfitUsd: number;
+  slippageBufferUsd: number;
+} | null {
+  const levelSets = [
+    candidate.selectedBin.noAsks,
+    ...candidate.outputBins.map((bin) => bin.bids),
+  ];
+  return bestCandidate(candidateShares(levelSets, depthLimit), (shares) => {
+    const investmentUsd = buyCost(candidate.selectedBin.noAsks, shares);
+    if (investmentUsd === null) return null;
+    const returnUsd = sumRequired(candidate.outputBins.map((bin) => sellValue(bin.bids, shares)));
+    if (returnUsd === null) return null;
+    const grossProfitUsd = returnUsd - investmentUsd;
+    const slippageBufferUsd = (investmentUsd + returnUsd) * (slippageBufferBps / 10_000);
+    return {
+      shares,
+      investmentUsd,
+      returnUsd,
+      grossProfitUsd,
+      netProfitUsd: grossProfitUsd - slippageBufferUsd - gasBufferUsd,
+      slippageBufferUsd,
+    };
+  });
+}
+
+function findBestConvertCandidate(bins: BookBin[]): ConvertCandidate | null {
+  let best: ConvertCandidate | null = null;
+  for (const selectedBin of bins) {
+    const inputNoAsk = selectedBin.noAsks[0]?.price;
+    if (inputNoAsk === undefined || inputNoAsk <= 0) {
+      continue;
+    }
+
+    const outputBins = bins.filter((bin) => bin.index !== selectedBin.index);
+    const outputYesBidSum = outputBins.reduce((sum, bin) => sum + (bin.bids[0]?.price ?? 0), 0);
+    const rawProfitPerShare = outputYesBidSum - inputNoAsk;
+    const topLineProfitPerDollar = rawProfitPerShare / inputNoAsk;
+    const indexSetValue = BigInt(1) << BigInt(selectedBin.index);
+    const candidate: ConvertCandidate = {
+      selectedIndex: selectedBin.index,
+      selectedBin,
+      outputBins,
+      inputNoAsk,
+      outputYesBidSum,
+      rawProfitPerShare,
+      topLineProfitPerDollar,
+      missingOutputBins: outputBins.filter((bin) => !bin.bids[0]?.price).map((bin) => bin.label),
+      indexSet: indexSetValue.toString(),
+      indexSetHex: `0x${indexSetValue.toString(16)}`,
+    };
+
+    if (
+      best === null ||
+      candidate.rawProfitPerShare > best.rawProfitPerShare ||
+      (
+        candidate.rawProfitPerShare === best.rawProfitPerShare &&
+        candidate.topLineProfitPerDollar > best.topLineProfitPerDollar
+      )
+    ) {
+      best = candidate;
+    }
+  }
+  return best;
+}
+
 function candidateShares(levelSets: OrderBookLevel[][], depthLimit: number): number[] {
   const values = new Set<number>();
   if (depthLimit >= INVESTOR_INPUT_USD) {
@@ -602,12 +880,8 @@ function sumRequired(values: Array<number | null>): number | null {
   return sum;
 }
 
-function weightedAverageForSide(
-  arbType: "split" | "merge",
-  levels: OrderBookLevel[],
-  shares: number,
-): number | null {
-  const value = arbType === "split" ? sellValue(levels, shares) : buyCost(levels, shares);
+function weightedAverage(levels: OrderBookLevel[], shares: number): number | null {
+  const value = walkLevels(levels, shares);
   return value === null || shares <= 0 ? null : roundRate(value / shares);
 }
 
@@ -634,6 +908,48 @@ function findSharesForBudget(bins: BookBin[], budgetUsd: number): number | null 
     }
   }
   return roundShares(lo);
+}
+
+function findSharesForSingleBudget(levels: OrderBookLevel[], budgetUsd: number): number | null {
+  const maxShares = cumulativeSize(levels);
+  if (!Number.isFinite(maxShares) || maxShares <= 0) {
+    return null;
+  }
+
+  const maxCost = buyCost(levels, maxShares);
+  if (maxCost === null || maxCost < budgetUsd) {
+    return null;
+  }
+
+  let lo = 0;
+  let hi = maxShares;
+  for (let i = 0; i < 48; i++) {
+    const mid = (lo + hi) / 2;
+    const cost = buyCost(levels, mid);
+    if (cost !== null && cost <= budgetUsd) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return roundShares(lo);
+}
+
+function parseTokenIds(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed.map((item) => String(item)).filter(Boolean);
+      }
+    } catch {
+      return value.split(",").map((item) => item.trim()).filter(Boolean);
+    }
+  }
+  return [];
 }
 
 function parseEnvNumber(name: string, fallback: number): number {
@@ -719,10 +1035,10 @@ export async function* scanArbOpportunityBatches(): AsyncGenerator<ArbScanBatch>
     processedEvents += chunk.length;
 
     const opportunities = chunkResults
-      .filter((r): r is PromiseFulfilledResult<ArbOpportunity> =>
-        r.status === "fulfilled" && r.value !== null
+      .filter((r): r is PromiseFulfilledResult<ArbOpportunity[]> =>
+        r.status === "fulfilled" && r.value.length > 0
       )
-      .map(r => r.value);
+      .flatMap(r => r.value);
 
     yield {
       processedEvents,

@@ -65,6 +65,13 @@ import {
 } from "./weather-polymarket.js";
 import { analyzeNegRiskEvent, executeNegRiskSplit } from "./neg-risk-split.js";
 import { scanArbOpportunities, scanArbOpportunityBatches } from "./arb-scanner.js";
+import {
+  createArbWatchPosition,
+  listArbWatchPositions,
+  setArbWatchBroadcaster,
+  stopArbWatchPosition,
+  type CreateArbWatchInput,
+} from "./arb-hold-monitor.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const FRONTEND_DIST = join(__dirname, "..", "..", "frontend", "dist");
@@ -713,6 +720,38 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // GET /api/arb/watch
+    if (requestUrl.pathname === "/api/arb/watch" && req.method === "GET") {
+      return json(res, 200, { positions: listArbWatchPositions() });
+    }
+
+    // POST /api/arb/watch
+    if (requestUrl.pathname === "/api/arb/watch" && req.method === "POST") {
+      try {
+        const input = (await readJsonBody(req)) as unknown as CreateArbWatchInput;
+        const position = createArbWatchPosition(input);
+        return json(res, 200, { position });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return json(res, 400, { error: msg });
+      }
+    }
+
+    // POST /api/arb/watch/stop
+    if (requestUrl.pathname === "/api/arb/watch/stop" && req.method === "POST") {
+      const { id } = (await readJsonBody(req)) as { id?: string };
+      if (!id) {
+        return json(res, 400, { error: "id is required" });
+      }
+      try {
+        const position = stopArbWatchPosition(id);
+        return json(res, 200, { position });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return json(res, 404, { error: msg });
+      }
+    }
+
     // Static file serving from frontend/dist
     const isGet = req.method === "GET" || req.method === "HEAD";
     if (isGet && !requestUrl.pathname.startsWith("/api")) {
@@ -788,6 +827,7 @@ async function start(): Promise<void> {
 
   const wss = new WebSocketServer({ server });
   appWss = wss;
+  setArbWatchBroadcaster(broadcast);
 
   // Weather market price WebSocket handler
   wss.on('connection', async (ws, req) => {
